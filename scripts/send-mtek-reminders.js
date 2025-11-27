@@ -246,18 +246,55 @@ async function main() {
         instructorNames = classAttrs.instructor_names;
       }
 
+      // Class date & time (in America/Toronto) for email display
+      const classStartIso =
+        attrs.class_session_min_datetime ||
+        classAttrs.class_session_min_datetime ||
+        null;
+
+      let classDateFormatted = '';
+      let classTimeFormatted = '';
+
+      if (classStartIso) {
+        const dt = new Date(classStartIso);
+
+        const formatter = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'America/Toronto',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+
+        const parts = formatter.formatToParts(dt);
+        const get = type => parts.find(p => p.type === type)?.value || '';
+
+        const yearLocal = get('year');
+        const monthLocal = get('month');
+        const dayLocal = get('day');
+        const hourLocal = get('hour');
+        const minuteLocal = get('minute');
+
+        classDateFormatted = `${dayLocal}-${monthLocal}-${yearLocal}`;   // DD-MM-YYYY
+        classTimeFormatted = `${hourLocal}:${minuteLocal}`;             // HH:MM
+      }
+
       const emailTo = guestEmail || userEmail || '';
 
       const payload = {
         email: emailTo,
         first_name: firstName,
-        guest_email: guestEmail,
+        guest_email: guestEmail,       // null/empty for non-guests
         class_label: classLabel,
         instructor_names: instructorNames,
         reservation_id: reservation.id,
         class_session_id: classSessionId,
         studio_name: studioName,
         studio_email: studioEmail,
+        class_date: classDateFormatted, // DD-MM-YYYY
+        class_time: classTimeFormatted, // HH:MM in America/Toronto
       };
 
       const webhookRes = await fetch(MAKE_WEBHOOK_URL, {
