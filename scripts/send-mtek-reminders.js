@@ -7,7 +7,6 @@ const {
   AIRTABLE_BASE_ID,
   AIRTABLE_STUDIOS_TABLE,
   MAKE_WEBHOOK_URL,
-  TIMEZONE = 'America/Toronto',
 } = process.env;
 
 if (!MTEK_API_TOKEN) throw new Error('Missing env: MTEK_API_TOKEN');
@@ -29,9 +28,6 @@ const AIRTABLE_HEADERS = {
   Accept: 'application/json',
 };
 
-// Hours (local, 24h) when studios have classes: 7–12 & 16–20
-const ACTIVE_HOURS = new Set([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
-
 /**************************************************
  * Helpers
  **************************************************/
@@ -39,33 +35,20 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Get local date + hour in given timezone, offset by offsetDays
-function getLocalDateHour(timeZone, offsetDays = 0) {
+// Get UTC date + hour, offset by offsetDays (in UTC)
+function getUtcDateHour(offsetDays = 0) {
   const now = new Date();
-  now.setDate(now.getDate() + offsetDays);
+  now.setUTCDate(now.getUTCDate() + offsetDays);
 
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    hour12: false,
-  });
-
-  const parts = formatter.formatToParts(now);
-  const get = type => parts.find(p => p.type === type)?.value;
-
-  const year = get('year');
-  const month = get('month');
-  const day = get('day');
-  const hourStr = get('hour');
-  const hour = Number(hourStr);
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(now.getUTCDate()).padStart(2, '0');
+  const hour = now.getUTCHours(); // 0–23
 
   return { year, month, day, hour };
 }
 
-// Simple JSON fetch (no special rate-limit logic) – used for Airtable
+// Simple JSON fetch (no rate-limit handling) – for Airtable
 async function fetchJsonSimple(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) {
@@ -75,7 +58,7 @@ async function fetchJsonSimple(url, options = {}) {
   return res.json();
 }
 
-// Rate-limit-aware JSON fetch – used for MTEK API
+// Rate-limit-aware JSON fetch – for MTEK API
 async function fetchJsonWithRateLimit(url, options = {}, maxRetries = 5) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const res = await fetch(url, options);
@@ -105,7 +88,7 @@ async function fetchJsonWithRateLimit(url, options = {}, maxRetries = 5) {
     }
 
     if (!delayMs || delayMs < 0) {
-      delayMs = 2000; // fallback: 2 seconds
+      delayMs = 2000; // fallback 2s
     }
 
     console.warn(
@@ -158,24 +141,20 @@ async function loadStudiosMap() {
  * Main
  **************************************************/
 async function main() {
-  // Local time "now" in TIMEZONE, but using tomorrow's date
-  const { year, month, day, hour } = getLocalDateHour(TIMEZONE, 1); // +1 day = tomorrow
+  // Use TOMORROW in UTC, with the current UTC hour as the window
+  const { year, month, day, hour } = getUtcDateHour(1); // +1 day = tomorrow (UTC)
 
-  console.log(`Local hour in ${TIMEZONE}: ${hour}:00 (tomorrow's date ${year}-${month}-${day})`);
-
-  if (!ACTIVE_HOURS.has(hour)) {
-    console.log('Current hour is outside active class hours, nothing to do. Exiting.');
-    return;
-  }
+  console.log(`UTC hour window for tomorrow: ${year}-${month}-${day} hour=${hour}`);
 
   const hourStr = String(hour).padStart(2, '0');
   const nextHour = (hour + 1) % 24;
   const nextHourStr = String(nextHour).padStart(2, '0');
 
-  const startDateTime = `${year}-${month}-${day}T${hourStr}:00:00`;
-  const endDateTime   = `${year}-${month}-${day}T${nextHourStr}:00:00`;
+  // Build full UTC datetimes with 'Z' suffix
+  const startDateTime = `${year}-${month}-${day}T${hourStr}:00:00Z`;
+  const endDateTime   = `${year}-${month}-${day}T${nextHourStr}:00:00Z`;
 
-  console.log(`Querying reservations for window: ${startDateTime} → ${endDateTime}`);
+  console.log(`Querying reservations for window (UTC): ${startDateTime} → ${endDateTime}`);
 
   const reservationsUrl =
     `${MTEK_BASE}/reservations` +
@@ -190,7 +169,7 @@ async function main() {
     { headers: MTEK_HEADERS }
   );
   const reservations = reservationsPayload.data || [];
-  console.log(`Found ${reservations.length} reservations in this hour window`);
+  console.log(`Found ${reservations.length} reservations in this UTC hour window`);
 
   if (!reservations.length) {
     console.log('Nothing to do for this window, exiting.');
@@ -220,7 +199,7 @@ async function main() {
     }
 
     try {
-      // Fetch class session + user (user may be null)
+      // Fetch class session & user
       const classSessionPromise = fetchJsonWithRateLimit(
         `${MTEK_BASE}/class_sessions/${classSessionId}`,
         { headers: MTEK_HEADERS }
@@ -252,7 +231,7 @@ async function main() {
         studioEmail = studio.email;
       }
 
-      // Build payload fields
+      // Email + names
       const userEmail = userAttrs.email || '';
       const firstName = userAttrs.first_name || '';
 
@@ -301,7 +280,7 @@ async function main() {
     }
   }
 
-  console.log(`Done. Successfully sent ${processed} reservations to the webhook for this window.`);
+  console.log(`Done. Successfully sent ${processed} reservations to the webhook for this UTC window.`);
 }
 
 main().catch(err => {
