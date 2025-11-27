@@ -29,10 +29,18 @@ const AIRTABLE_HEADERS = {
   Accept: 'application/json',
 };
 
+// Hours (local, 24h) when studios have classes: 7–12 & 16–20
+const ACTIVE_HOURS = new Set([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+
 /**************************************************
  * Helpers
  **************************************************/
-function getDateStringInTimeZone(timeZone, offsetDays = 0) {
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Get local date + hour in given timezone, offset by offsetDays
+function getLocalDateHour(timeZone, offsetDays = 0) {
   const now = new Date();
   now.setDate(now.getDate() + offsetDays);
 
@@ -41,12 +49,24 @@ function getDateStringInTimeZone(timeZone, offsetDays = 0) {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
+    hour: '2-digit',
+    hour12: false,
   });
 
-  return formatter.format(now);
+  const parts = formatter.formatToParts(now);
+  const get = type => parts.find(p => p.type === type)?.value;
+
+  const year = get('year');
+  const month = get('month');
+  const day = get('day');
+  const hourStr = get('hour');
+  const hour = Number(hourStr);
+
+  return { year, month, day, hour };
 }
 
-async function fetchJson(url, options = {}) {
+// Simple JSON fetch (no special rate-limit logic) – used for Airtable
+async function fetchJsonSimple(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) {
     const text = await res.text();
@@ -55,17 +75,63 @@ async function fetchJson(url, options = {}) {
   return res.json();
 }
 
+// Rate-limit-aware JSON fetch – used for MTEK API
+async function fetchJsonWithRateLimit(url, options = {}, maxRetries = 5) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, options);
+
+    if (res.status !== 429) {
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Request failed ${res.status} ${res.statusText} for ${url}: ${text}`);
+      }
+      return res.json();
+    }
+
+    // 429 Too Many Requests – inspect Retry-After
+    const retryAfterHeader = res.headers.get('Retry-After');
+    let delayMs = 0;
+
+    if (retryAfterHeader) {
+      const secs = Number(retryAfterHeader);
+      if (!Number.isNaN(secs)) {
+        delayMs = secs * 1000;
+      } else {
+        const retryDate = new Date(retryAfterHeader);
+        if (!Number.isNaN(retryDate.getTime())) {
+          delayMs = retryDate.getTime() - Date.now();
+        }
+      }
+    }
+
+    if (!delayMs || delayMs < 0) {
+      delayMs = 2000; // fallback: 2 seconds
+    }
+
+    console.warn(
+      `Got 429 from MTEK for ${url}. Retry-After=${retryAfterHeader || 'n/a'}; ` +
+      `waiting ${Math.round(delayMs / 1000)}s before retry (attempt ${attempt}/${maxRetries})`
+    );
+
+    await sleep(delayMs);
+  }
+
+  throw new Error(`Exceeded max retries (${maxRetries}) for ${url} after repeated 429s.`);
+}
+
 /**************************************************
- * Load Studios lookup from Airtable
+ * Load Studios lookup from Airtable (once per run)
  **************************************************/
 async function loadStudiosMap() {
   const table = encodeURIComponent(AIRTABLE_STUDIOS_TABLE);
   let url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${table}` +
             `?fields[]=MTEK%20Location%20ID&fields[]=Studio%20name&fields[]=Studio%20email`;
+
   const studiosByLocationId = new Map();
 
   while (url) {
-    const data = await fetchJson(url, { headers: AIRTABLE_HEADERS });
+    const data = await fetchJsonSimple(url, { headers: AIRTABLE_HEADERS });
+
     for (const rec of data.records || []) {
       const fields = rec.fields || {};
       const mtekId = fields['MTEK Location ID'];
@@ -76,6 +142,7 @@ async function loadStudiosMap() {
         });
       }
     }
+
     if (data.offset) {
       url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${table}` +
             `?fields[]=MTEK%20Location%20ID&fields[]=Studio%20name&fields[]=Studio%20email&offset=${data.offset}`;
@@ -91,23 +158,42 @@ async function loadStudiosMap() {
  * Main
  **************************************************/
 async function main() {
-  const dateStr = getDateStringInTimeZone(TIMEZONE, 1); // tomorrow
-  console.log(`Querying reservations for date: ${dateStr}`);
+  // Local time "now" in TIMEZONE, but using tomorrow's date
+  const { year, month, day, hour } = getLocalDateHour(TIMEZONE, 1); // +1 day = tomorrow
+
+  console.log(`Local hour in ${TIMEZONE}: ${hour}:00 (tomorrow's date ${year}-${month}-${day})`);
+
+  if (!ACTIVE_HOURS.has(hour)) {
+    console.log('Current hour is outside active class hours, nothing to do. Exiting.');
+    return;
+  }
+
+  const hourStr = String(hour).padStart(2, '0');
+  const nextHour = (hour + 1) % 24;
+  const nextHourStr = String(nextHour).padStart(2, '0');
+
+  const startDateTime = `${year}-${month}-${day}T${hourStr}:00:00`;
+  const endDateTime   = `${year}-${month}-${day}T${nextHourStr}:00:00`;
+
+  console.log(`Querying reservations for window: ${startDateTime} → ${endDateTime}`);
 
   const reservationsUrl =
     `${MTEK_BASE}/reservations` +
-    `?class_session_min_date=${encodeURIComponent(dateStr)}` +
-    `&class_session_max_date=${encodeURIComponent(dateStr)}` +
+    `?class_session_min_datetime=${encodeURIComponent(startDateTime)}` +
+    `&class_session_max_datetime=${encodeURIComponent(endDateTime)}` +
     `&status=pending`;
 
   console.log(`Reservations URL: ${reservationsUrl}`);
 
-  const reservationsPayload = await fetchJson(reservationsUrl, { headers: MTEK_HEADERS });
+  const reservationsPayload = await fetchJsonWithRateLimit(
+    reservationsUrl,
+    { headers: MTEK_HEADERS }
+  );
   const reservations = reservationsPayload.data || [];
-  console.log(`Found ${reservations.length} reservations`);
+  console.log(`Found ${reservations.length} reservations in this hour window`);
 
   if (!reservations.length) {
-    console.log('Nothing to do, exiting.');
+    console.log('Nothing to do for this window, exiting.');
     return;
   }
 
@@ -134,14 +220,18 @@ async function main() {
     }
 
     try {
-      const classSessionPromise = fetchJson(
+      // Fetch class session + user (user may be null)
+      const classSessionPromise = fetchJsonWithRateLimit(
         `${MTEK_BASE}/class_sessions/${classSessionId}`,
         { headers: MTEK_HEADERS }
       );
 
       let userJson = null;
       if (userId) {
-        userJson = await fetchJson(`${MTEK_BASE}/users/${userId}`, { headers: MTEK_HEADERS });
+        userJson = await fetchJsonWithRateLimit(
+          `${MTEK_BASE}/users/${userId}`,
+          { headers: MTEK_HEADERS }
+        );
       }
 
       const classSessionJson = await classSessionPromise;
@@ -151,6 +241,7 @@ async function main() {
       const userData = userJson ? userJson.data : null;
       const userAttrs = userData?.attributes || {};
 
+      // Studio lookup
       const locationId = classSessionData?.relationships?.location?.data?.id;
       let studioName = '';
       let studioEmail = '';
@@ -161,6 +252,7 @@ async function main() {
         studioEmail = studio.email;
       }
 
+      // Build payload fields
       const userEmail = userAttrs.email || '';
       const firstName = userAttrs.first_name || '';
 
@@ -209,7 +301,7 @@ async function main() {
     }
   }
 
-  console.log(`Done. Successfully sent ${processed} reservations to the webhook.`);
+  console.log(`Done. Successfully sent ${processed} reservations to the webhook for this window.`);
 }
 
 main().catch(err => {
