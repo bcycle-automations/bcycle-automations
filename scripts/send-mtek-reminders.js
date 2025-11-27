@@ -246,16 +246,36 @@ async function main() {
         instructorNames = classAttrs.instructor_names;
       }
 
-      // Class date & time (in America/Toronto) for email display
-      const classStartIso =
-        attrs.class_session_min_datetime ||
-        classAttrs.class_session_min_datetime ||
-        null;
+      // Class date & time based on start_date/start_time attributes
+      const startDateRaw =
+        classAttrs.start_date ||
+        attrs.start_date ||
+        null; // e.g. "2025-11-27"
+
+      const startTimeRaw =
+        classAttrs.start_time ||
+        attrs.start_time ||
+        null; // e.g. "07:00:00"
 
       let classDateFormatted = '';
       let classTimeFormatted = '';
 
-      if (classStartIso) {
+      if (startDateRaw && /^\d{4}-\d{2}-\d{2}$/.test(startDateRaw)) {
+        const [y, m, d] = startDateRaw.split('-');
+        classDateFormatted = `${d}-${m}-${y}`; // DD-MM-YYYY
+      }
+
+      if (startTimeRaw && /^\d{2}:\d{2}/.test(startTimeRaw)) {
+        // take HH:MM from HH:MM:SS
+        classTimeFormatted = startTimeRaw.slice(0, 5); // HH:MM
+      }
+
+      // Fallback: if those didn't work, try ISO datetime conversion
+      if ((!classDateFormatted || !classTimeFormatted) && (attrs.class_session_min_datetime || classAttrs.class_session_min_datetime)) {
+        const classStartIso =
+          attrs.class_session_min_datetime ||
+          classAttrs.class_session_min_datetime;
+
         const dt = new Date(classStartIso);
 
         const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -277,8 +297,12 @@ async function main() {
         const hourLocal = get('hour');
         const minuteLocal = get('minute');
 
-        classDateFormatted = `${dayLocal}-${monthLocal}-${yearLocal}`;   // DD-MM-YYYY
-        classTimeFormatted = `${hourLocal}:${minuteLocal}`;             // HH:MM
+        if (!classDateFormatted) {
+          classDateFormatted = `${dayLocal}-${monthLocal}-${yearLocal}`;
+        }
+        if (!classTimeFormatted) {
+          classTimeFormatted = `${hourLocal}:${minuteLocal}`;
+        }
       }
 
       const emailTo = guestEmail || userEmail || '';
@@ -294,7 +318,7 @@ async function main() {
         studio_name: studioName,
         studio_email: studioEmail,
         class_date: classDateFormatted, // DD-MM-YYYY
-        class_time: classTimeFormatted, // HH:MM in America/Toronto
+        class_time: classTimeFormatted, // HH:MM
       };
 
       const webhookRes = await fetch(MAKE_WEBHOOK_URL, {
