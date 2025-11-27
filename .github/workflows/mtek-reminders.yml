@@ -1,0 +1,31 @@
+name: MTEK Reminder Emails
+
+on:
+  schedule:
+    # Every day at 22:00 UTC (~5pm Montreal in standard time)
+    - cron: "0 22 * * *"
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch: {}
+
+jobs:
+  send-reminders:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run MTEK reminders script
+        run: node scripts/send-mtek-reminders.js
+        env:
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_STUDIOS_TABLE: ${{ secrets.AIRTABLE_STUDIOS_TABLE }}
+          MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
+          TIMEZONE: "America/Toronto"
