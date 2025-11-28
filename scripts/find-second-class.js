@@ -41,7 +41,7 @@ async function fetchAllAirtableCustomers() {
   const base = `${AIRTABLE_BASE_URL}/${CUSTOMER_BASE_ID}/${table}`;
 
   // Only filter on First Class Taken = 1
-  const formula = `{First Class Taken} = 1`;
+  const formula = `AND({First Class Taken} = 1, {2nd Class Taken} = 0)`;
   let url = `${base}?filterByFormula=${encodeURIComponent(formula)}`;
 
   const records = [];
