@@ -35,13 +35,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Airtable: get all customers matching the criteria
+// Airtable: get all customers where First Class Taken is checked
 async function fetchAllAirtableCustomers() {
   const table = encodeURIComponent(CUSTOMERS_TABLE_NAME);
   const base = `${AIRTABLE_BASE_URL}/${CUSTOMER_BASE_ID}/${table}`;
 
-  // Lead status - $15 = "First Class" AND First Class Taken is checked
-  const formula = `AND({Lead status - $15} = 'First Class', {First Class Taken} = 1)`;
+  // Only filter on First Class Taken = 1
+  const formula = `{First Class Taken} = 1`;
   let url = `${base}?filterByFormula=${encodeURIComponent(formula)}`;
 
   const records = [];
@@ -113,17 +113,38 @@ async function fetchJsonWithRateLimit(url, options = {}, maxRetries = 5) {
 }
 
 /**************************************************
- * MTEK: fetch ALL reservations for a given user email
- * No status filter – we want every reservation, any status.
+ * MTEK: get user ID from email, then reservations by user ID
  **************************************************/
-async function fetchReservationsForEmail(email) {
-  if (!email) return [];
 
-  // If MTEK uses a different filter syntax (e.g. filter[user_email]),
-  // adjust this query param accordingly.
+// 1) Find user ID by email using /users?email=
+async function findUserIdByEmail(email) {
+  if (!email) return null;
+
+  const url =
+    `${MTEK_BASE}/users` +
+    `?email=${encodeURIComponent(email)}`;
+
+  const data = await fetchJsonWithRateLimit(url, { headers: MTEK_HEADERS });
+  const users = data.data || [];
+
+  if (!users.length) return null;
+
+  if (users.length > 1) {
+    console.warn(
+      `Warning: multiple users found for email ${email}, using the first one (id=${users[0].id})`
+    );
+  }
+
+  return users[0].id;
+}
+
+// 2) Fetch reservations for that user ID using /reservations?user=
+async function fetchReservationsForUser(userId) {
+  if (!userId) return [];
+
   const url =
     `${MTEK_BASE}/reservations` +
-    `?user_email=${encodeURIComponent(email)}`;
+    `?user=${encodeURIComponent(userId)}`;
 
   const data = await fetchJsonWithRateLimit(url, { headers: MTEK_HEADERS });
   const reservations = data.data || [];
@@ -131,12 +152,11 @@ async function fetchReservationsForEmail(email) {
 }
 
 /**************************************************
- * Sort reservations and extract second + full status list
+ * Sort reservations and build summary
  **************************************************/
 function extractSecondAndSummary(reservations) {
   if (!reservations.length) return null;
 
-  // Sort by datetime ascending so "second" is truly the 2nd class
   const sorted = [...reservations].sort((a, b) => {
     const aAttrs = a.attributes || {};
     const bAttrs = b.attributes || {};
@@ -159,14 +179,14 @@ function extractSecondAndSummary(reservations) {
     const classSessionId = rels.class_session?.data?.id || null;
 
     return {
-      order: index + 1,                         // 1st, 2nd, 3rd, ...
+      order: index + 1,         // 1st, 2nd, 3rd...
       reservation_id: r.id,
       class_session_id: classSessionId,
-      status: attrs.status || "",               // push status for ALL classes
+      status: attrs.status || "",
     };
   });
 
-  const second = summary[1]; // index 1 = second reservation
+  const second = summary[1];
 
   if (!second || !second.class_session_id) {
     return null;
@@ -184,7 +204,7 @@ function extractSecondAndSummary(reservations) {
 async function main() {
   console.log("Fetching matching customers from Airtable…");
   const customers = await fetchAllAirtableCustomers();
-  console.log(`Found ${customers.length} customer(s) matching criteria.`);
+  console.log(`Found ${customers.length} customer(s) with First Class Taken checked.`);
 
   let processed = 0;
 
@@ -200,18 +220,26 @@ async function main() {
     }
 
     try {
-      console.log(`Fetching ALL reservations for ${email}…`);
-      const reservations = await fetchReservationsForEmail(email);
+      console.log(`Looking up user for email ${email}…`);
+      const userId = await findUserIdByEmail(email);
+
+      if (!userId) {
+        console.log(`No MTEK user found for ${email}, skipping.`);
+        continue;
+      }
+
+      console.log(`Fetching reservations for user ${userId} (${email})…`);
+      const reservations = await fetchReservationsForUser(userId);
 
       if (!reservations.length) {
-        console.log(`No reservations found for ${email}, skipping.`);
+        console.log(`No reservations for ${email}, skipping.`);
         continue;
       }
 
       const info = extractSecondAndSummary(reservations);
       if (!info) {
         console.log(
-          `User ${email} has fewer than 2 reservations or missing class_session relationships, skipping.`
+          `User ${email} has fewer than 2 reservations, skipping.`
         );
         continue;
       }
@@ -221,11 +249,11 @@ async function main() {
       const payload = {
         email,
         airtable_customer_id: rec.id,
+        mtek_user_id: userId,
         second_reservation_id: second.reservation_id,
         second_class_session_id: second.class_session_id,
         second_status: second.status,
-        // full ordered list of all reservations (1st, 2nd, 3rd, 4th...)
-        reservations: summary,
+        reservations: summary, // FULL ordered list with statuses
       };
 
       console.log(
