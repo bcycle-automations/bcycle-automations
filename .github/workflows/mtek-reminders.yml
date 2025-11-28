@@ -2,9 +2,8 @@ name: MTEK Reminder Emails
 
 on:
   schedule:
-    # Every day at 22:00 UTC (~5pm Montreal in standard time)
-    - cron: "0 22 * * *"
-  # Allow manual trigger from GitHub UI
+    # Run every hour
+    - cron: "0 * * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -18,7 +17,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Run MTEK reminders script
         run: node scripts/send-mtek-reminders.js
