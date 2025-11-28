@@ -3,7 +3,7 @@ name: MTEK Second Class Finder
 on:
   schedule:
     # Once per day at 03:00 UTC – change this if you want
-    - cron: "0 3 * * *"
+    - cron: "30 10 * * *"
   workflow_dispatch: {}
 
 jobs:
