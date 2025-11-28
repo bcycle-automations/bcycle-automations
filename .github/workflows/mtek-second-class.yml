@@ -1,0 +1,31 @@
+name: MTEK Second Class Finder
+
+on:
+  schedule:
+    # Once per day at 03:00 UTC – change this if you want
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  find-second-class:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run second class finder
+        env:
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          CUSTOMER_BASE_ID: ${{ secrets.CUSTOMER_BASE_ID }}
+          CUSTOMERS_TABLE_NAME: "Customers"
+          CUSTOMER_EMAIL_FIELD: "Email"
+          SECOND_CLASS_WEBHOOK_URL: ${{ secrets.SECOND_CLASS_WEBHOOK_URL }}
+        run: |
+          node scripts/find-second-class.js
