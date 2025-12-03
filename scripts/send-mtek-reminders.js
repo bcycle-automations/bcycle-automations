@@ -160,7 +160,7 @@ async function main() {
     `${MTEK_BASE}/reservations` +
     `?class_session_min_datetime=${encodeURIComponent(startDateTime)}` +
     `&class_session_max_datetime=${encodeURIComponent(endDateTime)}` +
-    `&status=pending`;
+    `&status=pending&page_size=1000`;
 
   console.log(`Reservations URL: ${reservationsUrl}`);
 
