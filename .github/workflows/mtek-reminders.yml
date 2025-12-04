@@ -6,6 +6,10 @@ on:
     - cron: "0 * * * *"
   workflow_dispatch: {}
 
+# Needed so the workflow can commit the updated state JSON file
+permissions:
+  contents: write
+
 jobs:
   send-reminders:
     runs-on: ubuntu-latest
@@ -13,6 +17,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Needed so git can commit & push
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -28,3 +34,18 @@ jobs:
           AIRTABLE_STUDIOS_TABLE: ${{ secrets.AIRTABLE_STUDIOS_TABLE }}
           MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
           TIMEZONE: "America/Toronto"
+
+      - name: Commit updated state file
+        run: |
+          # Check if the state file changed
+          if git status --porcelain | grep "state/mtek-reminder-state.json"; then
+            echo "State file changed. Committing..."
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            git add state/mtek-reminder-state.json
+            git commit -m "Update reminder state [skip ci]" || echo "Nothing to commit"
+            git push
+          else
+            echo "No state changes to commit."
+          fi
