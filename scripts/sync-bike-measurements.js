@@ -80,10 +80,10 @@ async function fetchRecentlyModifiedRecords() {
  * Shoe Size: {Shoe Size}
  */
 function buildMeasurementText(fields) {
-  const seatHeight = fields['Seat Height'] ?? '';
-  const seatPosition = fields['Seat Position'] ?? '';
-  const handlebarHeight = fields['Handlebar Height'] ?? '';
-  const handlebarPosition = fields['Handlebar Position'] ?? '';
+  const seatHeight = fields['Seat height'] ?? '';
+  const seatPosition = fields['Seat position'] ?? '';
+  const handlebarHeight = fields['Handlebar height'] ?? '';
+  const handlebarPosition = fields['Handlebar position'] ?? '';
   const shoeSize = fields['Shoe Size'] ?? '';
 
   return [
