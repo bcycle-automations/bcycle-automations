@@ -40,7 +40,7 @@ const MTEK_HEADERS = {
  */
 async function fetchRecentlyModifiedRecords() {
   const filterFormula =
-    "IS_AFTER({MEASUREMENT LAST MODIFIED}, DATEADD(NOW(), -1, 'day'))";
+    "RECORD_ID()='rec2sJaYkBQHE5aI9';
 
   let records = [];
   let offset;
