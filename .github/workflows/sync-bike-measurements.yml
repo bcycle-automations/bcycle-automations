@@ -32,8 +32,7 @@ jobs:
 
       - name: Sync bike measurements from Airtable to Mariana Tek
         env:
-          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN_MEASUREMENTS
- }}
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN_MEASUREMENTS }}
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           CUSTOMER_BASE_ID: ${{ secrets.CUSTOMER_BASE_ID }}
           AIRTABLE_MEASUREMENTS_TABLE: ${{ secrets.AIRTABLE_MEASUREMENTS_TABLE }}
