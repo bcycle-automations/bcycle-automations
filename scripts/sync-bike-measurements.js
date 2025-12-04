@@ -39,8 +39,7 @@ const MTEK_HEADERS = {
  * This approximates “since last update” without needing separate state storage.
  */
 async function fetchRecentlyModifiedRecords() {
-  const filterFormula =
-    "RECORD_ID()='rec2sJaYkBQHE5aI9';
+  const filterFormula = "RECORD_ID()='rec2sJaYkBQHE5aI9'";
 
   let records = [];
   let offset;
