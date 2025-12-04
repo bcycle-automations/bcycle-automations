@@ -40,8 +40,7 @@ const MTEK_HEADERS = {
  * Pull records where MEASUREMENT LAST MODIFIED is within the last 24 hours.
  */
 async function fetchRecentlyModifiedRecords() {
-  const filterFormula =
-    "IS_AFTER({MEASUREMENT LAST MODIFIED}, DATEADD(NOW(), -1, 'day'))";
+  const filterFormula = "RECORD_ID()='rec2sJaYkBQHE5aI9'";
 
   let records = [];
   let offset;
