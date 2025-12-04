@@ -172,44 +172,45 @@ async function updateUserNote(noteId, userId, text) {
 
   const payload = {
     data: {
-      type: 'user_notes',
+      type: "user_notes",
       id: String(noteId),
       attributes: {
-        archived_at: null,
-        note_datetime: nowIso,
         text,
-        // you can keep is_pinned if you want it always pinned:
         is_pinned: true,
+        archived_at: null,
+        note_datetime: nowIso
       },
       relationships: {
-        user: {
-          data: {
-            type: 'users',
-            id: String(userId),
-          },
-        },
         author: {
           data: {
-            type: 'users',
-            id: AUTHOR_USER_ID,
-          },
+            type: "users",
+            id: AUTHOR_USER_ID
+          }
         },
-      },
-    },
+        user: {
+          data: {
+            type: "users",
+            id: String(userId)
+          }
+        }
+      }
+    }
   };
 
   const url = `${MTEK_BASE}/user_notes/${encodeURIComponent(noteId)}`;
   const res = await fetch(url, {
-    method: 'PATCH',
+    method: "PATCH",
     headers: MTEK_HEADERS,
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload)
   });
 
   if (!res.ok) {
     const textBody = await res.text();
-    throw new Error(
+    const err = new Error(
       `Failed to update user note ${noteId}: ${res.status} ${res.statusText} - ${textBody}`
     );
+    err.status = res.status;
+    throw err;
   }
 }
 
@@ -221,33 +222,33 @@ async function updateUserNote(noteId, userId, text) {
 async function createUserNote(userId, text) {
   const payload = {
     data: {
-      type: 'user_notes',
+      type: "user_notes",
       attributes: {
         text,
-        is_pinned: true,
+        is_pinned: true
       },
       relationships: {
-        user: {
-          data: {
-            type: 'users',
-            id: String(userId),
-          },
-        },
         author: {
           data: {
-            type: 'users',
-            id: AUTHOR_USER_ID,
-          },
+            type: "users",
+            id: AUTHOR_USER_ID
+          }
         },
-      },
-    },
+        user: {
+          data: {
+            type: "users",
+            id: String(userId)
+          }
+        }
+      }
+    }
   };
 
   const url = `${MTEK_BASE}/user_notes`;
   const res = await fetch(url, {
-    method: 'POST',
+    method: "POST",
     headers: MTEK_HEADERS,
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload)
   });
 
   if (!res.ok) {
