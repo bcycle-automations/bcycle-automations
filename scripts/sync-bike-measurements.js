@@ -137,7 +137,6 @@ async function updateUserNote(noteId, userId, text) {
       type: 'user_notes',
       id: String(noteId),
       attributes: {
-        author: NOTE_AUTHOR,
         text,
         is_pinned: true,
       },
@@ -176,7 +175,6 @@ async function createUserNote(userId, text) {
     data: {
       type: 'user_notes',
       attributes: {
-        author: NOTE_AUTHOR,
         text,
         is_pinned: true,
       },
