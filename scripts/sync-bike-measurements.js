@@ -168,12 +168,17 @@ async function getUserByEmail(email) {
  * Includes relationships.user and relationships.author (35539 or env override).
  */
 async function updateUserNote(noteId, userId, text) {
+  const nowIso = new Date().toISOString();
+
   const payload = {
     data: {
       type: 'user_notes',
       id: String(noteId),
       attributes: {
+        archived_at: null,
+        note_datetime: nowIso,
         text,
+        // you can keep is_pinned if you want it always pinned:
         is_pinned: true,
       },
       relationships: {
