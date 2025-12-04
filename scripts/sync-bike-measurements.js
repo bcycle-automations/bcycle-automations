@@ -7,7 +7,7 @@ const {
   CUSTOMER_BASE_ID,
   AIRTABLE_MEASUREMENTS_TABLE,
   MTEK_BASE_URL,
-  MTEK_NOTE_AUTHOR,
+  MTEK_AUTHOR_USER_ID, // optional override for author id
 } = process.env;
 
 if (!MTEK_API_TOKEN) throw new Error('Missing env: MTEK_API_TOKEN');
@@ -17,7 +17,7 @@ if (!AIRTABLE_MEASUREMENTS_TABLE)
   throw new Error('Missing env: AIRTABLE_MEASUREMENTS_TABLE');
 
 const MTEK_BASE = MTEK_BASE_URL || 'https://bcycle.marianatek.com/api';
-const NOTE_AUTHOR = MTEK_NOTE_AUTHOR || 'Bike Measurement Automation';
+const AUTHOR_USER_ID = String(MTEK_AUTHOR_USER_ID || '35539'); // 35539 by default
 
 const AIRTABLE_BASE_URL = `https://api.airtable.com/v0/${CUSTOMER_BASE_ID}/${encodeURIComponent(
   AIRTABLE_MEASUREMENTS_TABLE
@@ -34,12 +34,14 @@ const MTEK_HEADERS = {
   Accept: 'application/vnd.api+json',
 };
 
+// ------------------------- Airtable helpers -------------------------
+
 /**
  * Pull records where MEASUREMENT LAST MODIFIED is within the last 24 hours.
- * This approximates “since last update” without needing separate state storage.
  */
 async function fetchRecentlyModifiedRecords() {
-  const filterFormula = "RECORD_ID()='rec2sJaYkBQHE5aI9'";
+  const filterFormula =
+    "IS_AFTER({MEASUREMENT LAST MODIFIED}, DATEADD(NOW(), -1, 'day'))";
 
   let records = [];
   let offset;
@@ -73,11 +75,13 @@ async function fetchRecentlyModifiedRecords() {
  * Build the measurement note text based on Airtable fields.
  *
  * Bike Measurements:
- * Seat Height: {Seat Height}
- * Seat Position: {Seat Position}
- * Handlebar Height: {Handlebar Height}
- * Handlebar Position: {Handlebar Position}
+ * Seat Height: {Seat height}
+ * Seat Position: {Seat position}
+ * Handlebar Height: {Handlebar height}
+ * Handlebar Position: {Handlebar position}
  * Shoe Size: {Shoe Size}
+ *
+ * Adjust field names here if your Airtable labels differ.
  */
 function buildMeasurementText(fields) {
   const seatHeight = fields['Seat height'] ?? '';
@@ -95,6 +99,38 @@ function buildMeasurementText(fields) {
     `Shoe Size: ${shoeSize}`,
   ].join('\n');
 }
+
+/**
+ * PATCH a single Airtable record with the given fields.
+ */
+async function updateAirtableRecord(recordId, fields) {
+  if (!recordId) return;
+  if (!fields || Object.keys(fields).length === 0) return;
+
+  const payload = {
+    records: [
+      {
+        id: recordId,
+        fields,
+      },
+    ],
+  };
+
+  const res = await fetch(AIRTABLE_BASE_URL, {
+    method: 'PATCH',
+    headers: AIRTABLE_HEADERS,
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `Failed to update Airtable record ${recordId}: ${res.status} ${res.statusText} - ${text}`
+    );
+  }
+}
+
+// ------------------------- MTEK helpers -------------------------
 
 /**
  * Look up a user by email in Mariana Tek: GET /users?email=...
@@ -129,7 +165,8 @@ async function getUserByEmail(email) {
 
 /**
  * PUT /user_notes/{id}
- * Update an existing user note with new text (and keep it pinned).
+ * Update an existing user note with new text.
+ * Includes relationships.user and relationships.author (35539 or env override).
  */
 async function updateUserNote(noteId, userId, text) {
   const payload = {
@@ -145,6 +182,12 @@ async function updateUserNote(noteId, userId, text) {
           data: {
             type: 'users',
             id: String(userId),
+          },
+        },
+        author: {
+          data: {
+            type: 'users',
+            id: AUTHOR_USER_ID,
           },
         },
       },
@@ -169,6 +212,7 @@ async function updateUserNote(noteId, userId, text) {
 /**
  * POST /user_notes
  * Create a new pinned note for a user; returns note id.
+ * Includes relationships.user and relationships.author (35539 or env override).
  */
 async function createUserNote(userId, text) {
   const payload = {
@@ -183,6 +227,12 @@ async function createUserNote(userId, text) {
           data: {
             type: 'users',
             id: String(userId),
+          },
+        },
+        author: {
+          data: {
+            type: 'users',
+            id: AUTHOR_USER_ID,
           },
         },
       },
@@ -207,35 +257,7 @@ async function createUserNote(userId, text) {
   return data.data?.id;
 }
 
-/**
- * PATCH a single Airtable record with the given fields.
- */
-async function updateAirtableRecord(recordId, fields) {
-  if (!recordId) return;
-  if (!fields || Object.keys(fields).length === 0) return;
-
-  const payload = {
-    records: [
-      {
-        id: recordId,
-        fields,
-      },
-    ],
-  };
-
-  const res = await fetch(AIRTABLE_BASE_URL, {
-    method: 'PATCH',
-    headers: AIRTABLE_HEADERS,
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `Failed to update Airtable record ${recordId}: ${res.status} ${res.statusText} - ${text}`
-    );
-  }
-}
+// ------------------------- Per-record logic -------------------------
 
 /**
  * Process a single Airtable record according to your logic.
@@ -259,7 +281,7 @@ async function handleRecord(record) {
 
   const text = buildMeasurementText(fields);
 
-  // PATH 1: Measurement Note ID exists → PUT update
+  // PATH 1: Measurement Note ID exists → update that note
   if (measurementNoteId) {
     console.log(
       `Updating existing user note ${measurementNoteId} for Airtable record ${recordId}`
@@ -276,7 +298,7 @@ async function handleRecord(record) {
     return;
   }
 
-  // PATH 2: Measurement Note ID does NOT exist → GET user by email, POST note, update Airtable
+  // PATH 2: Measurement Note ID does NOT exist → create a new note
   console.log(
     `No Measurement Note ID for record ${recordId}; will try creating a new note`
   );
@@ -309,9 +331,8 @@ async function handleRecord(record) {
   await updateAirtableRecord(recordId, updateFields);
 }
 
-/**
- * Main entry point.
- */
+// ------------------------- Main -------------------------
+
 async function main() {
   console.log('Fetching Airtable records modified in the last 24 hours...');
   const records = await fetchRecentlyModifiedRecords();
