@@ -195,7 +195,7 @@ async function updateUserNote(noteId, userId, text) {
 
   const url = `${MTEK_BASE}/user_notes/${encodeURIComponent(noteId)}`;
   const res = await fetch(url, {
-    method: 'PUT',
+    method: 'PATCH',
     headers: MTEK_HEADERS,
     body: JSON.stringify(payload),
   });
