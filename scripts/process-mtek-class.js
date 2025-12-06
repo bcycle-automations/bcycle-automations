@@ -6,10 +6,7 @@ import process from "node:process";
 const AIRTABLE_BASE_ID = "appofCRTxHoIe6dXI";
 const AIRTABLE_BASE_URL = "https://api.airtable.com/v0";
 
-const {
-  AIRTABLE_TOKEN,
-  MTEK_API_TOKEN,
-} = process.env;
+const { AIRTABLE_TOKEN, MTEK_API_TOKEN } = process.env;
 
 // Hard-coded Make webhook URL (you provided this)
 const SECOND_CLASS_WEBHOOK_URL =
@@ -21,8 +18,8 @@ if (!MTEK_API_TOKEN) throw new Error("Missing env: MTEK_API_TOKEN");
 const MTEK_BASE = "https://bcycle.marianatek.com/api";
 
 // Airtable table names in base appofCRTxHoIe6dXI
-// (Classes table is "CTT SYNC DO NOT TOUCH")
-const CLASSES_TABLE_SEGMENT = "CTT%20SYNC%20DO%20NOT%20TOUCH";
+// Classes table is "CTT SYNC DO NOT TOUCH"
+const CLASSES_TABLE_SEGMENT = encodeURIComponent("CTT SYNC DO NOT TOUCH");
 const CLASS_RESERVATIONS_TABLE = "Class Reservations";
 const CUSTOMERS_TABLE = "Customers";
 
@@ -57,6 +54,7 @@ function getClassRecordIdFromEvent() {
 }
 
 async function airtableGetClassRecord(recordId) {
+  // EXACTLY matches your working pattern, with safe encoding
   const url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${CLASSES_TABLE_SEGMENT}/${recordId}`;
   console.log("Airtable GET class URL:", url);
 
@@ -70,9 +68,7 @@ async function airtableGetClassRecord(recordId) {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      `Airtable GET ${url} failed: ${res.status} ${text}`
-    );
+    throw new Error(`Airtable GET ${url} failed: ${res.status} ${text}`);
   }
 
   return res.json();
@@ -228,9 +224,7 @@ async function updateClassLastUpdate(classRecordId) {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      `Airtable PATCH ${url} failed: ${res.status} ${text}`
-    );
+    throw new Error(`Airtable PATCH ${url} failed: ${res.status} ${text}`);
   }
 
   console.log(`> Updated Last update time on class ${classRecordId} -> ${now}`);
