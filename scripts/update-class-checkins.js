@@ -8,7 +8,7 @@ const {
   MTEK_API_TOKEN,
   AIRTABLE_ALL_CLASSES_TABLE,
   AIRTABLE_VIEW_TO_UPDATE,
-  AIRTABLE_FIELD_CLASS_SESSION_ID,
+  AIRTABLE_FIELD_CLASS_ID,
   AIRTABLE_FIELD_COUNT,
 } = process.env;
 
@@ -21,14 +21,13 @@ const AIRTABLE_TABLE_NAME = AIRTABLE_ALL_CLASSES_TABLE || "All Classes";
 const AIRTABLE_VIEW_NAME =
   AIRTABLE_VIEW_TO_UPDATE || "TO UPDATE DO NOT TOUCH";
 
-const FIELD_CLASS_SESSION_ID =
-  AIRTABLE_FIELD_CLASS_SESSION_ID || "Class Session ID";
+const FIELD_CLASS_ID = AIRTABLE_FIELD_CLASS_ID || "Class ID";
 const FIELD_COUNT = AIRTABLE_FIELD_COUNT || "Count";
 
 const MTEK_BASE = "https://bcycle.marianatek.com/api";
 
 /**
- * Fetch all records from Airtable in the specific view.
+ * Fetch all records from Airtable in the "TO UPDATE DO NOT TOUCH" view.
  */
 async function fetchAirtableRecordsFromView() {
   let records = [];
@@ -65,12 +64,13 @@ async function fetchAirtableRecordsFromView() {
 
 /**
  * Fetch check-in reservation count from Mariana Tek for a class session.
+ * Uses: /reservations?class_session=&status=check_in&page_size=1000
  */
-async function fetchCheckInCountForClassSession(classSessionId) {
+async function fetchCheckInCountForClassId(classId) {
   let total = 0;
 
   let nextUrl = `${MTEK_BASE}/reservations?class_session=${encodeURIComponent(
-    classSessionId
+    classId
   )}&status=check_in&page_size=1000`;
 
   while (nextUrl) {
@@ -84,7 +84,7 @@ async function fetchCheckInCountForClassSession(classSessionId) {
     if (!res.ok) {
       const body = await res.text();
       throw new Error(
-        `MTEK reservations error for class_session=${classSessionId} (${res.status}): ${
+        `MTEK reservations error for class_session=${classId} (${res.status}): ${
           body || res.statusText
         }`
       );
@@ -98,7 +98,7 @@ async function fetchCheckInCountForClassSession(classSessionId) {
       total += data.reservations.length;
     } else {
       console.warn(
-        `Unexpected reservations structure for class_session=${classSessionId}`
+        `Unexpected reservations structure for class_session=${classId}`
       );
     }
 
@@ -125,19 +125,17 @@ async function updateAirtableCounts(records) {
     const updates = [];
 
     for (const rec of batch) {
-      const classSessionId = rec.fields[FIELD_CLASS_SESSION_ID];
+      const classId = rec.fields[FIELD_CLASS_ID];
 
-      if (!classSessionId) {
-        console.warn(
-          `Record ${rec.id} missing "${FIELD_CLASS_SESSION_ID}" — skipped`
-        );
+      if (!classId) {
+        console.warn(`Record ${rec.id} missing "${FIELD_CLASS_ID}" — skipped`);
         continue;
       }
 
-      const checkIns = await fetchCheckInCountForClassSession(classSessionId);
+      const checkIns = await fetchCheckInCountForClassId(classId);
 
       console.log(
-        `Record ${rec.id} | session=${classSessionId} | check-ins=${checkIns}`
+        `Record ${rec.id} | Class ID=${classId} | check-ins=${checkIns}`
       );
 
       updates.push({
@@ -172,7 +170,7 @@ async function updateAirtableCounts(records) {
 
 async function main() {
   console.log(
-    `Fetching Airtable records from table "${AIRTABLE_TABLE_NAME}", view "${AIRTABLE_VIEW_NAME}"…`
+    `Fetching Airtable records from base=${AIRTABLE_BASE_ID}, table="${AIRTABLE_TABLE_NAME}", view="${AIRTABLE_VIEW_NAME}"…`
   );
 
   const records = await fetchAirtableRecordsFromView();
