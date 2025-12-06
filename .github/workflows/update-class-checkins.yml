@@ -1,0 +1,37 @@
+name: Update class check-ins from MTEK
+
+on:
+  schedule:
+    # 10:00 UTC ≈ 5:00 AM Eastern (standard time)
+    - cron: "0 10 * * *"
+  workflow_dispatch: {} # allow manual runs for testing
+
+jobs:
+  update-checkins:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run update script
+        run: node scripts/update-class-checkins.js
+        env:
+          # 🔐 from GitHub Secrets
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.INSTRUCTOR_SUBS_BASE_ID }} # <- NEW base ID
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+
+          # 🧾 not secrets – safe to keep here
+          AIRTABLE_ALL_CLASSES_TABLE: "All Classes"
+          AIRTABLE_VIEW_TO_UPDATE: "TO UPDATE DO NOT TOUCH"
+          AIRTABLE_FIELD_CLASS_SESSION_ID: "Class ID"
+          AIRTABLE_FIELD_COUNT: "Count"
