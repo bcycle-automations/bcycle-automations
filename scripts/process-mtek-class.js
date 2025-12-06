@@ -20,7 +20,7 @@ const AIRTABLE_API = "https://api.airtable.com/v0";
 const MTEK_BASE = "https://bcycle.marianatek.com/api";
 
 // Airtable table names (in CUSTOMER_BASE_ID base)
-const CLASSES_TABLE = "Classes";
+const CLASSES_TABLE = "CTT SYNC DO NOT TOUCH";
 const CLASS_RESERVATIONS_TABLE = "Class Reservations";
 const CUSTOMERS_TABLE = "Customers";
 
