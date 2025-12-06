@@ -57,7 +57,6 @@ function getClassRecordIdFromEvent() {
 }
 
 async function airtableGetClassRecord(recordId) {
-  // EXACTLY matches your working Postman pattern
   const url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${CLASSES_TABLE_SEGMENT}/${recordId}`;
   console.log("Airtable GET class URL:", url);
 
