@@ -1,0 +1,21 @@
+name: Sync MTEK class (stub)
+
+on:
+  repository_dispatch:
+    types: [sync_mtek_class]
+
+jobs:
+  sync-class:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Log Airtable class id from dispatch
+        run: node scripts/process-mtek-class.js
