@@ -2,9 +2,9 @@ name: Update class check-ins from MTEK
 
 on:
   schedule:
-    # 10:00 UTC ≈ 5:00 AM Eastern (standard time)
+    # Runs 10:00 UTC = 5:00 AM EST
     - cron: "0 10 * * *"
-  workflow_dispatch: {} # allow manual runs for testing
+  workflow_dispatch: {} # allow manual run
 
 jobs:
   update-checkins:
@@ -19,19 +19,20 @@ jobs:
         with:
           node-version: "22"
 
+      # No dependencies required — script uses built-in Node fetch
       - name: Install dependencies
-        run: npm ci
+        run: echo "No dependencies required"
 
       - name: Run update script
         run: node scripts/update-class-checkins.js
         env:
-          # 🔐 from GitHub Secrets
+          # --- Secrets ---
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
-          AIRTABLE_BASE_ID: ${{ secrets.INSTRUCTOR_SUBS_BASE_ID }} # <- NEW base ID
+          AIRTABLE_BASE_ID: ${{ secrets.INSTRUCTOR_SUBS_BASE_ID }}
           MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
 
-          # 🧾 not secrets – safe to keep here
+          # --- NOT secrets ---
           AIRTABLE_ALL_CLASSES_TABLE: "All Classes"
           AIRTABLE_VIEW_TO_UPDATE: "TO UPDATE DO NOT TOUCH"
-          AIRTABLE_FIELD_CLASS_SESSION_ID: "Class ID"
+          AIRTABLE_FIELD_CLASS_SESSION_ID: "Class Session ID"
           AIRTABLE_FIELD_COUNT: "Count"
