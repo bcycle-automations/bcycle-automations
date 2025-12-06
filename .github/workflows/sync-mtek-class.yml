@@ -9,7 +9,6 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
       CUSTOMER_BASE_ID: ${{ secrets.CUSTOMER_BASE_ID }}
       AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
       MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
