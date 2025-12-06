@@ -23,8 +23,5 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install dependencies
-        run: npm ci || npm install
-
       - name: Process MTEK class
         run: node scripts/process-mtek-class.js
