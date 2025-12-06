@@ -1,4 +1,5 @@
 // scripts/update-class-checkins.js
+
 import process from "node:process";
 
 const {
@@ -27,8 +28,7 @@ const FIELD_COUNT = AIRTABLE_FIELD_COUNT || "Count";
 const MTEK_BASE = "https://bcycle.marianatek.com/api";
 
 /**
- * Fetch all records from Airtable in the "TO UPDATE DO NOT TOUCH" view.
- * You control which rows get updated by putting/removing them from that view.
+ * Fetch all records from Airtable in the specific view.
  */
 async function fetchAirtableRecordsFromView() {
   let records = [];
@@ -49,26 +49,26 @@ async function fetchAirtableRecordsFromView() {
     });
 
     if (!res.ok) {
-      const bodyText = await res.text();
+      const body = await res.text();
       throw new Error(
-        `Airtable list error (${res.status}): ${bodyText || res.statusText}`
+        `Airtable list error (${res.status}): ${body || res.statusText}`
       );
     }
 
-    const body = await res.json();
-    records = records.concat(body.records || []);
-    offset = body.offset;
+    const data = await res.json();
+    records = records.concat(data.records || []);
+    offset = data.offset;
   } while (offset);
 
   return records;
 }
 
 /**
- * Fetch check-in reservations for a given MTEK class_session id.
- * Endpoint: /reservations?class_session=&status=check_in&page_size=1000
+ * Fetch check-in reservation count from Mariana Tek for a class session.
  */
 async function fetchCheckInCountForClassSession(classSessionId) {
   let total = 0;
+
   let nextUrl = `${MTEK_BASE}/reservations?class_session=${encodeURIComponent(
     classSessionId
   )}&status=check_in&page_size=1000`;
@@ -82,32 +82,30 @@ async function fetchCheckInCountForClassSession(classSessionId) {
     });
 
     if (!res.ok) {
-      const bodyText = await res.text();
+      const body = await res.text();
       throw new Error(
         `MTEK reservations error for class_session=${classSessionId} (${res.status}): ${
-          bodyText || res.statusText
+          body || res.statusText
         }`
       );
     }
 
-    const body = await res.json();
+    const data = await res.json();
 
-    // Flexible in case the shape changes a bit
-    if (Array.isArray(body.data)) {
-      total += body.data.length;
-    } else if (Array.isArray(body.reservations)) {
-      total += body.reservations.length;
+    if (Array.isArray(data.data)) {
+      total += data.data.length;
+    } else if (Array.isArray(data.reservations)) {
+      total += data.reservations.length;
     } else {
       console.warn(
-        `Unexpected reservations response structure for class_session=${classSessionId}`
+        `Unexpected reservations structure for class_session=${classSessionId}`
       );
     }
 
-    // Basic pagination handling if present
-    if (body.links && body.links.next) {
-      nextUrl = body.links.next;
-    } else if (body.meta && body.meta.next) {
-      nextUrl = body.meta.next;
+    if (data.links && data.links.next) {
+      nextUrl = data.links.next;
+    } else if (data.meta && data.meta.next) {
+      nextUrl = data.meta.next;
     } else {
       nextUrl = null;
     }
@@ -117,15 +115,13 @@ async function fetchCheckInCountForClassSession(classSessionId) {
 }
 
 /**
- * Update Airtable Count field for a batch of records.
- * Uses PATCH with up to 10 records at a time (Airtable limit).
+ * Update Airtable Count field in batches of 10.
  */
 async function updateAirtableCounts(records) {
   const BATCH_SIZE = 10;
 
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const batch = records.slice(i, i + BATCH_SIZE);
-
     const updates = [];
 
     for (const rec of batch) {
@@ -133,22 +129,20 @@ async function updateAirtableCounts(records) {
 
       if (!classSessionId) {
         console.warn(
-          `Record ${rec.id} has no "${FIELD_CLASS_SESSION_ID}" – skipping`
+          `Record ${rec.id} missing "${FIELD_CLASS_SESSION_ID}" — skipped`
         );
         continue;
       }
 
-      const count = await fetchCheckInCountForClassSession(classSessionId);
+      const checkIns = await fetchCheckInCountForClassSession(classSessionId);
 
       console.log(
-        `Record ${rec.id} | class_session=${classSessionId} | check-ins=${count}`
+        `Record ${rec.id} | session=${classSessionId} | check-ins=${checkIns}`
       );
 
       updates.push({
         id: rec.id,
-        fields: {
-          [FIELD_COUNT]: count,
-        },
+        fields: { [FIELD_COUNT]: checkIns },
       });
     }
 
@@ -168,9 +162,9 @@ async function updateAirtableCounts(records) {
     });
 
     if (!res.ok) {
-      const bodyText = await res.text();
+      const body = await res.text();
       throw new Error(
-        `Airtable update error (${res.status}): ${bodyText || res.statusText}`
+        `Airtable update error (${res.status}): ${body || res.statusText}`
       );
     }
   }
@@ -178,18 +172,19 @@ async function updateAirtableCounts(records) {
 
 async function main() {
   console.log(
-    `Fetching records from Airtable base=${AIRTABLE_BASE_ID}, table="${AIRTABLE_TABLE_NAME}", view="${AIRTABLE_VIEW_NAME}"...`
+    `Fetching Airtable records from table "${AIRTABLE_TABLE_NAME}", view "${AIRTABLE_VIEW_NAME}"…`
   );
+
   const records = await fetchAirtableRecordsFromView();
 
   if (!records.length) {
-    console.log("No records in view – nothing to update.");
+    console.log("No records in view — nothing to update.");
     return;
   }
 
-  console.log(`Found ${records.length} record(s) to process.`);
+  console.log(`Found ${records.length} record(s) to update.`);
   await updateAirtableCounts(records);
-  console.log("Done updating Count field.");
+  console.log("All Count values updated.");
 }
 
 main().catch((err) => {
