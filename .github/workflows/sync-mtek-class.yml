@@ -13,7 +13,6 @@ jobs:
       CUSTOMER_BASE_ID: ${{ secrets.CUSTOMER_BASE_ID }}
       AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
       MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
-      SECOND_CLASS_WEBHOOK_URL: ${{ secrets.SECOND_CLASS_WEBHOOK_URL }}
 
     steps:
       - name: Checkout
@@ -22,10 +21,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
-      - name: Install deps
+      - name: Install dependencies
         run: npm ci || npm install
 
-      - name: Process class
+      - name: Process MTEK class
         run: node scripts/process-mtek-class.js
