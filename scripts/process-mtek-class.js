@@ -3,7 +3,6 @@ import fs from "node:fs";
 import process from "node:process";
 
 const {
-  AIRTABLE_BASE_ID,
   CUSTOMER_BASE_ID,
   AIRTABLE_TOKEN,
   MTEK_API_TOKEN,
@@ -13,7 +12,6 @@ const {
 const SECOND_CLASS_WEBHOOK_URL =
   "https://hook.us2.make.com/njbqpqqh6i6lxr34ycro62pzh6ip5h33";
 
-if (!AIRTABLE_BASE_ID) throw new Error("Missing env: AIRTABLE_BASE_ID");
 if (!CUSTOMER_BASE_ID) throw new Error("Missing env: CUSTOMER_BASE_ID");
 if (!AIRTABLE_TOKEN) throw new Error("Missing env: AIRTABLE_TOKEN");
 if (!MTEK_API_TOKEN) throw new Error("Missing env: MTEK_API_TOKEN");
@@ -21,7 +19,7 @@ if (!MTEK_API_TOKEN) throw new Error("Missing env: MTEK_API_TOKEN");
 const AIRTABLE_API = "https://api.airtable.com/v0";
 const MTEK_BASE = "https://bcycle.marianatek.com/api";
 
-// Airtable table names (change if needed)
+// Airtable table names (in CUSTOMER_BASE_ID base)
 const CLASSES_TABLE = "Classes";
 const CLASS_RESERVATIONS_TABLE = "Class Reservations";
 const CUSTOMERS_TABLE = "Customers";
@@ -56,8 +54,8 @@ function getClassRecordIdFromEvent() {
   return recordId;
 }
 
-async function airtableRequest(baseId, path, options = {}) {
-  const url = `${AIRTABLE_API}/${baseId}/${path}`;
+async function airtableRequest(path, options = {}) {
+  const url = `${AIRTABLE_API}/${CUSTOMER_BASE_ID}/${path}`;
   const res = await fetch(url, {
     ...options,
     headers: {
@@ -79,9 +77,9 @@ async function airtableRequest(baseId, path, options = {}) {
   return res.json();
 }
 
-async function airtableGetRecord(baseId, tableName, recordId) {
+async function airtableGetRecord(tableName, recordId) {
   const path = `${encodeURIComponent(tableName)}/${recordId}`;
-  return airtableRequest(baseId, path);
+  return airtableRequest(path);
 }
 
 async function mtekRequest(path, options = {}) {
@@ -133,7 +131,6 @@ async function upsertCustomer({ email, name }) {
   };
 
   const json = await airtableRequest(
-    CUSTOMER_BASE_ID,
     encodeURIComponent(CUSTOMERS_TABLE),
     {
       method: "PATCH",
@@ -177,7 +174,6 @@ async function upsertClassReservation({
   };
 
   await airtableRequest(
-    AIRTABLE_BASE_ID,
     encodeURIComponent(CLASS_RESERVATIONS_TABLE),
     {
       method: "PATCH",
@@ -205,8 +201,7 @@ async function updateClassLastUpdate(classRecordId) {
   };
 
   await airtableRequest(
-    AIRTABLE_BASE_ID,
-    encodeURIComponent(CASSES_TABLE),
+    encodeURIComponent(CLASSES_TABLE),
     {
       method: "PATCH",
       body: JSON.stringify(body),
@@ -290,7 +285,6 @@ async function main() {
 
   // 1) Get class record from Airtable and read the MTEK Class ID
   const classRecord = await airtableGetRecord(
-    AIRTABLE_BASE_ID,
     CLASSES_TABLE,
     classRecordId
   );
