@@ -33,6 +33,6 @@ jobs:
         env:
           # Use whichever secrets you have; script supports both names
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
-          AIRTABLE_CUSTOMER_BASE_ID: ${{ secrets.AIRTABLE_CUSTOMER_BASE_ID }}
+          CUSTOMER_BASE_ID: ${{ secrets.CUSTOMER_BASE_ID }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
         run: node scripts/clear-class-reservations-view.js
