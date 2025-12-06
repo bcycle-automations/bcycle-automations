@@ -71,7 +71,7 @@ async function fetchCheckInCountForClassId(classId) {
 
   let nextUrl = `${MTEK_BASE}/reservations/?class_session=${encodeURIComponent(
     classId
-  )}&status=check_in&page_size=1000`;
+  )}&status=check in&page_size=1000`;
 
   while (nextUrl) {
     const res = await fetch(nextUrl, {
