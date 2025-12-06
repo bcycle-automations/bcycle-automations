@@ -2,7 +2,7 @@ name: Update class check-ins from MTEK
 
 on:
   schedule:
-    # Runs 10:00 UTC = 5:00 AM EST
+    # 10:00 UTC ≈ 5:00 AM EST
     - cron: "0 10 * * *"
   workflow_dispatch: {} # allow manual run
 
@@ -19,7 +19,6 @@ jobs:
         with:
           node-version: "22"
 
-      # No dependencies required — script uses built-in Node fetch
       - name: Install dependencies
         run: echo "No dependencies required"
 
@@ -34,5 +33,5 @@ jobs:
           # --- NOT secrets ---
           AIRTABLE_ALL_CLASSES_TABLE: "All Classes"
           AIRTABLE_VIEW_TO_UPDATE: "TO UPDATE DO NOT TOUCH"
-          AIRTABLE_FIELD_CLASS_SESSION_ID: "Class Session ID"
+          AIRTABLE_FIELD_CLASS_ID: "Class ID"
           AIRTABLE_FIELD_COUNT: "Count"
