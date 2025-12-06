@@ -1,4 +1,4 @@
-name: Sync MTEK class (stub)
+name: Sync MTEK class
 
 on:
   repository_dispatch:
@@ -7,6 +7,13 @@ on:
 jobs:
   sync-class:
     runs-on: ubuntu-latest
+
+    env:
+      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+      CUSTOMER_BASE_ID: ${{ secrets.CUSTOMER_BASE_ID }}
+      AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+      MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+      SECOND_CLASS_WEBHOOK_URL: ${{ secrets.SECOND_CLASS_WEBHOOK_URL }}
 
     steps:
       - name: Checkout
@@ -17,5 +24,8 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Log Airtable class id from dispatch
+      - name: Install deps
+        run: npm ci || npm install
+
+      - name: Process class
         run: node scripts/process-mtek-class.js
