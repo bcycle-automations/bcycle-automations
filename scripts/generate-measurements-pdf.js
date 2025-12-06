@@ -38,7 +38,7 @@ const GOOGLE_TEMPLATE_SPREADSHEET_ID = "11P2Yn3VYkmH-tq8pEc-oA2fRQerBlyC7OwBHB82
 const GOOGLE_DESTINATION_FOLDER_ID = "19K3Cvfuxr6Zszjvrr0xRtlEX9V5Bg_M6";
 const GOOGLE_SHEET_NAME = "Sheet1";     // tab name in your template
 const MAX_ROWS = 200;                   // how many rows (spots) exist in the template
-const CLASS_NAME_CELL = "B1";           // where to write the class name (adjust to match template)
+const CLASS_NAME_CELL = "A1";           // where to write the class name (adjust to match template)
 
 // -------------------------------
 // SECRETS FROM ENV
