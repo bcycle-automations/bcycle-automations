@@ -69,7 +69,7 @@ async function fetchAirtableRecordsFromView() {
 async function fetchCheckInCountForClassId(classId) {
   let total = 0;
 
-  let nextUrl = `${MTEK_BASE}/reservations?class_session=${encodeURIComponent(
+  let nextUrl = `${MTEK_BASE}/reservations/?class_session=${encodeURIComponent(
     classId
   )}&status=check_in&page_size=1000`;
 
