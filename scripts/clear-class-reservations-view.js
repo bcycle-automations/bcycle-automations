@@ -2,27 +2,26 @@
 import process from 'node:process';
 
 const {
-  AIRTABLE_API_KEY,
   AIRTABLE_TOKEN,
-  AIRTABLE_CUSTOMER_BASE_ID,
-  AIRTABLE_BASE_ID,
+  AIRTABLE_API_KEY, // optional fallback if you ever use it
+  CUSTOMER_BASE_ID,
 } = process.env;
 
-const apiKey = AIRTABLE_API_KEY || AIRTABLE_TOKEN;
+const apiKey = AIRTABLE_TOKEN || AIRTABLE_API_KEY;
 if (!apiKey) {
-  throw new Error('Missing env: AIRTABLE_API_KEY or AIRTABLE_TOKEN');
+  throw new Error('Missing env: AIRTABLE_TOKEN (or AIRTABLE_API_KEY as fallback)');
 }
 
-const baseId = AIRTABLE_CUSTOMER_BASE_ID || AIRTABLE_BASE_ID;
-if (!baseId) {
-  throw new Error('Missing env: AIRTABLE_CUSTOMER_BASE_ID or AIRTABLE_BASE_ID');
+if (!CUSTOMER_BASE_ID) {
+  throw new Error('Missing env: CUSTOMER_BASE_ID');
 }
 
+const BASE_ID = CUSTOMER_BASE_ID;
 const TABLE_NAME = 'Class Reservations';
 const VIEW_NAME = 'TO DELETE DO NOT TOUCH';
 const AIRTABLE_BASE_URL = 'https://api.airtable.com/v0';
 
-// Small safety guard – adjust if needed
+// Safety guard – adjust if needed
 const MAX_RECORDS_TO_DELETE = 50000;
 
 async function fetchAllRecordIds() {
@@ -30,7 +29,7 @@ async function fetchAllRecordIds() {
   let offset;
 
   console.log(
-    `Fetching records from base=${baseId}, table="${TABLE_NAME}", view="${VIEW_NAME}"...`
+    `Fetching records from base=${BASE_ID}, table="${TABLE_NAME}", view="${VIEW_NAME}"...`
   );
 
   do {
@@ -39,11 +38,9 @@ async function fetchAllRecordIds() {
       pageSize: '100',
     });
 
-    if (offset) {
-      params.set('offset', offset);
-    }
+    if (offset) params.set('offset', offset);
 
-    const url = `${AIRTABLE_BASE_URL}/${baseId}/${encodeURIComponent(
+    const url = `${AIRTABLE_BASE_URL}/${BASE_ID}/${encodeURIComponent(
       TABLE_NAME
     )}?${params.toString()}`;
 
@@ -66,9 +63,7 @@ async function fetchAllRecordIds() {
 
     if (Array.isArray(data.records)) {
       for (const rec of data.records) {
-        if (rec?.id) {
-          recordIds.push(rec.id);
-        }
+        if (rec?.id) recordIds.push(rec.id);
       }
     }
 
@@ -100,7 +95,6 @@ async function deleteRecords(recordIds) {
   }
 
   const batches = chunk(recordIds, 10); // Airtable limit per delete call
-
   console.log(`Deleting records in ${batches.length} batch(es)...`);
 
   for (let i = 0; i < batches.length; i++) {
@@ -110,7 +104,7 @@ async function deleteRecords(recordIds) {
       params.append('records[]', id);
     }
 
-    const url = `${AIRTABLE_BASE_URL}/${baseId}/${encodeURIComponent(
+    const url = `${AIRTABLE_BASE_URL}/${BASE_ID}/${encodeURIComponent(
       TABLE_NAME
     )}?${params.toString()}`;
 
