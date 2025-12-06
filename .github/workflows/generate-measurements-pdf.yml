@@ -1,0 +1,31 @@
+name: Generate Measurements PDF
+
+on:
+  workflow_dispatch:
+    inputs:
+      record_id:
+        description: "Airtable Class record ID"
+        required: true
+        type: string
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    env:
+      AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Generate measurements PDF
+        run: node scripts/generate-measurements-pdf.js "${{ github.event.inputs.record_id }}"
