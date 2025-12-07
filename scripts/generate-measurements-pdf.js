@@ -55,7 +55,29 @@ if (!GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error("Missing env: GOOGLE_SERVICE_A
 // -------------------------------
 
 async function getGoogleClients() {
-  const sa = JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON);
+  if (!GOOGLE_SERVICE_ACCOUNT_JSON) {
+    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON env var is empty or not set.");
+  }
+
+  console.log(
+    "GOOGLE_SERVICE_ACCOUNT_JSON length:",
+    GOOGLE_SERVICE_ACCOUNT_JSON.length
+  );
+
+  let sa;
+  try {
+    sa = JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON);
+  } catch (e) {
+    console.error("Failed to JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON):", e.message);
+    throw new Error("Invalid JSON in GOOGLE_SERVICE_ACCOUNT_JSON.");
+  }
+
+  if (!sa.private_key || !sa.client_email || sa.type !== "service_account") {
+    console.error("Service account JSON keys:", Object.keys(sa));
+    throw new Error(
+      "Invalid GOOGLE_SERVICE_ACCOUNT_JSON: missing private_key/client_email or not a service_account."
+    );
+  }
 
   const scopes = [
     "https://www.googleapis.com/auth/drive",
@@ -69,7 +91,6 @@ async function getGoogleClients() {
     scopes
   );
 
-  // REQUIRED or Drive API returns 401
   await jwt.authorize();
 
   const drive = google.drive({ version: "v3", auth: jwt });
