@@ -34,10 +34,11 @@ const RES_FIELDS = {
 };
 
 // Google Sheets / Drive
-const GOOGLE_TEMPLATE_SPREADSHEET_ID = "11P2Yn3VYkmH-tq8pEc-oA2fRQerBlyC7OwBHB82omv4";
+const GOOGLE_TEMPLATE_SPREADSHEET_ID =
+  "11P2Yn3VYkmH-tq8pEc-oA2fRQerBlyC7OwBHB82omv4";
 const GOOGLE_DESTINATION_FOLDER_ID = "19K3Cvfuxr6Zszjvrr0xRtlEX9V5Bg_M6";
 const GOOGLE_SHEET_NAME = "Sheet1";
-const CLASS_NAME_CELL = "A1";  // Write class name into A1
+const CLASS_NAME_CELL = "A1"; // where the class name goes
 const MAX_ROWS = 200;
 
 // -------------------------------
@@ -45,43 +46,43 @@ const MAX_ROWS = 200;
 // -------------------------------
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
-const GOOGLE_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID;
+const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+const GOOGLE_OAUTH_REFRESH_TOKEN = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
 
 if (!AIRTABLE_TOKEN) throw new Error("Missing env: AIRTABLE_TOKEN");
-if (!GOOGLE_SERVICE_ACCOUNT_JSON) throw new Error("Missing env: GOOGLE_SERVICE_ACCOUNT_JSON");
+if (!GOOGLE_OAUTH_CLIENT_ID)
+  throw new Error("Missing env: GOOGLE_OAUTH_CLIENT_ID");
+if (!GOOGLE_OAUTH_CLIENT_SECRET)
+  throw new Error("Missing env: GOOGLE_OAUTH_CLIENT_SECRET");
+if (!GOOGLE_OAUTH_REFRESH_TOKEN)
+  throw new Error("Missing env: GOOGLE_OAUTH_REFRESH_TOKEN");
 
 // -------------------------------
-// GOOGLE AUTH
+// GOOGLE AUTH (OAuth2 with refresh token)
 // -------------------------------
 
 async function getGoogleClients() {
-  if (!GOOGLE_SERVICE_ACCOUNT_JSON) {
-    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON env var is empty or not set.");
-  }
-
-  let sa;
-  try {
-    sa = JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON);
-  } catch (e) {
-    console.error("Failed to JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON):", e.message);
-    throw new Error("Invalid JSON in GOOGLE_SERVICE_ACCOUNT_JSON.");
-  }
-
   const scopes = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
   ];
 
-  // Use GoogleAuth with explicit credentials instead of raw JWT
-  const auth = new google.auth.GoogleAuth({
-    credentials: sa,
-    scopes,
+  const oauth2Client = new google.auth.OAuth2(
+    GOOGLE_OAUTH_CLIENT_ID,
+    GOOGLE_OAUTH_CLIENT_SECRET
+  );
+
+  // Use your refresh token; client will auto-refresh access tokens
+  oauth2Client.setCredentials({
+    refresh_token: GOOGLE_OAUTH_REFRESH_TOKEN,
   });
 
-  const client = await auth.getClient();
+  // Sanity check – throws if credentials are invalid
+  await oauth2Client.getAccessToken();
 
-  const drive = google.drive({ version: "v3", auth: client });
-  const sheets = google.sheets({ version: "v4", auth: client });
+  const drive = google.drive({ version: "v3", auth: oauth2Client });
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
 
   return { drive, sheets };
 }
@@ -103,7 +104,9 @@ async function airtableGetRecord(tableName, recordId) {
 
   if (!res.ok) {
     const txt = await res.text();
-    throw new Error(`Airtable GET ${tableName}/${recordId} failed: ${res.status} ${txt}`);
+    throw new Error(
+      `Airtable GET ${tableName}/${recordId} failed: ${res.status} ${txt}`
+    );
   }
 
   return res.json();
@@ -125,7 +128,9 @@ async function airtableUpdateRecord(tableName, recordId, fields) {
 
   if (!res.ok) {
     const txt = await res.text();
-    throw new Error(`Airtable PATCH ${tableName}/${recordId} failed: ${res.status} ${txt}`);
+    throw new Error(
+      `Airtable PATCH ${tableName}/${recordId} failed: ${res.status} ${txt}`
+    );
   }
 
   return res.json();
@@ -151,7 +156,9 @@ function normalizeSpot(val) {
 async function main() {
   const recordId = process.argv[2];
   if (!recordId) {
-    console.error("Usage: node generate-measurements-pdf.js <CLASS_RECORD_ID>");
+    console.error(
+      "Usage: node scripts/generate-measurements-pdf.js <CLASS_RECORD_ID>"
+    );
     process.exit(1);
   }
 
@@ -164,10 +171,13 @@ async function main() {
   const classRecord = await airtableGetRecord(AIRTABLE_CLASSES_TABLE, recordId);
   const cf = classRecord.fields || {};
 
-  const className = cf[CLASS_FIELDS.NAME] || recordId;
+  const className =
+    (cf[CLASS_FIELDS.NAME] && String(cf[CLASS_FIELDS.NAME]).trim()) ||
+    recordId;
 
-  const reservationIds =
-    Array.isArray(cf[CLASS_FIELDS.RESERVATIONS]) ? cf[CLASS_FIELDS.RESERVATIONS] : [];
+  const reservationIds = Array.isArray(cf[CLASS_FIELDS.RESERVATIONS])
+    ? cf[CLASS_FIELDS.RESERVATIONS]
+    : [];
 
   console.log(`Found ${reservationIds.length} reservations`);
 
@@ -175,13 +185,14 @@ async function main() {
   const copyResp = await drive.files.copy({
     fileId: GOOGLE_TEMPLATE_SPREADSHEET_ID,
     requestBody: {
-      name: `Class Info + Measurements – ${className}`,
+      name: `Class Info + Measurements - ${className}`,
       parents: [GOOGLE_DESTINATION_FOLDER_ID],
     },
   });
 
   const spreadsheetId = copyResp.data.id;
-  if (!spreadsheetId) throw new Error("Drive copy failed (no new spreadsheet ID)");
+  if (!spreadsheetId)
+    throw new Error("Drive copy failed (no new spreadsheet ID)");
 
   console.log("New spreadsheet:", spreadsheetId);
 
@@ -203,8 +214,10 @@ async function main() {
   const spotToRow = {};
 
   for (let i = 0; i < spotRows.length; i++) {
-    const spot = normalizeSpot(spotRows[i][0]);
-    if (spot) spotToRow[spot] = i + 1;
+    const row = spotRows[i];
+    if (!row || row.length === 0) continue;
+    const spot = normalizeSpot(row[0]);
+    if (spot) spotToRow[spot] = i + 1; // sheet rows are 1-based
   }
 
   console.log("Mapped spot numbers:", Object.keys(spotToRow).length);
