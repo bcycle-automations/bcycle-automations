@@ -11,6 +11,7 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
+
     env:
       AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -24,8 +25,8 @@ jobs:
         with:
           node-version: 22
 
-- name: Install deps
-  run: npm install googleapis
+      - name: Install deps
+        run: npm install googleapis
 
       - name: Generate measurements PDF
         run: node scripts/generate-measurements-pdf.js "${{ github.event.inputs.record_id }}"
