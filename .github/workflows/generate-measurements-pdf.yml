@@ -24,8 +24,8 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install deps
-        run: npm ci
+- name: Install deps
+  run: npm install googleapis
 
       - name: Generate measurements PDF
         run: node scripts/generate-measurements-pdf.js "${{ github.event.inputs.record_id }}"
