@@ -107,7 +107,7 @@ async function airtableUpdateRecord(tableName, recordId, fields) {
   )}/${recordId}`;
 
   const res = await fetch(url, {
-    method: "PATCH,
+    method: "PATCH",
     headers: {
       Authorization: `Bearer ${AIRTABLE_TOKEN}`,
       "Content-Type": "application/json",
