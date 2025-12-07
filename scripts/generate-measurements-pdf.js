@@ -59,11 +59,6 @@ async function getGoogleClients() {
     throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON env var is empty or not set.");
   }
 
-  console.log(
-    "GOOGLE_SERVICE_ACCOUNT_JSON length:",
-    GOOGLE_SERVICE_ACCOUNT_JSON.length
-  );
-
   let sa;
   try {
     sa = JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON);
@@ -72,36 +67,21 @@ async function getGoogleClients() {
     throw new Error("Invalid JSON in GOOGLE_SERVICE_ACCOUNT_JSON.");
   }
 
-  // DEBUG: show what fields exist (NOT the values)
-  const keys = Object.keys(sa);
-  console.log("Service account JSON keys:", keys);
-
-  console.log("Service account type:", sa.type);
-  console.log("Has private_key:", !!sa.private_key);
-  console.log("Has client_email:", !!sa.client_email);
-
-  if (!sa.private_key || !sa.client_email || sa.type !== "service_account") {
-    throw new Error(
-      "Invalid GOOGLE_SERVICE_ACCOUNT_JSON: missing private_key/client_email or not type=service_account."
-    );
-  }
-
   const scopes = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
   ];
 
-  const jwt = new google.auth.JWT(
-    sa.client_email,
-    null,
-    sa.private_key,
-    scopes
-  );
+  // Use GoogleAuth with explicit credentials instead of raw JWT
+  const auth = new google.auth.GoogleAuth({
+    credentials: sa,
+    scopes,
+  });
 
-  await jwt.authorize();
+  const client = await auth.getClient();
 
-  const drive = google.drive({ version: "v3", auth: jwt });
-  const sheets = google.sheets({ version: "v4", auth: jwt });
+  const drive = google.drive({ version: "v3", auth: client });
+  const sheets = google.sheets({ version: "v4", auth: client });
 
   return { drive, sheets };
 }
