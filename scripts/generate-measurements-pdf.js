@@ -72,10 +72,17 @@ async function getGoogleClients() {
     throw new Error("Invalid JSON in GOOGLE_SERVICE_ACCOUNT_JSON.");
   }
 
+  // DEBUG: show what fields exist (NOT the values)
+  const keys = Object.keys(sa);
+  console.log("Service account JSON keys:", keys);
+
+  console.log("Service account type:", sa.type);
+  console.log("Has private_key:", !!sa.private_key);
+  console.log("Has client_email:", !!sa.client_email);
+
   if (!sa.private_key || !sa.client_email || sa.type !== "service_account") {
-    console.error("Service account JSON keys:", Object.keys(sa));
     throw new Error(
-      "Invalid GOOGLE_SERVICE_ACCOUNT_JSON: missing private_key/client_email or not a service_account."
+      "Invalid GOOGLE_SERVICE_ACCOUNT_JSON: missing private_key/client_email or not type=service_account."
     );
   }
 
