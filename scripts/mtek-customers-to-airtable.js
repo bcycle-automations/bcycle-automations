@@ -1,4 +1,5 @@
-// scripts/mtek-customers-to-airtable.js
+// scripts/mtek-customers-to-airhook.js
+// Or reuse your existing filename (e.g. mtek-customers-to-airtable.js) in the workflow.
 
 // =====================
 // CONFIG / ENV
@@ -12,11 +13,8 @@ const REPORT_ID = process.env.MTEK_CUSTOMERS_REPORT_ID || "336";
 const REPORT_SLUG = process.env.MTEK_CUSTOMERS_REPORT_SLUG || "customers-details";
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 
-// Airtable
-const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
-const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID; // e.g. appXXXXXXXXXXXXXX
-const CUSTOMERS_TABLE = process.env.AIRTABLE_CUSTOMERS_TABLE || "Customers";
-const STUDIOS_TABLE = process.env.AIRTABLE_STUDIOS_TABLE || "Studio";
+// Hard-coded Make webhook URL (as requested)
+const WEBHOOK_URL = "https://hook.us2.make.com/pmp8d9nca57ur9ifaai8vusahpxsi3ip";
 
 // If TARGET_DATE not provided, default = yesterday (UTC)
 function getDefaultDate() {
@@ -25,45 +23,6 @@ function getDefaultDate() {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
 const TARGET_DATE = process.env.TARGET_DATE || getDefaultDate();
-
-// =====================
-// COLUMN INDICES (1-based, from your Postman dump)
-// =====================
-//
-// headers: ["Customer ID", "Email", "First Name", "Last Name", "Full Name",
-//           "Join Date", "Created At Date", "Updated At Date", "Phone Number",
-//           ..., "Home Location", ..., "Total Upcoming Reservations", ...]
-//
-// Sample row you pasted:
-//
-//  1 115613
-//  2 "m-julia.boucher@hotmail.com"
-//  3 "Marie-Julia"
-//  4 "Boucher"
-//  5 "Marie-Julia Boucher"
-//  6 "2025-12-09T23:43:39.308080Z"  (Join Date)
-//  ...
-// 25 "Rockland"                     (Home Location)
-// ...
-// 48 1                              (Total Upcoming Reservations)
-
-const COL_EMAIL          = 2;
-const COL_FIRST_NAME     = 3;
-const COL_LAST_NAME      = 4;
-const COL_FULL_NAME      = 5;
-const COL_DATE_JOINED    = 6;
-const COL_HOME_STUDIO    = 25;
-const COL_TOTAL_UPCOMING = 48;
-
-// =====================
-// AIRTABLE FIELD NAMES
-// =====================
-
-const FIELD_EMAIL            = "Email";
-const FIELD_EMAIL_LOWER      = "Email (lower)";  // optional; we try to set it if exists
-const FIELD_NAME             = "Name";
-const FIELD_PROFILE_CREATED  = "Profile Created";
-const FIELD_PREFERRED_STUDIO = "Preferred Studio";
 
 // =====================
 // SANITY CHECKS
@@ -76,23 +35,11 @@ console.log(
     ? `yes (starts with ${MTEK_API_TOKEN.slice(0, 4)}..., len=${MTEK_API_TOKEN.length})`
     : "NO"
 );
-console.log(
-  "AIRTABLE_TOKEN present?",
-  AIRTABLE_TOKEN ? "yes" : "NO"
-);
-console.log("Airtable base:", AIRTABLE_BASE_ID);
 console.log("Target date:", TARGET_DATE);
+console.log("Webhook URL:", WEBHOOK_URL);
 
 if (!MTEK_API_TOKEN) {
   console.error("❌ Missing or empty MTEK_API_TOKEN env var");
-  process.exit(1);
-}
-if (!AIRTABLE_TOKEN) {
-  console.error("❌ Missing AIRTABLE_TOKEN env var");
-  process.exit(1);
-}
-if (!AIRTABLE_BASE_ID) {
-  console.error("❌ Missing AIRTABLE_BASE_ID env var");
   process.exit(1);
 }
 
@@ -113,10 +60,6 @@ async function fetchJson(url, options = {}) {
   return res.json();
 }
 
-function normalize(str) {
-  return (str || "").toString().trim().toLowerCase();
-}
-
 // =====================
 // MTEK: TABLE REPORT
 // =====================
@@ -135,16 +78,17 @@ async function fetchMtekReportPage(page) {
 
   return fetchJson(finalUrl, {
     headers: {
-      // ✅ You confirmed your account wants Bearer
+      // You confirmed your instance expects Bearer for API auth
       Authorization: `Bearer ${MTEK_API_TOKEN}`,
       Accept: "application/vnd.api+json",
     },
   });
 }
 
-async function fetchAllMtekRows() {
+async function fetchAllMtekRowsAndHeaders() {
   let page = 1;
   let allRows = [];
+  let headers = null;
   let more = true;
 
   while (more) {
@@ -152,6 +96,11 @@ async function fetchAllMtekRows() {
     const attrs = json?.data?.attributes || {};
     const rows = attrs.rows || [];
     const maxExceeded = attrs.max_results_exceeded;
+
+    if (!headers) {
+      headers = attrs.headers || [];
+      console.log("Headers from report:", headers);
+    }
 
     if (allRows.length === 0 && rows.length > 0) {
       console.log("Sample row from report:", rows[0]);
@@ -168,109 +117,30 @@ async function fetchAllMtekRows() {
     }
   }
 
-  return allRows;
+  return { headers, rows: allRows };
 }
 
 // =====================
-// AIRTABLE HELPERS
+// SEND TO MAKE WEBHOOK
 // =====================
 
-const AIRTABLE_BASE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/`;
+async function postToWebhook(payload) {
+  console.log(`➡️  Posting ${payload.rows.length} rows to Make webhook`);
 
-async function airtableGet(table, params = {}) {
-  const url = new URL(AIRTABLE_BASE_URL + encodeURIComponent(table));
-  Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== null) url.searchParams.set(k, v);
-  });
-
-  return fetchJson(url.toString(), {
-    headers: {
-      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
-      Accept: "application/json",
-    },
-  });
-}
-
-async function airtableCreate(table, fields) {
-  const url = AIRTABLE_BASE_URL + encodeURIComponent(table);
-  const json = await fetchJson(url, {
+  const res = await fetch(WEBHOOK_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ records: [{ fields }] }),
-  });
-  return json.records[0];
-}
-
-async function airtableUpdate(table, recordId, fields) {
-  const url = AIRTABLE_BASE_URL + encodeURIComponent(table);
-  const json = await fetchJson(url, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ records: [{ id: recordId, fields }] }),
-  });
-  return json.records[0];
-}
-
-// ===== Studios =====
-
-async function fetchAllStudios() {
-  let offset;
-  const studios = [];
-
-  do {
-    const params = { pageSize: "100" };
-    if (offset) params.offset = offset;
-
-    const json = await airtableGet(STUDIOS_TABLE, params);
-    (json.records || []).forEach((rec) => {
-      studios.push({
-        id: rec.id,
-        name: rec.fields?.Name || rec.fields?.name || "",
-      });
-    });
-
-    offset = json.offset;
-  } while (offset);
-
-  console.log(`📦 Loaded ${studios.length} studios from Airtable`);
-  return studios;
-}
-
-function findBestStudioId(studios, homeStudioName) {
-  const target = normalize(homeStudioName);
-  if (!target) return null;
-
-  // 1) exact (case-insensitive)
-  let studio = studios.find((s) => normalize(s.name) === target);
-  if (studio) return studio.id;
-
-  // 2) contains either way
-  studio = studios.find((s) => {
-    const n = normalize(s.name);
-    return n.includes(target) || target.includes(n);
-  });
-  if (studio) return studio.id;
-
-  return null;
-}
-
-// ===== Customers =====
-
-// 👉 Match on LOWER({Email}) so we don’t care about your “Email (lower)” field name at all
-async function findCustomerByEmailLower(emailLower) {
-  const formula = `LOWER({${FIELD_EMAIL}}) = '${emailLower.replace(/'/g, "\\'")}'`;
-  const json = await airtableGet(CUSTOMERS_TABLE, {
-    filterByFormula: formula,
-    maxRecords: "1",
+    body: JSON.stringify(payload),
   });
 
-  return json.records && json.records.length > 0 ? json.records[0] : null;
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Webhook POST failed ${res.status} ${res.statusText}: ${text}`);
+  }
+
+  console.log("✅ Webhook POST succeeded");
 }
 
 // =====================
@@ -278,110 +148,43 @@ async function findCustomerByEmailLower(emailLower) {
 // =====================
 
 async function main() {
-  console.log(`🚀 MTEK → Airtable sync for date ${TARGET_DATE}`);
+  console.log(`🚀 MTEK → Make webhook sync for date ${TARGET_DATE}`);
 
-  const [rows, studios] = await Promise.all([
-    fetchAllMtekRows(),
-    fetchAllStudios(),
-  ]);
-
+  const { headers, rows } = await fetchAllMtekRowsAndHeaders();
   console.log(`Total rows from MTEK report: ${rows.length}`);
 
-  let created = 0;
-  let updated = 0;
-  let skippedUpcomingNotZero = 0;
-  let skippedNoEmail = 0;
-  let debugLogged = 0;
-
-  for (const row of rows) {
-    const email = row[COL_EMAIL];
-    if (!email) {
-      skippedNoEmail++;
-      continue;
-    }
-
-    const emailLower = normalize(email);
-    const firstName = row[COL_FIRST_NAME] || "";
-    const lastName = row[COL_LAST_NAME] || "";
-    const fullNameFromReport = row[COL_FULL_NAME] || "";
-    const name =
-      fullNameFromReport ||
-      `${firstName} ${lastName}`.trim() ||
-      email;
-
-    const joinDateRaw = row[COL_DATE_JOINED]; // "2025-12-09T23:43:39.308080Z"
-    const profileCreatedDate = joinDateRaw
-      ? joinDateRaw.toString().slice(0, 10) // YYYY-MM-DD
-      : TARGET_DATE;
-
-    const homeStudioName = row[COL_HOME_STUDIO] || "";
-    const preferredStudioId = findBestStudioId(studios, homeStudioName);
-
-    const totalUpcomingRaw = row[COL_TOTAL_UPCOMING];
-    const totalUpcoming = Number(totalUpcomingRaw || 0);
-
-    // Guard: only process if Total Upcoming Reservations == 0
-    if (totalUpcoming !== 0) {
-      skippedUpcomingNotZero++;
-      continue;
-    }
-
-    if (debugLogged < 5) {
-      console.log("🧪 Will upsert:", {
-        email,
-        emailLower,
-        name,
-        profileCreatedDate,
-        homeStudioName,
-        totalUpcoming,
-        preferredStudioId,
-      });
-      debugLogged++;
-    }
-
-    let customer = await findCustomerByEmailLower(emailLower);
-
-    if (customer) {
-      const updateFields = {
-        [FIELD_EMAIL]: email,
-        [FIELD_NAME]: name,
-        [FIELD_PROFILE_CREATED]: profileCreatedDate,
-      };
-
-      // If the "Email (lower)" field exists & is writable, this sets it;
-      // if it's a formula field, Airtable will just ignore it.
-      updateFields[FIELD_EMAIL_LOWER] = emailLower;
-
-      if (preferredStudioId) {
-        updateFields[FIELD_PREFERRED_STUDIO] = [preferredStudioId];
-      }
-
-      await airtableUpdate(CUSTOMERS_TABLE, customer.id, updateFields);
-      updated++;
-    } else {
-      const createFields = {
-        [FIELD_EMAIL]: email,
-        [FIELD_NAME]: name,
-        [FIELD_PROFILE_CREATED]: profileCreatedDate,
-        [FIELD_EMAIL_LOWER]: emailLower,
-      };
-
-      if (preferredStudioId) {
-        createFields[FIELD_PREFERRED_STUDIO] = [preferredStudioId];
-      }
-
-      await airtableCreate(CUSTOMERS_TABLE, createFields);
-      created++;
-    }
-
-    await sleep(200); // gentle with Airtable rate limits
+  if (!headers || headers.length === 0) {
+    throw new Error("No headers returned from report; cannot determine column positions.");
   }
 
+  // Find the index of "Total Upcoming Reservations" from headers
+  const upcomingIndex = headers.indexOf("Total Upcoming Reservations");
+  if (upcomingIndex === -1) {
+    throw new Error('Could not find "Total Upcoming Reservations" in headers.');
+  }
+  console.log('"Total Upcoming Reservations" index:', upcomingIndex);
+
+  // Filter: only rows with Total Upcoming Reservations == 0
+  const filteredRows = rows.filter((row) => {
+    const raw = row[upcomingIndex];
+    const totalUpcoming = Number(raw || 0);
+    return totalUpcoming === 0;
+  });
+
   console.log(
-    `✅ Done. Created: ${created}, Updated: ${updated},` +
-      ` Skipped (upcoming > 0): ${skippedUpcomingNotZero},` +
-      ` Skipped (no email): ${skippedNoEmail}`
+    `Filtered rows with Total Upcoming Reservations = 0: ${filteredRows.length} / ${rows.length}`
   );
+
+  // Build payload for Make
+  const payload = {
+    target_date: TARGET_DATE,
+    headers,
+    rows: filteredRows,
+  };
+
+  await postToWebhook(payload);
+
+  console.log("🎉 Done.");
 }
 
 main().catch((err) => {
