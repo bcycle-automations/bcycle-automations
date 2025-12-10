@@ -1,10 +1,10 @@
 // scripts/mtek-customers-to-airtable.js
 // For each customer in the "Customers - Details" report on TARGET_DATE:
 //  - fetch all reservations with user=<Customer ID>
-//  - ignore any reservation whose status contains "cancel"
+//  - ignore any reservation whose status contains "cancel" (case-insensitive)
 //  - pick the OLDEST remaining reservation (by date)
 //  - send one flat webhook call per customer with:
-//        customer info + reservation_status + class_session_id (if any)
+//        customer info + phone_number + reservation_status + class_session_id (if any)
 
 // =====================
 // CONFIG / ENV
@@ -227,6 +227,7 @@ async function main() {
     fullName: headers.indexOf("Full Name"),
     joinDate: headers.indexOf("Join Date"),
     homeLocation: headers.indexOf("Home Location"),
+    phoneNumber: headers.indexOf("Phone Number"),
   };
 
   for (const [key, val] of Object.entries(idx)) {
@@ -245,6 +246,7 @@ async function main() {
     const joinDate = row[idx.joinDate] || null;
     const joinDateDateOnly = joinDate ? String(joinDate).slice(0, 10) : null;
     const homeLocation = row[idx.homeLocation] || null;
+    const phoneNumber = row[idx.phoneNumber] || null;
 
     // Oldest non-canceled reservation for this user
     const reservation = await fetchOldestNonCanceledReservation(customerId);
@@ -269,6 +271,7 @@ async function main() {
       join_date: joinDate,
       join_date_date_only: joinDateDateOnly,
       home_location: homeLocation,
+      phone_number: phoneNumber,
       reservation_status: reservationStatus,
     };
 
