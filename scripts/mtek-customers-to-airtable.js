@@ -22,14 +22,13 @@ function getDefaultDate() {
 const TARGET_DATE = process.env.TARGET_DATE || getDefaultDate();
 
 // ---- Column indices from the MTEK report rows ----
-// NOTE: Adjust these to match your "Customers - Details" report layout.
-// Index is 1-based because rows are [1]=id, [2]=email, etc.
+// ⚠️ Adjust these to match your "Customers - Details" report layout.
 const COL_EMAIL = 2;
 const COL_FIRST_NAME = 3;
 const COL_LAST_NAME = 4;
-const COL_FULL_NAME = 5; // or compose from first/last if 5 is empty
-const COL_DATE_JOINED = 6; // join date/time (string)
-const COL_HOME_STUDIO = 10; // <-- adjust to the correct column index for home studio
+const COL_FULL_NAME = 5;
+const COL_DATE_JOINED = 6; // join datetime
+const COL_HOME_STUDIO = 10; // <-- adjust if needed
 
 // ---- Fields in Airtable ----
 const FIELD_EMAIL_LOWER = "Email (lower)";
@@ -38,20 +37,32 @@ const FIELD_PROFILE_CREATED = "Profile Created";
 const FIELD_PREFERRED_STUDIO = "Preferred Studio";
 const FIELD_FIRST_CHECKIN = "First Check-In";
 
-// ---------- Helpers ----------
+// ---------- Sanity checks ----------
+console.log("MTEK_BASE_URL:", MTEK_BASE_URL);
+console.log(
+  "MTEK_API_TOKEN present?",
+  MTEK_API_TOKEN ? `yes (starts with ${MTEK_API_TOKEN.slice(0, 4)}...)` : "NO"
+);
+console.log(
+  "AIRTABLE_TOKEN present?",
+  AIRTABLE_TOKEN ? "yes" : "NO"
+);
+console.log("Airtable base:", AIRTABLE_BASE_ID);
+
 if (!MTEK_API_TOKEN) {
-  console.error("Missing MTEK_API_TOKEN");
+  console.error("❌ Missing MTEK_API_TOKEN env var");
   process.exit(1);
 }
 if (!AIRTABLE_TOKEN) {
-  console.error("Missing AIRTABLE_TOKEN");
+  console.error("❌ Missing AIRTABLE_TOKEN env var");
   process.exit(1);
 }
 if (!AIRTABLE_BASE_ID) {
-  console.error("Missing AIRTABLE_BASE_ID");
+  console.error("❌ Missing AIRTABLE_BASE_ID env var");
   process.exit(1);
 }
 
+// ---------- Helpers ----------
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -60,7 +71,9 @@ async function fetchJson(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Request failed ${res.status} ${res.statusText}: ${text}`);
+    throw new Error(
+      `Request failed ${res.status} ${res.statusText} for ${url}: ${text}`
+    );
   }
   return res.json();
 }
@@ -75,8 +88,12 @@ async function fetchMtekReportPage(page) {
   url.searchParams.set("min_join_date_day", TARGET_DATE);
   url.searchParams.set("max_join_date_day", TARGET_DATE);
 
-  return fetchJson(url.toString(), {
+  const finalUrl = url.toString();
+  console.log(`➡️  Calling MTEK page ${page}: ${finalUrl}`);
+
+  return fetchJson(finalUrl, {
     headers: {
+      // ✅ This is exactly what MTEK expects
       Authorization: `Token ${MTEK_API_TOKEN}`,
       Accept: "application/vnd.api+json",
     },
@@ -95,29 +112,32 @@ async function fetchAllMtekRows() {
     const maxExceeded = attrs.max_results_exceeded;
 
     allRows = allRows.concat(rows);
-    console.log(`Fetched page ${page}, ${rows.length} rows (total so far: ${allRows.length})`);
+    console.log(
+      `✅ Got page ${page}: ${rows.length} rows (total so far: ${allRows.length})`
+    );
 
     if (!maxExceeded || rows.length < PAGE_SIZE) {
       more = false;
     } else {
       page += 1;
-      await sleep(200); // small pause to be nice to MTEK
+      await sleep(200);
     }
   }
 
   return allRows;
 }
 
-// ---------- Airtable: generic helpers ----------
+// ---------- Airtable helpers ----------
 const AIRTABLE_BASE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/`;
 
-async function airtableGet(path, params = {}) {
-  const url = new URL(AIRTABLE_BASE_URL + encodeURIComponent(path));
+async function airtableGet(table, params = {}) {
+  const url = new URL(AIRTABLE_BASE_URL + encodeURIComponent(table));
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== null) url.searchParams.set(k, v);
   });
 
-  return fetchJson(url.toString(), {
+  const finalUrl = url.toString();
+  return fetchJson(finalUrl, {
     headers: {
       Authorization: `Bearer ${AIRTABLE_TOKEN}`,
       Accept: "application/json",
@@ -172,7 +192,7 @@ async function fetchAllStudios() {
     offset = json.offset;
   } while (offset);
 
-  console.log(`Loaded ${studios.length} studios from Airtable`);
+  console.log(`📦 Loaded ${studios.length} studios from Airtable`);
   return studios;
 }
 
@@ -200,6 +220,7 @@ function findBestStudioId(studios, homeStudioName) {
 
 // ---------- Airtable: customer lookup ----------
 async function findCustomerByEmailLower(emailLower) {
+  // LOWER() on field, but we already pass lowercase
   const formula = `LOWER({${FIELD_EMAIL_LOWER}}) = '${emailLower.replace(/'/g, "\\'")}'`;
   const json = await airtableGet(CUSTOMERS_TABLE, {
     filterByFormula: formula,
@@ -212,9 +233,9 @@ async function findCustomerByEmailLower(emailLower) {
   return null;
 }
 
-// ---------- Main logic ----------
+// ---------- Main ----------
 async function main() {
-  console.log(`Running MTEK → Airtable sync for date ${TARGET_DATE}`);
+  console.log(`🚀 Running MTEK → Airtable sync for date ${TARGET_DATE}`);
 
   const [rows, studios] = await Promise.all([
     fetchAllMtekRows(),
@@ -229,7 +250,6 @@ async function main() {
   let skippedNoEmail = 0;
 
   for (const row of rows) {
-    // row is 1-based in the report structure: [1]=id, [2]=email, ...
     const email = row[COL_EMAIL];
     if (!email) {
       skippedNoEmail++;
@@ -294,16 +314,15 @@ async function main() {
       created++;
     }
 
-    // tiny delay to be kind to Airtable rate limits
-    await sleep(200);
+    await sleep(200); // to be nice to Airtable rate limits
   }
 
   console.log(
-    `Done. Created: ${created}, Updated: ${updated}, Skipped (First Check-In exists): ${skippedFirstCheckIn}, Skipped (no email): ${skippedNoEmail}`
+    `✅ Done. Created: ${created}, Updated: ${updated}, Skipped (First Check-In exists): ${skippedFirstCheckIn}, Skipped (no email): ${skippedNoEmail}`
   );
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err);
+  console.error("❌ Fatal error:", err);
   process.exit(1);
 });
