@@ -1,7 +1,10 @@
 // scripts/mtek-customers-to-airtable.js
 // For each customer in the "Customers - Details" report on TARGET_DATE:
-//  - look up a reservation with status="check in" and user=<Customer ID>
-//  - send one flat webhook call with customer info + checked_in_class_session_id
+//  - fetch all reservations with user=<Customer ID>
+//  - ignore any reservation whose status contains "cancel"
+//  - pick the OLDEST remaining reservation (by date)
+//  - send one flat webhook call per customer with:
+//        customer info + reservation_status + class_session_id (if any)
 
 // =====================
 // CONFIG / ENV
@@ -14,7 +17,7 @@ const REPORT_ID = process.env.MTEK_CUSTOMERS_REPORT_ID || "336";
 const REPORT_SLUG = process.env.MTEK_CUSTOMERS_REPORT_SLUG || "customers-details";
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 
-// Hard-coded Make webhook
+// Hard-coded Make webhook (per your request)
 const WEBHOOK_URL = "https://hook.us2.make.com/pmp8d9nca57ur9ifaai8vusahpxsi3ip";
 
 // Default date = yesterday (UTC) if not provided
@@ -108,15 +111,14 @@ async function fetchAllRowsAndHeaders() {
 // MTEK: RESERVATIONS LOOKUP
 // =====================
 
-// Find ONE reservation for this customer with status="check in"
-// and return its class_session_id (or null if none).
-async function fetchCheckedInClassSessionId(customerId) {
+// Fetch all reservations for this user and return the OLDEST non-canceled one
+async function fetchOldestNonCanceledReservation(customerId) {
   if (!customerId) return null;
 
   const url = new URL("/api/reservations", MTEK_BASE_URL);
-  url.searchParams.set("status", "check in");          // <-- exact string you gave
-  url.searchParams.set("user", String(customerId));    // <-- uses ?user=<Customer ID>
-  url.searchParams.set("page_size", "1");              // first match only
+  // user=<Customer ID> as you confirmed
+  url.searchParams.set("user", String(customerId));
+  url.searchParams.set("page_size", "100"); // reasonable batch size
 
   const finalUrl = url.toString();
   console.log(`   ↪︎ Reservations for user ${customerId}: ${finalUrl}`);
@@ -129,18 +131,46 @@ async function fetchCheckedInClassSessionId(customerId) {
       },
     });
 
-    const data = json?.data;
+    let data = json?.data;
     if (!data) return null;
+    if (!Array.isArray(data)) data = [data];
+    if (data.length === 0) return null;
 
-    // Handle both array and single-object JSON:API shapes
-    const first = Array.isArray(data) ? data[0] : data;
-    if (!first) return null;
+    // 1) Filter out any reservation whose status contains "cancel" (case-insensitive)
+    const nonCanceled = data.filter((item) => {
+      const status = (item.attributes?.status || "").toString().toLowerCase();
+      return status && !status.includes("cancel");
+    });
 
-    const classSessionRel = first.relationships?.class_session?.data;
-    if (!classSessionRel) return null;
+    if (nonCanceled.length === 0) return null;
 
-    // JSON:API: { type: "class_sessions", id: "..." }
-    return classSessionRel.id || null;
+    // 2) Pick the OLDEST reservation by a best-guess date field
+    const withDates = nonCanceled.map((item) => {
+      const attrs = item.attributes || {};
+      const dateStr =
+        attrs.class_session_start_datetime ||
+        attrs.class_session_start ||
+        attrs.start_datetime ||
+        attrs.created_at ||
+        attrs.updated_at ||
+        null;
+
+      const ts = dateStr ? Date.parse(dateStr) : null;
+      return { item, ts };
+    });
+
+    // If none have a parsable date, just pick the first non-canceled reservation
+    if (withDates.every((x) => x.ts === null)) {
+      return nonCanceled[0];
+    }
+
+    withDates.sort((a, b) => {
+      if (a.ts === null) return 1;
+      if (b.ts === null) return -1;
+      return a.ts - b.ts; // smallest (oldest) timestamp first
+    });
+
+    return withDates[0].item;
   } catch (err) {
     console.error(`   ⚠️ Error fetching reservations for user ${customerId}:`, err.message);
     return null;
@@ -204,39 +234,48 @@ async function main() {
   }
 
   let sent = 0;
-  let skippedNoEmail = 0;
   let debugLogged = 0;
 
   for (const row of rows) {
-    const email = row[idx.email];
-    if (!email) {
-      skippedNoEmail++;
-      continue;
-    }
-
     const customerId = row[idx.customerId];
+    const email = row[idx.email] || null;
     const firstName = row[idx.firstName] || "";
     const lastName = row[idx.lastName] || "";
-    const fullName = row[idx.fullName] || `${firstName} ${lastName}`.trim() || email;
+    const fullName = row[idx.fullName] || `${firstName} ${lastName}`.trim() || email || "";
     const joinDate = row[idx.joinDate] || null;
     const joinDateDateOnly = joinDate ? String(joinDate).slice(0, 10) : null;
     const homeLocation = row[idx.homeLocation] || null;
 
-    const checkedInClassSessionId = await fetchCheckedInClassSessionId(customerId);
+    // Oldest non-canceled reservation for this user
+    const reservation = await fetchOldestNonCanceledReservation(customerId);
 
+    let reservationStatus = null;
+    let classSessionId = null;
+
+    if (reservation) {
+      reservationStatus = reservation.attributes?.status || null;
+      classSessionId = reservation.relationships?.class_session?.data?.id || null;
+    }
+
+    // Build flat body: ALL customers pushed, even if no reservation or no class ID
     const body = {
       target_date: TARGET_DATE,
       customer_id: customerId,
       email,
-      email_lower: normalize(email),
+      email_lower: email ? normalize(email) : null,
       first_name: firstName,
       last_name: lastName,
       full_name: fullName,
       join_date: joinDate,
       join_date_date_only: joinDateDateOnly,
       home_location: homeLocation,
-      checked_in_class_session_id: checkedInClassSessionId,
+      reservation_status: reservationStatus,
     };
+
+    // Only include class_session_id if we actually have one
+    if (classSessionId) {
+      body.class_session_id = classSessionId;
+    }
 
     if (debugLogged < 3) {
       console.log("🧪 Webhook body:", body);
@@ -246,13 +285,11 @@ async function main() {
     await postToWebhook(body);
     sent++;
 
-    // gentle on both MTEK + Make
+    // Be gentle with both MTEK + Make
     await sleep(150);
   }
 
-  console.log(
-    `🎉 Done. Sent ${sent} rows to webhook, skipped (no email): ${skippedNoEmail}`
-  );
+  console.log(`🎉 Done. Sent ${sent} customers to webhook`);
 }
 
 // Run
