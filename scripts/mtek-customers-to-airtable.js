@@ -1,105 +1,89 @@
-// scripts/mtek-customers-to-webhook.js
-
-const MTEK_BASE_URL = (process.env.MTEK_BASE_URL || "https://bcycle.marianatek.com").replace(/\/+$/, "");
-const MTEK_API_TOKEN = (process.env.MTEK_API_TOKEN || "").trim();
-const REPORT_ID = "336";
-const REPORT_SLUG = "customers-details";
-const PAGE_SIZE = 500;
-
-const WEBHOOK_URL = "https://hook.us2.make.com/pmp8d9nca57ur9ifaai8vusahpxsi3ip";
-
-function getDefaultDate() {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+{
+  "target_date": "2025-12-09",
+  "headers": [
+    "Customer ID",
+    "Email",
+    "First Name",
+    "Last Name",
+    "Full Name",
+    "Join Date",
+    "Created At Date",
+    "Updated At Date",
+    "Phone Number",
+    "Street",
+    "Apt/Suite",
+    "City",
+    "State/Province",
+    "Postal Code",
+    "Country",
+    "Birth Date",
+    "Company Name",
+    "Emergency Contact Name",
+    "Emergency Contact Relationship",
+    "Emergency Contact Phone",
+    "Emergency Contact Email",
+    "Waiver Signed",
+    "Marketing Opt-In",
+    "SMS Opt-In",
+    "Home Location",
+    "Customer Locations",
+    "Retention Segment",
+    "Activity Segment",
+    "Recency Score",
+    "Frequency Score",
+    "Monetary Score",
+    "Total Check-Ins - 1 week",
+    "Total Check-Ins - 2 weeks",
+    "Total Check-Ins - 1 Month",
+    "Total Check-Ins - 3 Months",
+    "Total Check-Ins - 6 Months",
+    "Total Check-Ins - 1 Year",
+    "Total Check-Ins - All Time",
+    "Total Check-Ins - ClassPass - 1 week",
+    "Total Check-Ins - ClassPass - 2 weeks",
+    "Total Check-Ins - ClassPass - 1 Month",
+    "Total Check-Ins - ClassPass - 3 Months",
+    "Total Check-Ins - ClassPass - 6 Months",
+    "Total Check-Ins - ClassPass - 1 Year",
+    "Total Check-Ins - ClassPass - All Time",
+    "First Check-In",
+    "Last Check-In",
+    "Total Upcoming Reservations",
+    "Next Reservation Date",
+    "Total Guest Check-Ins - 1 week",
+    "Total Guest Check-Ins - 2 weeks",
+    "Total Guest Check-Ins - 3 Months",
+    "Total Guest Check-Ins - 1 Month",
+    "Total Guest Check-Ins - 6 Months",
+    "Total Guest Check-Ins - 1 Year",
+    "Total Guest Check-Ins - All Time",
+    "Total Upcoming Guest Reservations",
+    "Purchase Currency",
+    "Total Spent - 1 Week",
+    "Total Spent - 2 Week,",
+    "Total Spent - 1 Month",
+    "Total Spent - 3 Month",
+    "Total Spent - 6 Month",
+    "Total Spent - 1 Year",
+    "Total Spent - All Time",
+    "Last Order Date",
+    "First Order Date",
+    "Total Order Count - All Time",
+    "Tags",
+    "Membership Status",
+    "Total Remaining Credits"
+  ],
+  "row": [
+    115613,
+    "m-julia.boucher@hotmail.com",
+    "Marie-Julia",
+    "Boucher",
+    "Marie-Julia Boucher",
+    "2025-12-09T23:43:39.308080Z",
+    "2025-12-09T23:43:39.452282Z",
+    "2025-12-10T00:40:29.233526Z",
+    "438-493-0174",
+    null,
+    ...
+  ]
 }
-const TARGET_DATE = process.env.TARGET_DATE || getDefaultDate();
-
-// Helper
-async function fetchJson(url, options = {}) {
-  const res = await fetch(url, options);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-async function fetchPage(page) {
-  const url = new URL("/api/table_report_data", MTEK_BASE_URL);
-  url.searchParams.set("id", REPORT_ID);
-  url.searchParams.set("slug", REPORT_SLUG);
-  url.searchParams.set("page_size", String(PAGE_SIZE));
-  url.searchParams.set("page", String(page));
-  url.searchParams.set("min_join_date_day", TARGET_DATE);
-  url.searchParams.set("max_join_date_day", TARGET_DATE);
-
-  return fetchJson(url.toString(), {
-    headers: {
-      Authorization: `Bearer ${MTEK_API_TOKEN}`,
-      Accept: "application/vnd.api+json",
-    },
-  });
-}
-
-async function fetchAllRows() {
-  let allRows = [];
-  let headers = null;
-  let page = 1;
-  let more = true;
-
-  while (more) {
-    const json = await fetchPage(page);
-    const attrs = json.data.attributes;
-    const rows = attrs.rows || [];
-
-    if (!headers) headers = attrs.headers;
-    if (rows.length > 0 && page === 1) console.log("Sample row:", rows[0]);
-
-    allRows = allRows.concat(rows);
-
-    if (!attrs.max_results_exceeded || rows.length < PAGE_SIZE) {
-      more = false;
-    } else {
-      page++;
-    }
-  }
-
-  return { headers, rows: allRows };
-}
-
-async function sendToWebhook(payload) {
-  console.log(`➡️ Sending ${payload.rows.length} rows to webhook...`);
-
-  const res = await fetch(WEBHOOK_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) throw new Error(await res.text());
-  console.log("✅ Webhook accepted payload");
-}
-
-async function main() {
-  console.log(`Fetching customers for ${TARGET_DATE}`);
-  const { headers, rows } = await fetchAllRows();
-
-  // Get index of Total Upcoming Reservations from headers dynamically:
-  const upcomingIndex = headers.indexOf("Total Upcoming Reservations");
-  if (upcomingIndex === -1) throw new Error("Column 'Total Upcoming Reservations' not found");
-
-  const filteredRows = rows.filter(r => Number(r[upcomingIndex] || 0) === 0);
-
-  console.log(`Filtered rows: ${filteredRows.length} / ${rows.length}`);
-
-  const payload = {
-    target_date: TARGET_DATE,
-    headers,
-    rows: filteredRows   // ← THIS IS THE SINGLE ARRAY YOU WANT
-  };
-
-  await sendToWebhook(payload);
-}
-
-main().catch(err => {
-  console.error("❌ Error:", err);
-  process.exit(1);
-});
