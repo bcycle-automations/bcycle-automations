@@ -106,7 +106,7 @@ async function fetchMtekEmailByName(name) {
     await fetch(url, {
       headers: {
         // Mariana Tek auth style
-        Authorization: `Token token="${MTEK_API_TOKEN}"`,
+        Authorization: `Bearer token="${MTEK_API_TOKEN}"`,
         Accept: "application/vnd.api+json",
         "Content-Type": "application/vnd.api+json",
       },
