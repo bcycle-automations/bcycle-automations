@@ -1,5 +1,7 @@
 // scripts/mtek-customers-to-airtable.js
-// Fetch MTEK Customers - Details report and send one flat webhook call per row
+// For each customer in the "Customers - Details" report on TARGET_DATE:
+//  - look up a reservation with status="check in" and user=<Customer ID>
+//  - send one flat webhook call with customer info + checked_in_class_session_id
 
 // =====================
 // CONFIG / ENV
@@ -45,7 +47,7 @@ function normalize(str) {
 }
 
 // =====================
-// MTEK TABLE REPORT
+// MTEK: TABLE REPORT
 // =====================
 
 async function fetchMtekPage(page) {
@@ -103,6 +105,49 @@ async function fetchAllRowsAndHeaders() {
 }
 
 // =====================
+// MTEK: RESERVATIONS LOOKUP
+// =====================
+
+// Find ONE reservation for this customer with status="check in"
+// and return its class_session_id (or null if none).
+async function fetchCheckedInClassSessionId(customerId) {
+  if (!customerId) return null;
+
+  const url = new URL("/api/reservations", MTEK_BASE_URL);
+  url.searchParams.set("status", "check in");          // <-- exact string you gave
+  url.searchParams.set("user", String(customerId));    // <-- uses ?user=<Customer ID>
+  url.searchParams.set("page_size", "1");              // first match only
+
+  const finalUrl = url.toString();
+  console.log(`   ↪︎ Reservations for user ${customerId}: ${finalUrl}`);
+
+  try {
+    const json = await fetchJson(finalUrl, {
+      headers: {
+        Authorization: `Bearer ${MTEK_API_TOKEN}`,
+        Accept: "application/vnd.api+json",
+      },
+    });
+
+    const data = json?.data;
+    if (!data) return null;
+
+    // Handle both array and single-object JSON:API shapes
+    const first = Array.isArray(data) ? data[0] : data;
+    if (!first) return null;
+
+    const classSessionRel = first.relationships?.class_session?.data;
+    if (!classSessionRel) return null;
+
+    // JSON:API: { type: "class_sessions", id: "..." }
+    return classSessionRel.id || null;
+  } catch (err) {
+    console.error(`   ⚠️ Error fetching reservations for user ${customerId}:`, err.message);
+    return null;
+  }
+}
+
+// =====================
 // WEBHOOK
 // =====================
 
@@ -130,6 +175,7 @@ async function main() {
     MTEK_API_TOKEN ? `yes (starts with ${MTEK_API_TOKEN.slice(0, 4)}..., len=${MTEK_API_TOKEN.length})` : "NO"
   );
   console.log("TARGET_DATE:", TARGET_DATE);
+  console.log("WEBHOOK_URL:", WEBHOOK_URL);
 
   if (!MTEK_API_TOKEN) {
     throw new Error("Missing MTEK_API_TOKEN");
@@ -142,7 +188,7 @@ async function main() {
     throw new Error("No headers returned from report");
   }
 
-  // Dynamically find positions from headers (no magic numbers)
+  // Dynamically find positions from headers
   const idx = {
     customerId: headers.indexOf("Customer ID"),
     email: headers.indexOf("Email"),
@@ -151,7 +197,6 @@ async function main() {
     fullName: headers.indexOf("Full Name"),
     joinDate: headers.indexOf("Join Date"),
     homeLocation: headers.indexOf("Home Location"),
-    totalUpcoming: headers.indexOf("Total Upcoming Reservations"),
   };
 
   for (const [key, val] of Object.entries(idx)) {
@@ -159,7 +204,6 @@ async function main() {
   }
 
   let sent = 0;
-  let skippedUpcoming = 0;
   let skippedNoEmail = 0;
   let debugLogged = 0;
 
@@ -170,12 +214,6 @@ async function main() {
       continue;
     }
 
-    const totalUpcoming = Number(row[idx.totalUpcoming] || 0);
-    if (totalUpcoming !== 0) {
-      skippedUpcoming++;
-      continue;
-    }
-
     const customerId = row[idx.customerId];
     const firstName = row[idx.firstName] || "";
     const lastName = row[idx.lastName] || "";
@@ -183,6 +221,8 @@ async function main() {
     const joinDate = row[idx.joinDate] || null;
     const joinDateDateOnly = joinDate ? String(joinDate).slice(0, 10) : null;
     const homeLocation = row[idx.homeLocation] || null;
+
+    const checkedInClassSessionId = await fetchCheckedInClassSessionId(customerId);
 
     const body = {
       target_date: TARGET_DATE,
@@ -195,7 +235,7 @@ async function main() {
       join_date: joinDate,
       join_date_date_only: joinDateDateOnly,
       home_location: homeLocation,
-      total_upcoming_reservations: totalUpcoming,
+      checked_in_class_session_id: checkedInClassSessionId,
     };
 
     if (debugLogged < 3) {
@@ -206,12 +246,12 @@ async function main() {
     await postToWebhook(body);
     sent++;
 
-    // gentle with Make
-    await sleep(100);
+    // gentle on both MTEK + Make
+    await sleep(150);
   }
 
   console.log(
-    `🎉 Done. Sent ${sent} rows to webhook, skipped (upcoming > 0): ${skippedUpcoming}, skipped (no email): ${skippedNoEmail}`
+    `🎉 Done. Sent ${sent} rows to webhook, skipped (no email): ${skippedNoEmail}`
   );
 }
 
