@@ -196,9 +196,16 @@ async function updateAirtableEmailLink(recordId, linkedRecordId) {
     AIRTABLE_TABLE_NAME
   )}/${recordId}`;
 
+  // Ensure we always have a plain string ID
+  const id =
+    typeof linkedRecordId === "object" && linkedRecordId !== null
+      ? linkedRecordId.id
+      : linkedRecordId;
+
   const body = {
     fields: {
-      [AIRTABLE_EMAIL_LINK_FIELD]: [{ id: linkedRecordId }],
+      // ✅ CORRECT: array of record ID strings
+      [AIRTABLE_EMAIL_LINK_FIELD]: [id],
     },
   };
 
