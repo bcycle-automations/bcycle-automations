@@ -20,7 +20,7 @@ jobs:
       - name: Run sync script
         env:
           # MTEK
-          MTEK_BASE_URL: https://bcycle.marianatek.com
+          MTEK_BASE_URL: https://bcycle.marianatek.com/
           MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
           MTEK_CUSTOMERS_REPORT_ID: "336"
           MTEK_CUSTOMERS_REPORT_SLUG: "customers-details"
