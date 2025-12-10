@@ -3,7 +3,6 @@
 /**
  * CONFIG — EDIT THESE CONSTANTS ONLY
  * ----------------------------------
- * You can change these without touching the rest of the code.
  */
 
 const AIRTABLE_BASE_ID = "appWPXRyXX3KHoJRI";      // your base
@@ -13,7 +12,7 @@ const AIRTABLE_EMAIL_FIELD = "EMAIL";              // where we'll write the emai
 const AIRTABLE_CONTACT_FIELD = "Contact";          // name to search in MTEK
 const AIRTABLE_CAL_NAME_FIELD = "CAL_NAME";        // optional, just for logs
 
-// Example: "https://bcycle.marianatek.com/api"
+// e.g. "https://bcycle.marianatek.com/api"
 const MTEK_BASE_URL = "https://bcycle.marianatek.com/api";
 
 /**
@@ -96,7 +95,7 @@ async function fetchMtekEmailByName(name) {
   }
 
   const params = new URLSearchParams({
-    name_query: name.trim(), // << important: name_query, not name
+    name_query: name.trim(), // << name_query
     page_size: "1",
   });
 
@@ -105,8 +104,8 @@ async function fetchMtekEmailByName(name) {
   const res = await assertOk(
     await fetch(url, {
       headers: {
-        // Mariana Tek auth style
-        Authorization: `Bearer token="${MTEK_API_TOKEN}"`,
+        // Correct: Bearer auth
+        Authorization: `Bearer ${MTEK_API_TOKEN}`,
         Accept: "application/vnd.api+json",
         "Content-Type": "application/vnd.api+json",
       },
@@ -214,8 +213,6 @@ async function main() {
           contactName
         )} -> ${err.message}`
       );
-      // If you prefer fail-fast, you can throw here.
-      // throw err;
     }
   }
 
