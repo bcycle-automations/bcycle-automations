@@ -29,35 +29,41 @@ const TARGET_DATE = process.env.TARGET_DATE || getDefaultDate();
 // =====================
 // COLUMN INDICES (1-based, from your Postman dump)
 // =====================
-// headers[0] = "Customer ID"
-// headers[1] = "Email"
-// headers[2] = "First Name"
-// headers[3] = "Last Name"
-// headers[4] = "Full Name"
-// headers[5] = "Join Date"
+//
+// headers: ["Customer ID", "Email", "First Name", "Last Name", "Full Name",
+//           "Join Date", "Created At Date", "Updated At Date", "Phone Number",
+//           ..., "Home Location", ..., "Total Upcoming Reservations", ...]
+//
+// Sample row you pasted:
+//
+//  1 115613
+//  2 "m-julia.boucher@hotmail.com"
+//  3 "Marie-Julia"
+//  4 "Boucher"
+//  5 "Marie-Julia Boucher"
+//  6 "2025-12-09T23:43:39.308080Z"  (Join Date)
+//  ...
+// 25 "Rockland"                     (Home Location)
 // ...
-// headers[24] = "Home Location"
-// ...
-// headers[47] = "Total Upcoming Reservations"
+// 48 1                              (Total Upcoming Reservations)
 
-const COL_EMAIL          = 2;   // "Email"
-const COL_FIRST_NAME     = 3;   // "First Name"
-const COL_LAST_NAME      = 4;   // "Last Name"
-const COL_FULL_NAME      = 5;   // "Full Name"
-const COL_DATE_JOINED    = 6;   // "Join Date"
-const COL_HOME_STUDIO    = 25;  // "Home Location"
-const COL_TOTAL_UPCOMING = 48;  // "Total Upcoming Reservations"
+const COL_EMAIL          = 2;
+const COL_FIRST_NAME     = 3;
+const COL_LAST_NAME      = 4;
+const COL_FULL_NAME      = 5;
+const COL_DATE_JOINED    = 6;
+const COL_HOME_STUDIO    = 25;
+const COL_TOTAL_UPCOMING = 48;
 
 // =====================
 // AIRTABLE FIELD NAMES
 // =====================
 
-const FIELD_EMAIL_LOWER      = "Email (lower)";
 const FIELD_EMAIL            = "Email";
+const FIELD_EMAIL_LOWER      = "Email (lower)";  // optional; we try to set it if exists
 const FIELD_NAME             = "Name";
 const FIELD_PROFILE_CREATED  = "Profile Created";
 const FIELD_PREFERRED_STUDIO = "Preferred Studio";
-const FIELD_FIRST_CHECKIN    = "First Check-In"; // not used in logic now, but kept for reference
 
 // =====================
 // SANITY CHECKS
@@ -126,11 +132,10 @@ async function fetchMtekReportPage(page) {
 
   const finalUrl = url.toString();
   console.log(`➡️  Calling MTEK page ${page}: ${finalUrl}`);
-  console.log("Using Authorization: Bearer <token> (len:", MTEK_API_TOKEN.length, ")");
 
   return fetchJson(finalUrl, {
     headers: {
-      // ✅ You confirmed your instance uses Bearer
+      // ✅ You confirmed your account wants Bearer
       Authorization: `Bearer ${MTEK_API_TOKEN}`,
       Accept: "application/vnd.api+json",
     },
@@ -212,7 +217,7 @@ async function airtableUpdate(table, recordId, fields) {
   return json.records[0];
 }
 
-// ========== Studios ==========
+// ===== Studios =====
 
 async function fetchAllStudios() {
   let offset;
@@ -241,11 +246,11 @@ function findBestStudioId(studios, homeStudioName) {
   const target = normalize(homeStudioName);
   if (!target) return null;
 
-  // 1) case-insensitive exact match
+  // 1) exact (case-insensitive)
   let studio = studios.find((s) => normalize(s.name) === target);
   if (studio) return studio.id;
 
-  // 2) loose contains either way
+  // 2) contains either way
   studio = studios.find((s) => {
     const n = normalize(s.name);
     return n.includes(target) || target.includes(n);
@@ -255,11 +260,11 @@ function findBestStudioId(studios, homeStudioName) {
   return null;
 }
 
-// ========== Customers ==========
+// ===== Customers =====
 
+// 👉 Match on LOWER({Email}) so we don’t care about your “Email (lower)” field name at all
 async function findCustomerByEmailLower(emailLower) {
-  // Email (lower) == lowercased email
-  const formula = `{${FIELD_EMAIL_LOWER}} = '${emailLower.replace(/'/g, "\\'")}'`;
+  const formula = `LOWER({${FIELD_EMAIL}}) = '${emailLower.replace(/'/g, "\\'")}'`;
   const json = await airtableGet(CUSTOMERS_TABLE, {
     filterByFormula: formula,
     maxRecords: "1",
@@ -286,6 +291,7 @@ async function main() {
   let updated = 0;
   let skippedUpcomingNotZero = 0;
   let skippedNoEmail = 0;
+  let debugLogged = 0;
 
   for (const row of rows) {
     const email = row[COL_EMAIL];
@@ -303,7 +309,7 @@ async function main() {
       `${firstName} ${lastName}`.trim() ||
       email;
 
-    const joinDateRaw = row[COL_DATE_JOINED]; // e.g. "2025-12-09T23:43:39.308080Z"
+    const joinDateRaw = row[COL_DATE_JOINED]; // "2025-12-09T23:43:39.308080Z"
     const profileCreatedDate = joinDateRaw
       ? joinDateRaw.toString().slice(0, 10) // YYYY-MM-DD
       : TARGET_DATE;
@@ -311,24 +317,40 @@ async function main() {
     const homeStudioName = row[COL_HOME_STUDIO] || "";
     const preferredStudioId = findBestStudioId(studios, homeStudioName);
 
-    // Guard: only process if Total Upcoming Reservations == 0
     const totalUpcomingRaw = row[COL_TOTAL_UPCOMING];
     const totalUpcoming = Number(totalUpcomingRaw || 0);
+
+    // Guard: only process if Total Upcoming Reservations == 0
     if (totalUpcoming !== 0) {
       skippedUpcomingNotZero++;
       continue;
     }
 
+    if (debugLogged < 5) {
+      console.log("🧪 Will upsert:", {
+        email,
+        emailLower,
+        name,
+        profileCreatedDate,
+        homeStudioName,
+        totalUpcoming,
+        preferredStudioId,
+      });
+      debugLogged++;
+    }
+
     let customer = await findCustomerByEmailLower(emailLower);
 
     if (customer) {
-      // Update existing record
       const updateFields = {
-        [FIELD_EMAIL_LOWER]: emailLower,
         [FIELD_EMAIL]: email,
         [FIELD_NAME]: name,
         [FIELD_PROFILE_CREATED]: profileCreatedDate,
       };
+
+      // If the "Email (lower)" field exists & is writable, this sets it;
+      // if it's a formula field, Airtable will just ignore it.
+      updateFields[FIELD_EMAIL_LOWER] = emailLower;
 
       if (preferredStudioId) {
         updateFields[FIELD_PREFERRED_STUDIO] = [preferredStudioId];
@@ -337,12 +359,11 @@ async function main() {
       await airtableUpdate(CUSTOMERS_TABLE, customer.id, updateFields);
       updated++;
     } else {
-      // Create new record
       const createFields = {
-        [FIELD_EMAIL_LOWER]: emailLower,
         [FIELD_EMAIL]: email,
         [FIELD_NAME]: name,
         [FIELD_PROFILE_CREATED]: profileCreatedDate,
+        [FIELD_EMAIL_LOWER]: emailLower,
       };
 
       if (preferredStudioId) {
@@ -353,8 +374,7 @@ async function main() {
       created++;
     }
 
-    // Be nice to Airtable rate limits
-    await sleep(200);
+    await sleep(200); // gentle with Airtable rate limits
   }
 
   console.log(
