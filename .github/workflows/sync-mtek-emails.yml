@@ -1,7 +1,8 @@
 name: Sync MTEK user emails to Airtable
 
 on:
-  workflow_dispatch: {}
+  repository_dispatch:
+    types: [sync-mtek-emails]   # << this is the event_type we’ll send in the body
 
 jobs:
   sync-mtek-emails:
