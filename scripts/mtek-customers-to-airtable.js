@@ -94,7 +94,7 @@ async function fetchMtekReportPage(page) {
   return fetchJson(finalUrl, {
     headers: {
       // ✅ This is exactly what MTEK expects
-      Authorization: `Token ${MTEK_API_TOKEN}`,
+      Authorization: `Bearer ${MTEK_API_TOKEN}`,
       Accept: "application/vnd.api+json",
     },
   });
