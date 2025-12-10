@@ -14,7 +14,7 @@ const AIRTABLE_CONTACT_FIELD = "Contact";          // name to search in MTEK
 const AIRTABLE_CAL_NAME_FIELD = "CAL_NAME";        // optional, just for logs
 
 // Example: "https://bcycle.marianatek.com/api"
-const MTEK_BASE_URL = "https://YOUR-STUDIO-SUBDOMAIN.marianatek.com/api";
+const MTEK_BASE_URL = "https://bcycle.marianatek.com/api";
 
 /**
  * END CONFIG
