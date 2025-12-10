@@ -1,0 +1,37 @@
+name: MTEK customers → Airtable upsert
+
+on:
+  repository_dispatch:
+    types: [run-mtek-customers-to-airtable]
+
+jobs:
+  sync-customers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run sync script
+        env:
+          # MTEK
+          MTEK_BASE_URL: https://bcycle.marianatek.com
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          MTEK_CUSTOMERS_REPORT_ID: "336"
+          MTEK_CUSTOMERS_REPORT_SLUG: "customers-details"
+          MTEK_REPORT_PAGE_SIZE: "500"
+
+          # Airtable
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: "appofCRTxHoIe6dXI"   # <-- put your CTT base ID here
+          AIRTABLE_CUSTOMERS_TABLE: "Customers"
+          AIRTABLE_STUDIOS_TABLE: "Studio"
+
+          # Date to target: passed by Make, e.g. 2025-12-09
+          TARGET_DATE: ${{ github.event.client_payload.target_date }}
+        run: node scripts/mtek-customers-to-airtable.js
