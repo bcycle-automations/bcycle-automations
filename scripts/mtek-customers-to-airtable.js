@@ -1,69 +1,102 @@
 // scripts/mtek-customers-to-airtable.js
 
-// ---------- Config ----------
+// =====================
+// CONFIG / ENV
+// =====================
+
 const MTEK_BASE_URL = (process.env.MTEK_BASE_URL || "https://bcycle.marianatek.com").replace(/\/+$/, "");
 const RAW_MTEK_API_TOKEN = process.env.MTEK_API_TOKEN || "";
-const MTEK_API_TOKEN = RAW_MTEK_API_TOKEN.trim(); // clean token
+const MTEK_API_TOKEN = RAW_MTEK_API_TOKEN.trim(); // clean whitespace
+
 const REPORT_ID = process.env.MTEK_CUSTOMERS_REPORT_ID || "336";
 const REPORT_SLUG = process.env.MTEK_CUSTOMERS_REPORT_SLUG || "customers-details";
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 
 // Airtable
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
-const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID; // e.g. appXXXXXXXXXXXXXX
 const CUSTOMERS_TABLE = process.env.AIRTABLE_CUSTOMERS_TABLE || "Customers";
 const STUDIOS_TABLE = process.env.AIRTABLE_STUDIOS_TABLE || "Studio";
 
-// Default date = yesterday (UTC) if not provided
+// If TARGET_DATE not provided, default = yesterday (UTC)
 function getDefaultDate() {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
 const TARGET_DATE = process.env.TARGET_DATE || getDefaultDate();
 
-// ---- Column indices from the MTEK report rows ----
-// 🔴 YOU MUST ADJUST THESE TO MATCH YOUR REPORT
-const COL_EMAIL        = 2;
-const COL_FIRST_NAME   = 3;
-const COL_LAST_NAME    = 4;
-const COL_FULL_NAME    = 5;
-const COL_DATE_JOINED  = 6;
-const COL_HOME_STUDIO  = 25;
+// =====================
+// COLUMN INDICES (1-based, from your Postman dump)
+// =====================
+// headers[0] = "Customer ID"
+// headers[1] = "Email"
+// headers[2] = "First Name"
+// headers[3] = "Last Name"
+// headers[4] = "Full Name"
+// headers[5] = "Join Date"
+// ...
+// headers[24] = "Home Location"
+// ...
+// headers[47] = "Total Upcoming Reservations"
 
-// ---- Fields in Airtable ----
-const FIELD_EMAIL_LOWER     = "Email (lower)";
-const FIELD_EMAIL           = "Email";
-const FIELD_NAME            = "Name";
-const FIELD_PROFILE_CREATED = "Profile Created";
+const COL_EMAIL          = 2;   // "Email"
+const COL_FIRST_NAME     = 3;   // "First Name"
+const COL_LAST_NAME      = 4;   // "Last Name"
+const COL_FULL_NAME      = 5;   // "Full Name"
+const COL_DATE_JOINED    = 6;   // "Join Date"
+const COL_HOME_STUDIO    = 25;  // "Home Location"
+const COL_TOTAL_UPCOMING = 48;  // "Total Upcoming Reservations"
+
+// =====================
+// AIRTABLE FIELD NAMES
+// =====================
+
+const FIELD_EMAIL_LOWER      = "Email (lower)";
+const FIELD_EMAIL            = "Email";
+const FIELD_NAME             = "Name";
+const FIELD_PROFILE_CREATED  = "Profile Created";
 const FIELD_PREFERRED_STUDIO = "Preferred Studio";
-const FIELD_FIRST_CHECKIN   = "First Check-In";
+const FIELD_FIRST_CHECKIN    = "First Check-In"; // not used in logic now, but kept for reference
 
-// ---------- Sanity checks ----------
+// =====================
+// SANITY CHECKS
+// =====================
+
 console.log("MTEK_BASE_URL:", MTEK_BASE_URL);
 console.log(
   "MTEK_API_TOKEN present?",
   MTEK_API_TOKEN
-    ? `yes (starts with ${MTEK_API_TOKEN.slice(0,4)}..., len=${MTEK_API_TOKEN.length})`
+    ? `yes (starts with ${MTEK_API_TOKEN.slice(0, 4)}..., len=${MTEK_API_TOKEN.length})`
     : "NO"
 );
+console.log(
+  "AIRTABLE_TOKEN present?",
+  AIRTABLE_TOKEN ? "yes" : "NO"
+);
 console.log("Airtable base:", AIRTABLE_BASE_ID);
+console.log("Target date:", TARGET_DATE);
 
 if (!MTEK_API_TOKEN) {
-  console.error("Missing or empty MTEK_API_TOKEN");
+  console.error("❌ Missing or empty MTEK_API_TOKEN env var");
   process.exit(1);
 }
 if (!AIRTABLE_TOKEN) {
-  console.error("Missing AIRTABLE_TOKEN");
+  console.error("❌ Missing AIRTABLE_TOKEN env var");
   process.exit(1);
 }
 if (!AIRTABLE_BASE_ID) {
-  console.error("Missing AIRTABLE_BASE_ID");
+  console.error("❌ Missing AIRTABLE_BASE_ID env var");
   process.exit(1);
 }
 
-// ---------- Helpers ----------
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// =====================
+// HELPERS
+// =====================
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function fetchJson(url, options = {}) {
   const res = await fetch(url, options);
@@ -78,7 +111,10 @@ function normalize(str) {
   return (str || "").toString().trim().toLowerCase();
 }
 
-// ---------- MTEK: table report ----------
+// =====================
+// MTEK: TABLE REPORT
+// =====================
+
 async function fetchMtekReportPage(page) {
   const url = new URL("/api/table_report_data", MTEK_BASE_URL);
   url.searchParams.set("id", REPORT_ID);
@@ -90,14 +126,11 @@ async function fetchMtekReportPage(page) {
 
   const finalUrl = url.toString();
   console.log(`➡️  Calling MTEK page ${page}: ${finalUrl}`);
-  console.log(
-    "Auth header:",
-    `Bearer ${MTEK_API_TOKEN.slice(0,4)}...`
-  );
+  console.log("Using Authorization: Bearer <token> (len:", MTEK_API_TOKEN.length, ")");
 
   return fetchJson(finalUrl, {
     headers: {
-      // ✅ MTEK in your account expects Bearer
+      // ✅ You confirmed your instance uses Bearer
       Authorization: `Bearer ${MTEK_API_TOKEN}`,
       Accept: "application/vnd.api+json",
     },
@@ -133,7 +166,10 @@ async function fetchAllMtekRows() {
   return allRows;
 }
 
-// ---------- Airtable helpers ----------
+// =====================
+// AIRTABLE HELPERS
+// =====================
+
 const AIRTABLE_BASE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/`;
 
 async function airtableGet(table, params = {}) {
@@ -176,7 +212,8 @@ async function airtableUpdate(table, recordId, fields) {
   return json.records[0];
 }
 
-// ---------- Airtable: studios ----------
+// ========== Studios ==========
+
 async function fetchAllStudios() {
   let offset;
   const studios = [];
@@ -192,10 +229,11 @@ async function fetchAllStudios() {
         name: rec.fields?.Name || rec.fields?.name || "",
       });
     });
+
     offset = json.offset;
   } while (offset);
 
-  console.log(`📦 Loaded ${studios.length} studios`);
+  console.log(`📦 Loaded ${studios.length} studios from Airtable`);
   return studios;
 }
 
@@ -203,9 +241,11 @@ function findBestStudioId(studios, homeStudioName) {
   const target = normalize(homeStudioName);
   if (!target) return null;
 
+  // 1) case-insensitive exact match
   let studio = studios.find((s) => normalize(s.name) === target);
   if (studio) return studio.id;
 
+  // 2) loose contains either way
   studio = studios.find((s) => {
     const n = normalize(s.name);
     return n.includes(target) || target.includes(n);
@@ -215,19 +255,25 @@ function findBestStudioId(studios, homeStudioName) {
   return null;
 }
 
-// ---------- Airtable: customer lookup ----------
+// ========== Customers ==========
+
 async function findCustomerByEmailLower(emailLower) {
-  const formula = `LOWER({${FIELD_EMAIL_LOWER}}) = '${emailLower.replace(/'/g, "\\'")}'`;
+  // Email (lower) == lowercased email
+  const formula = `{${FIELD_EMAIL_LOWER}} = '${emailLower.replace(/'/g, "\\'")}'`;
   const json = await airtableGet(CUSTOMERS_TABLE, {
     filterByFormula: formula,
     maxRecords: "1",
   });
+
   return json.records && json.records.length > 0 ? json.records[0] : null;
 }
 
-// ---------- Main ----------
+// =====================
+// MAIN
+// =====================
+
 async function main() {
-  console.log(`🚀 MTEK → Airtable for date ${TARGET_DATE}`);
+  console.log(`🚀 MTEK → Airtable sync for date ${TARGET_DATE}`);
 
   const [rows, studios] = await Promise.all([
     fetchAllMtekRows(),
@@ -238,7 +284,7 @@ async function main() {
 
   let created = 0;
   let updated = 0;
-  let skippedFirstCheckIn = 0;
+  let skippedUpcomingNotZero = 0;
   let skippedNoEmail = 0;
 
   for (const row of rows) {
@@ -257,31 +303,33 @@ async function main() {
       `${firstName} ${lastName}`.trim() ||
       email;
 
-    const joinDateRaw = row[COL_DATE_JOINED];
+    const joinDateRaw = row[COL_DATE_JOINED]; // e.g. "2025-12-09T23:43:39.308080Z"
     const profileCreatedDate = joinDateRaw
-      ? joinDateRaw.toString().slice(0, 10)
+      ? joinDateRaw.toString().slice(0, 10) // YYYY-MM-DD
       : TARGET_DATE;
 
     const homeStudioName = row[COL_HOME_STUDIO] || "";
     const preferredStudioId = findBestStudioId(studios, homeStudioName);
 
+    // Guard: only process if Total Upcoming Reservations == 0
+    const totalUpcomingRaw = row[COL_TOTAL_UPCOMING];
+    const totalUpcoming = Number(totalUpcomingRaw || 0);
+    if (totalUpcoming !== 0) {
+      skippedUpcomingNotZero++;
+      continue;
+    }
+
     let customer = await findCustomerByEmailLower(emailLower);
 
     if (customer) {
-      const fields = customer.fields || {};
-      const firstCheckIn = fields[FIELD_FIRST_CHECKIN];
-
-      if (firstCheckIn) {
-        skippedFirstCheckIn++;
-        continue;
-      }
-
+      // Update existing record
       const updateFields = {
         [FIELD_EMAIL_LOWER]: emailLower,
         [FIELD_EMAIL]: email,
         [FIELD_NAME]: name,
         [FIELD_PROFILE_CREATED]: profileCreatedDate,
       };
+
       if (preferredStudioId) {
         updateFields[FIELD_PREFERRED_STUDIO] = [preferredStudioId];
       }
@@ -289,12 +337,14 @@ async function main() {
       await airtableUpdate(CUSTOMERS_TABLE, customer.id, updateFields);
       updated++;
     } else {
+      // Create new record
       const createFields = {
         [FIELD_EMAIL_LOWER]: emailLower,
         [FIELD_EMAIL]: email,
         [FIELD_NAME]: name,
         [FIELD_PROFILE_CREATED]: profileCreatedDate,
       };
+
       if (preferredStudioId) {
         createFields[FIELD_PREFERRED_STUDIO] = [preferredStudioId];
       }
@@ -303,11 +353,14 @@ async function main() {
       created++;
     }
 
+    // Be nice to Airtable rate limits
     await sleep(200);
   }
 
   console.log(
-    `✅ Done. Created: ${created}, Updated: ${updated}, Skipped (First Check-In): ${skippedFirstCheckIn}, Skipped (no email): ${skippedNoEmail}`
+    `✅ Done. Created: ${created}, Updated: ${updated},` +
+      ` Skipped (upcoming > 0): ${skippedUpcomingNotZero},` +
+      ` Skipped (no email): ${skippedNoEmail}`
   );
 }
 
