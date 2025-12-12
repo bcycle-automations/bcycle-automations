@@ -2,7 +2,7 @@
 
 'use strict';
 
-// --------- Config (adjust names if needed) ---------
+// --------- Config ---------
 
 const MTEK_BASE_URL = 'https://bcycle.marianatek.com/api';
 
@@ -10,11 +10,10 @@ const MTEK_BASE_URL = 'https://bcycle.marianatek.com/api';
 const AIRTABLE_BASE_ID = 'appofCRTxHoIe6dXI';
 const AIRTABLE_BASE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
 
-// Airtable table names in the Customer Tracking Tool base
 const AIRTABLE_TABLE_CTT = 'CTT SYNC DO NOT TOUCH';
 const AIRTABLE_TABLE_CUSTOMERS = 'Customers';
 
-// Airtable field names (NOT IDs) – adjust these if your field names differ
+// Airtable field names (NOT IDs) – change if yours differ
 const FIELD_PHONE_NUMBER = 'Phone number';
 const FIELD_FIRST_CLASS_DATE = 'First Class Date (Imported)';
 const FIELD_PROFILE_CREATED = 'Profile Created';
@@ -23,7 +22,7 @@ const FIELD_FIRST_CLASS_LINK = 'First Class';
 // New-people tag ID in MTEK
 const NEW_PEOPLE_TAG_ID = '463';
 
-// --------- Env + basic validation ---------
+// --------- Env ---------
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
 const MTEK_API_TOKEN = process.env.MTEK_API_TOKEN;
@@ -33,21 +32,35 @@ if (!AIRTABLE_TOKEN || !MTEK_API_TOKEN) {
   process.exit(1);
 }
 
-// Node 20 has global fetch
+// --------- Date helpers (Eastern Time) ---------
 
-// --------- Helper: date handling ---------
+function formatYMD(dateObj) {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
-function getTodayAndTomorrow() {
-  const now = new Date(); // UTC on GitHub runner
-  const todayStr = now.toISOString().slice(0, 10);
+/**
+ * Get today & tomorrow in America/New_York as YYYY-MM-DD strings.
+ */
+function getTodayAndTomorrowEastern() {
+  const nowUtc = new Date();
 
-  const tomorrowDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  const tomorrowStr = tomorrowDate.toISOString().slice(0, 10);
+  const nowET = new Date(
+    nowUtc.toLocaleString('en-US', { timeZone: 'America/New_York' })
+  );
+
+  const todayStr = formatYMD(nowET);
+
+  const tomorrowET = new Date(nowET);
+  tomorrowET.setDate(nowET.getDate() + 1);
+  const tomorrowStr = formatYMD(tomorrowET);
 
   return { todayStr, tomorrowStr };
 }
 
-// --------- Helper: HTTP wrappers ---------
+// --------- HTTP helper ---------
 
 async function fetchJson(url, options = {}) {
   const res = await fetch(url, options);
@@ -75,7 +88,7 @@ async function fetchJson(url, options = {}) {
 // --------- MTEK helpers ---------
 
 async function fetchReservationsForToday() {
-  const { todayStr, tomorrowStr } = getTodayAndTomorrow();
+  const { todayStr, tomorrowStr } = getTodayAndTomorrowEastern();
 
   const params = new URLSearchParams({
     class_session_min_date: todayStr,
@@ -86,7 +99,7 @@ async function fetchReservationsForToday() {
 
   const url = `${MTEK_BASE_URL}/reservations?${params.toString()}`;
 
-  console.log(`Fetching reservations from MTEK: ${url}`);
+  console.log(`Fetching reservations from MTEK (ET dates): ${url}`);
 
   const json = await fetchJson(url, {
     method: 'GET',
@@ -97,7 +110,7 @@ async function fetchReservationsForToday() {
   });
 
   const data = json.data || [];
-  console.log(`Fetched ${data.length} reservations for today.`);
+  console.log(`Fetched ${data.length} reservations for today (ET).`);
   return data;
 }
 
@@ -146,7 +159,9 @@ async function fetchUserByEmail(email) {
 async function fetchClassSession(classSessionId) {
   if (!classSessionId) return null;
 
-  const url = `${MTEK_BASE_URL}/class_sessions/${encodeURIComponent(classSessionId)}`;
+  const url = `${MTEK_BASE_URL}/class_sessions/${encodeURIComponent(
+    classSessionId
+  )}`;
   const json = await fetchJson(url, {
     method: 'GET',
     headers: {
@@ -173,7 +188,9 @@ async function findCTTRecordByClassId(classSessionId) {
     pageSize: '1'
   });
 
-  const url = `${AIRTABLE_BASE_URL}/${encodeURIComponent(AIRTABLE_TABLE_CTT)}?${params.toString()}`;
+  const url = `${AIRTABLE_BASE_URL}/${encodeURIComponent(
+    AIRTABLE_TABLE_CTT
+  )}?${params.toString()}`;
 
   const json = await fetchJson(url, {
     method: 'GET',
@@ -203,7 +220,9 @@ async function findCustomerByEmail(email) {
     pageSize: '1'
   });
 
-  const url = `${AIRTABLE_BASE_URL}/${encodeURIComponent(AIRTABLE_TABLE_CUSTOMERS)}?${params.toString()}`;
+  const url = `${AIRTABLE_BASE_URL}/${encodeURIComponent(
+    AIRTABLE_TABLE_CUSTOMERS
+  )}?${params.toString()}`;
 
   const json = await fetchJson(url, {
     method: 'GET',
@@ -222,8 +241,42 @@ async function findCustomerByEmail(email) {
   return records[0];
 }
 
+async function createCustomerRecord(initialFields) {
+  const url = `${AIRTABLE_BASE_URL}/${encodeURIComponent(
+    AIRTABLE_TABLE_CUSTOMERS
+  )}`;
+
+  const body = {
+    records: [
+      {
+        fields: initialFields
+      }
+    ]
+  };
+
+  const json = await fetchJson(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  const records = json.records || [];
+  if (!records.length) {
+    console.error('Airtable createCustomerRecord: no records returned');
+    return null;
+  }
+
+  return records[0];
+}
+
 async function updateCustomerRecord(customerRecordId, fields) {
-  const url = `${AIRTABLE_BASE_URL}/${encodeURIComponent(AIRTABLE_TABLE_CUSTOMERS)}`;
+  const url = `${AIRTABLE_BASE_URL}/${encodeURIComponent(
+    AIRTABLE_TABLE_CUSTOMERS
+  )}`;
 
   const body = {
     records: [
@@ -262,7 +315,8 @@ async function processReservation(reservation) {
     return { skipped: true, reason: 'no-new-people-tag' };
   }
 
-  const classSessionId = reservation?.relationships?.class_session?.data?.id || null;
+  const classSessionId =
+    reservation?.relationships?.class_session?.data?.id || null;
   if (!classSessionId) {
     console.log(`Reservation ${resId} has no class_session.id – skipping`);
     return { skipped: true, reason: 'no-class-session-id' };
@@ -313,10 +367,24 @@ async function processReservation(reservation) {
 
   const cttRecordId = cttRecord.id;
 
-  // Find Customer by email (guest or normal)
-  const customerRecord = await findCustomerByEmail(emailForCustomerSearch);
+  // Find or create Customer by email (guest or normal)
+  let customerRecord = await findCustomerByEmail(emailForCustomerSearch);
   if (!customerRecord) {
-    return { skipped: true, reason: 'no-customer-record' };
+    console.log(
+      `No Customer found for email=${emailForCustomerSearch}, creating new record.`
+    );
+    const newCustomer = await createCustomerRecord({
+      Email: emailForCustomerSearch
+    });
+
+    if (!newCustomer) {
+      console.log(
+        `Reservation ${resId}: failed to create Customer record – skipping`
+      );
+      return { skipped: true, reason: 'customer-create-failed' };
+    }
+
+    customerRecord = newCustomer;
   }
 
   const customerRecordId = customerRecord.id;
@@ -371,7 +439,7 @@ async function processReservation(reservation) {
         if (result.skipped) {
           skipped++;
         } else {
-            processed++;
+          processed++;
         }
       } catch (err) {
         skipped++;
