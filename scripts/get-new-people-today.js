@@ -15,7 +15,7 @@ const AIRTABLE_TABLE_CTT = 'CTT SYNC DO NOT TOUCH';
 const AIRTABLE_TABLE_CUSTOMERS = 'Customers';
 
 // Airtable field names (NOT IDs) – adjust these if your field names differ
-const FIELD_PHONE_NUMBER = 'Phone Number';
+const FIELD_PHONE_NUMBER = 'Phone number';
 const FIELD_FIRST_CLASS_DATE = 'First Class Date (Imported)';
 const FIELD_PROFILE_CREATED = 'Profile Created';
 const FIELD_FIRST_CLASS_LINK = 'First Class';
