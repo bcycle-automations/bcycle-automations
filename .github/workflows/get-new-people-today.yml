@@ -1,0 +1,30 @@
+name: Get New People Today
+
+on:
+  # Optional manual run from GitHub UI
+  workflow_dispatch: {}
+
+  # Triggered via API call with JSON body from Make.com
+  repository_dispatch:
+    types:
+      - get-new-people-today
+
+jobs:
+  get-new-people-today:
+    runs-on: ubuntu-latest
+
+    env:
+      AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+      MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run "Get New People Today" script
+        run: node scripts/get-new-people-today.js
