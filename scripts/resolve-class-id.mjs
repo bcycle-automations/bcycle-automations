@@ -124,7 +124,7 @@ async function mtekFindClassSessionId({
 }
 
 async function main() {
-  const airtableApiKey = requireEnv("AIRTABLE_API_KEY");
+  const airtableApiKey = requireEnv("AIRTABLE_TOKEN");
   const mtekToken = requireEnv("MTEK_API_TOKEN");
 
   const baseId = requireEnv("AIRTABLE_BASE_ID");
