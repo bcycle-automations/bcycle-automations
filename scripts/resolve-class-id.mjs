@@ -1,18 +1,23 @@
 /* eslint-disable no-console */
+/**
+ * Resolve Class ID Automation
+ * - Full run: pulls ALL records from Airtable view (with optional MAX_RECORDS safety cap)
+ * - Single-record run: if DISPATCH_RECORD_ID is provided, fetches that record directly by ID (does NOT depend on view or MAX_RECORDS)
+ * - Time handling: Airtable `date` is treated as America/Toronto wall-clock time (EST/EDT) and converted to TRUE UTC (DST-aware)
+ * - Writes Airtable "Class ID" as NUMBER (not string)
+ */
 
 const AIRTABLE_API_BASE = "https://api.airtable.com/v0";
-const TIMEZONE = "America/Toronto"; // EST/EDT automatically (DST-aware)
+const TIMEZONE = "America/Toronto";
 
 function requireEnv(name) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env var: ${name}`);
   return v;
 }
-
 function getEnv(name, fallback = "") {
   return process.env[name] ?? fallback;
 }
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -44,25 +49,17 @@ async function httpJson(url, { method = "GET", headers = {}, body } = {}) {
 }
 
 /**
- * Parse Airtable date field into numeric components WITHOUT trusting timezone markers.
- * We intentionally ignore "Z" because user confirmed the value is actually local time.
- *
- * Accepts:
- *  - "2026-02-01T10:30:00.000Z"
- *  - "2026-02-01T10:30:00Z"
- *  - "2026-02-01T10:30"
- *  - "2026-02-01 10:30"
+ * Parse Airtable datetime string into wall-clock components.
+ * IMPORTANT: we IGNORE the trailing "Z" if present because user confirmed the value is local time.
  */
 function parseWallClockParts(input) {
   const s = String(input).trim();
-
-  // Normalize: remove trailing .000Z / Z (we treat it as local wall-clock time)
+  // Strip timezone marker + milliseconds, we treat as local wall time
   const cleaned = s.replace(/\.\d{1,3}Z$/, "").replace(/Z$/, "");
 
   const m = cleaned.match(
     /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/
   );
-
   if (!m) throw new Error(`Unrecognized Airtable date format: ${input}`);
 
   const year = Number(m[1]);
@@ -75,16 +72,14 @@ function parseWallClockParts(input) {
   if ([year, month, day, hour, minute, second].some(Number.isNaN)) {
     throw new Error(`Invalid Airtable date parts: ${input}`);
   }
-
   return { year, month, day, hour, minute, second };
 }
 
 /**
- * Get the timezone offset (in minutes) for a given UTC Date in a specific IANA timezone.
- * Offset returned is: (local-as-UTC - actual-UTC) in minutes.
- *
- * Example: In winter Toronto is UTC-5.
- * For a UTC instant, local clock is 5 hours earlier -> offset = -300.
+ * Compute timezone offset (minutes) for a given UTC instant in a given IANA timezone.
+ * Returns offset such that:
+ *   localTime = utcTime + offset
+ * Example: Toronto winter (EST) => offset = -300 minutes
  */
 function getTimeZoneOffsetMinutes(dateUtc, timeZone) {
   const dtf = new Intl.DateTimeFormat("en-CA", {
@@ -108,48 +103,54 @@ function getTimeZoneOffsetMinutes(dateUtc, timeZone) {
   const mi = Number(map.minute);
   const s = Number(map.second);
 
-  // This is the "local wall time" rendered, interpreted as if it were UTC
+  // Interpret the rendered LOCAL wall time as if it were UTC:
   const localAsUtcMs = Date.UTC(y, mo - 1, d, h, mi, s);
 
-  // Offset in minutes
+  // offset = local - utc
   return (localAsUtcMs - dateUtc.getTime()) / 60000;
 }
 
 /**
- * Convert a Toronto wall-clock datetime to a true UTC ISO string.
- * DST is handled automatically because offset is computed for that date.
+ * Convert an America/Toronto wall-clock datetime to TRUE UTC ISO string (DST-aware).
  *
- * Key formula:
- *   utcMs = wallClockAsUtcMs - offsetMinutes(wallClockInstantGuess)*60*1000
- *
- * Where wallClockAsUtcMs is Date.UTC(year,month,day,hour,minute,second)
+ * If Airtable wall clock is 10:30:
+ * - In winter (EST, UTC-5) => 15:30Z
+ * - In summer (EDT, UTC-4) => 14:30Z
  */
 function torontoWallClockToUtcIso(input) {
   const { year, month, day, hour, minute, second } = parseWallClockParts(input);
 
-  // Treat the wall clock numbers as if they were UTC (a "guess")
+  // Treat wall-clock components as if they were UTC (a guess instant)
   const wallClockAsUtcMs = Date.UTC(year, month - 1, day, hour, minute, second);
-  const guessDateUtc = new Date(wallClockAsUtcMs);
+  const guessUtc = new Date(wallClockAsUtcMs);
 
-  if (Number.isNaN(guessDateUtc.getTime())) {
-    throw new Error(`Invalid wall-clock date from Airtable: ${input}`);
+  if (Number.isNaN(guessUtc.getTime())) {
+    throw new Error(`Invalid date from Airtable: ${input}`);
   }
 
-  // Compute correct offset for that moment in Toronto (DST-aware)
-  const offsetMin = getTimeZoneOffsetMinutes(guessDateUtc, TIMEZONE);
+  // Compute Toronto offset at that instant (DST-aware)
+  const offsetMin = getTimeZoneOffsetMinutes(guessUtc, TIMEZONE);
 
-  // Convert wall-clock to real UTC
-  const utcMs = wallClockAsUtcMs - offsetMin * 60 * 1000;
-  const utcDate = new Date(utcMs);
+  // Convert wall-clock to real UTC:
+  // wall = utc + offset  =>  utc = wall - offset
+  const realUtcMs = wallClockAsUtcMs - offsetMin * 60 * 1000;
+  const realUtc = new Date(realUtcMs);
 
-  return utcDate.toISOString().replace(".000Z", "Z");
+  return realUtc.toISOString().replace(".000Z", "Z");
 }
 
-async function airtableListRecords({ baseId, tableName, viewName, token, maxRecords }) {
+/* ---------------- Airtable ---------------- */
+
+async function airtableGetRecord({ baseId, tableName, recordId, token }) {
+  const url = `${AIRTABLE_API_BASE}/${baseId}/${encodeURIComponent(tableName)}/${recordId}`;
+  return httpJson(url, { headers: { Authorization: `Bearer ${token}` } });
+}
+
+async function airtableListRecordsAll({ baseId, tableName, viewName, token, maxRecords }) {
   const records = [];
   let offset;
 
-  while (records.length < maxRecords) {
+  while (true) {
     const url = new URL(`${AIRTABLE_API_BASE}/${baseId}/${encodeURIComponent(tableName)}`);
     url.searchParams.set("view", viewName);
     url.searchParams.set("pageSize", "100");
@@ -161,13 +162,17 @@ async function airtableListRecords({ baseId, tableName, viewName, token, maxReco
 
     if (Array.isArray(data.records)) records.push(...data.records);
 
+    if (maxRecords && records.length >= maxRecords) {
+      return records.slice(0, maxRecords);
+    }
+
     offset = data.offset;
     if (!offset) break;
 
     await sleep(120);
   }
 
-  return records.slice(0, maxRecords);
+  return records;
 }
 
 async function airtableUpdateRecord({ baseId, tableName, recordId, token, fields }) {
@@ -178,6 +183,8 @@ async function airtableUpdateRecord({ baseId, tableName, recordId, token, fields
     body: { fields },
   });
 }
+
+/* ---------------- MTEK ---------------- */
 
 async function mtekGetLocationIdByName({ mtekBaseUrl, token, roomName }) {
   const url = new URL(`${mtekBaseUrl}/api/locations`);
@@ -207,10 +214,14 @@ async function mtekFindClassSessionId({ mtekBaseUrl, token, locationId, utcIso }
   return first?.id ?? null;
 }
 
+/* ---------------- Main ---------------- */
+
 async function main() {
+  // Secrets
   const airtableToken = requireEnv("AIRTABLE_TOKEN");
   const mtekToken = requireEnv("MTEK_API_TOKEN");
 
+  // Config
   const baseId = requireEnv("AIRTABLE_BASE_ID");
   const tableName = requireEnv("AIRTABLE_TABLE_NAME");
   const viewName = requireEnv("AIRTABLE_VIEW_NAME");
@@ -221,24 +232,39 @@ async function main() {
 
   const mtekBaseUrl = requireEnv("MTEK_BASE_URL");
 
-  const maxRecords = Number(getEnv("MAX_RECORDS", "500"));
-  const dispatchRecordId = (getEnv("DISPATCH_RECORD_ID") || "").trim();
+  // Safety cap for FULL runs only (optional). Set to "" to disable.
+  const maxRecordsRaw = String(getEnv("MAX_RECORDS", "")).trim();
+  const maxRecords =
+    maxRecordsRaw === "" ? null : Number.isFinite(Number(maxRecordsRaw)) ? Number(maxRecordsRaw) : null;
+
+  const dispatchRecordId = String(getEnv("DISPATCH_RECORD_ID", "")).trim();
 
   console.log("Starting Resolve Class ID job");
   console.log(`Airtable 'date' treated as wall-clock in ${TIMEZONE} (DST-aware)`);
   console.log(`Airtable base=${baseId} table="${tableName}" view="${viewName}"`);
   if (dispatchRecordId) console.log(`Dispatch scope: record_id=${dispatchRecordId}`);
+  if (!dispatchRecordId && maxRecords) console.log(`MAX_RECORDS safety cap (full runs): ${maxRecords}`);
 
-  let records = await airtableListRecords({
-    baseId,
-    tableName,
-    viewName,
-    token: airtableToken,
-    maxRecords,
-  });
+  let records = [];
 
   if (dispatchRecordId) {
-    records = records.filter((r) => r.id === dispatchRecordId);
+    // IMPORTANT: for single-record runs, fetch by ID directly (do not rely on view/pagination/MAX_RECORDS)
+    const one = await airtableGetRecord({
+      baseId,
+      tableName,
+      recordId: dispatchRecordId,
+      token: airtableToken,
+    });
+    records = [one];
+  } else {
+    // Full run: pull entire view (paginated), optional safety cap
+    records = await airtableListRecordsAll({
+      baseId,
+      tableName,
+      viewName,
+      token: airtableToken,
+      maxRecords,
+    });
   }
 
   console.log(`Records to process: ${records.length}`);
@@ -260,15 +286,17 @@ async function main() {
       continue;
     }
 
-    if (existingClassId) {
+    if (existingClassId !== undefined && existingClassId !== null && String(existingClassId).trim() !== "") {
       skipped++;
       console.log(`SKIP ${r.id}: already has Class ID = ${existingClassId}`);
       continue;
     }
 
     try {
+      // Convert Airtable local wall time -> true UTC
       const utcIso = torontoWallClockToUtcIso(dateLocal);
 
+      // Resolve location
       const locationId = await mtekGetLocationIdByName({
         mtekBaseUrl,
         token: mtekToken,
@@ -281,6 +309,7 @@ async function main() {
         continue;
       }
 
+      // Resolve class session
       const classSessionId = await mtekFindClassSessionId({
         mtekBaseUrl,
         token: mtekToken,
@@ -296,19 +325,25 @@ async function main() {
         continue;
       }
 
+      // Airtable "Class ID" is a NUMBER field
+      const classIdNum = Number(classSessionId);
+      if (!Number.isFinite(classIdNum)) {
+        throw new Error(`MTEK class_session_id is not numeric: ${classSessionId}`);
+      }
+
       await airtableUpdateRecord({
         baseId,
         tableName,
         recordId: r.id,
         token: airtableToken,
         fields: {
-  [fieldClassId]: Number(classSessionId),
+          [fieldClassId]: classIdNum,
         },
       });
 
       updated++;
       console.log(
-        `UPDATED ${r.id}: room="${room}" local="${dateLocal}" => utc="${utcIso}" location=${locationId} class_session_id=${classSessionId}`
+        `UPDATED ${r.id}: room="${room}" local="${dateLocal}" => utc="${utcIso}" location=${locationId} class_session_id=${classIdNum}`
       );
 
       await sleep(120);
@@ -320,7 +355,13 @@ async function main() {
   }
 
   console.log("Done");
-  console.log(JSON.stringify({ processed: records.length, updated, skipped, notFound, errors }, null, 2));
+  console.log(
+    JSON.stringify(
+      { processed: records.length, updated, skipped, notFound, errors },
+      null,
+      2
+    )
+  );
 
   if (errors > 0) process.exitCode = 1;
 }
