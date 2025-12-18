@@ -1,7 +1,7 @@
 /* eslint-disable no-console */
 
 const AIRTABLE_API_BASE = "https://api.airtable.com/v0";
-const TIMEZONE = "America/Toronto"; // interpret Airtable "date" as local studio time
+const TIMEZONE = "America/Toronto"; // EST/EDT automatically (DST-aware)
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -44,24 +44,26 @@ async function httpJson(url, { method = "GET", headers = {}, body } = {}) {
 }
 
 /**
- * Parse Airtable date input into components WITHOUT trusting timezone markers.
+ * Parse Airtable date field into numeric components WITHOUT trusting timezone markers.
+ * We intentionally ignore "Z" because user confirmed the value is actually local time.
+ *
  * Accepts:
- *  - "2026-02-01T10:00:00.000Z"
- *  - "2026-02-01T10:00:00Z"
- *  - "2026-02-01T10:00"
- *  - "2026-02-01 10:00"
+ *  - "2026-02-01T10:30:00.000Z"
+ *  - "2026-02-01T10:30:00Z"
+ *  - "2026-02-01T10:30"
+ *  - "2026-02-01 10:30"
  */
-function parseDateParts(input) {
-  const s = String(input).trim().replace(/\.\d{1,3}Z$/, "Z"); // normalize
-  const m =
-    s.match(
-      /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?(?:Z)?$/
-    ) ||
-    s.match(
-      /^(\d{4})-(\d{2})-(\d{2})$/
-    );
+function parseWallClockParts(input) {
+  const s = String(input).trim();
 
-  if (!m) throw new Error(`Unrecognized date format from Airtable: ${input}`);
+  // Normalize: remove trailing .000Z / Z (we treat it as local wall-clock time)
+  const cleaned = s.replace(/\.\d{1,3}Z$/, "").replace(/Z$/, "");
+
+  const m = cleaned.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/
+  );
+
+  if (!m) throw new Error(`Unrecognized Airtable date format: ${input}`);
 
   const year = Number(m[1]);
   const month = Number(m[2]);
@@ -70,36 +72,23 @@ function parseDateParts(input) {
   const minute = m[5] != null ? Number(m[5]) : 0;
   const second = m[6] != null ? Number(m[6]) : 0;
 
-  if (
-    [year, month, day, hour, minute, second].some((n) => Number.isNaN(n))
-  ) {
-    throw new Error(`Invalid numeric datetime parts from Airtable: ${input}`);
+  if ([year, month, day, hour, minute, second].some(Number.isNaN)) {
+    throw new Error(`Invalid Airtable date parts: ${input}`);
   }
 
   return { year, month, day, hour, minute, second };
 }
 
 /**
- * Convert a "wall clock" datetime in America/Toronto to true UTC ISO string.
- * IMPORTANT: Airtable shows "UTC", but user confirmed it's actually local EST/EDT time.
+ * Get the timezone offset (in minutes) for a given UTC Date in a specific IANA timezone.
+ * Offset returned is: (local-as-UTC - actual-UTC) in minutes.
  *
- * Approach (no deps):
- * - Build a UTC "guess" using the same numeric components.
- * - Ask Intl to render that instant in America/Toronto.
- * - Parse that rendered wall-clock as if it were UTC (runner is UTC), compute offset.
- * - Apply offset to the guess to get the real UTC instant for that wall-clock time.
+ * Example: In winter Toronto is UTC-5.
+ * For a UTC instant, local clock is 5 hours earlier -> offset = -300.
  */
-function torontoWallTimeToUtcIso(input) {
-  const { year, month, day, hour, minute, second } = parseDateParts(input);
-
-  const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-  if (Number.isNaN(utcGuess.getTime())) {
-    throw new Error(`Invalid date after UTC guess build: ${input}`);
-  }
-
-  // Render utcGuess in America/Toronto as a wall time string, then parse as UTC (runner)
-  const tzWallAsString = utcGuess.toLocaleString("en-US", {
-    timeZone: TIMEZONE,
+function getTimeZoneOffsetMinutes(dateUtc, timeZone) {
+  const dtf = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -109,19 +98,51 @@ function torontoWallTimeToUtcIso(input) {
     hour12: false,
   });
 
-  // tzWallAsString like "02/01/2026, 05:00:00" (Toronto wall time for utcGuess)
-  const tzWallParsedAsUtc = new Date(tzWallAsString);
-  if (Number.isNaN(tzWallParsedAsUtc.getTime())) {
-    throw new Error(`Failed to parse timezone wall time string: ${tzWallAsString}`);
+  const parts = dtf.formatToParts(dateUtc);
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+
+  const y = Number(map.year);
+  const mo = Number(map.month);
+  const d = Number(map.day);
+  const h = Number(map.hour);
+  const mi = Number(map.minute);
+  const s = Number(map.second);
+
+  // This is the "local wall time" rendered, interpreted as if it were UTC
+  const localAsUtcMs = Date.UTC(y, mo - 1, d, h, mi, s);
+
+  // Offset in minutes
+  return (localAsUtcMs - dateUtc.getTime()) / 60000;
+}
+
+/**
+ * Convert a Toronto wall-clock datetime to a true UTC ISO string.
+ * DST is handled automatically because offset is computed for that date.
+ *
+ * Key formula:
+ *   utcMs = wallClockAsUtcMs - offsetMinutes(wallClockInstantGuess)*60*1000
+ *
+ * Where wallClockAsUtcMs is Date.UTC(year,month,day,hour,minute,second)
+ */
+function torontoWallClockToUtcIso(input) {
+  const { year, month, day, hour, minute, second } = parseWallClockParts(input);
+
+  // Treat the wall clock numbers as if they were UTC (a "guess")
+  const wallClockAsUtcMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  const guessDateUtc = new Date(wallClockAsUtcMs);
+
+  if (Number.isNaN(guessDateUtc.getTime())) {
+    throw new Error(`Invalid wall-clock date from Airtable: ${input}`);
   }
 
-  // Offset between the guess instant and the Toronto wall-clock moment representation
-  const offsetMs = utcGuess.getTime() - tzWallParsedAsUtc.getTime();
+  // Compute correct offset for that moment in Toronto (DST-aware)
+  const offsetMin = getTimeZoneOffsetMinutes(guessDateUtc, TIMEZONE);
 
-  // Real UTC instant for the intended Toronto wall time
-  const realUtc = new Date(utcGuess.getTime() + offsetMs);
+  // Convert wall-clock to real UTC
+  const utcMs = wallClockAsUtcMs - offsetMin * 60 * 1000;
+  const utcDate = new Date(utcMs);
 
-  return realUtc.toISOString().replace(".000Z", "Z");
+  return utcDate.toISOString().replace(".000Z", "Z");
 }
 
 async function airtableListRecords({ baseId, tableName, viewName, token, maxRecords }) {
@@ -204,7 +225,7 @@ async function main() {
   const dispatchRecordId = (getEnv("DISPATCH_RECORD_ID") || "").trim();
 
   console.log("Starting Resolve Class ID job");
-  console.log(`Timezone interpretation: ${TIMEZONE} (Airtable 'date' treated as local)`);
+  console.log(`Airtable 'date' treated as wall-clock in ${TIMEZONE} (DST-aware)`);
   console.log(`Airtable base=${baseId} table="${tableName}" view="${viewName}"`);
   if (dispatchRecordId) console.log(`Dispatch scope: record_id=${dispatchRecordId}`);
 
@@ -246,7 +267,7 @@ async function main() {
     }
 
     try {
-      const utcIso = torontoWallTimeToUtcIso(dateLocal);
+      const utcIso = torontoWallClockToUtcIso(dateLocal);
 
       const locationId = await mtekGetLocationIdByName({
         mtekBaseUrl,
