@@ -302,7 +302,7 @@ async function main() {
         recordId: r.id,
         token: airtableToken,
         fields: {
-          [fieldClassId]: String(classSessionId),
+  [fieldClassId]: Number(classSessionId),
         },
       });
 
