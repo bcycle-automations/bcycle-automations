@@ -1,0 +1,9 @@
+{
+  "name": "bcycle-automations",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "resolve-class-id": "node scripts/resolve-class-id.mjs"
+  },
+  "dependencies": {}
+}
