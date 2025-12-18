@@ -61,5 +61,5 @@ jobs:
         env:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
-          DISPATCH_RECORD_ID: ${{ github.event.client_payload.record_id || inputs.record_id }}
+          DISPATCH_RECORD_ID: ${{ inputs.record_id || github.event.client_payload.record_id }}
         run: node scripts/resolve-class-id.mjs
