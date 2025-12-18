@@ -1,0 +1,55 @@
+name: Resolve Class ID from MTEK
+
+on:
+  schedule:
+    # 1:00 AM EST = 06:00 UTC (non-DST)
+    - cron: "0 6 * * *"
+
+  repository_dispatch:
+    types: [resolve_class_id]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resolve-class-id
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      AIRTABLE_BASE_ID: applRovmu340OSBSg
+      AIRTABLE_TABLE_NAME: All Classes
+      AIRTABLE_VIEW_NAME: NO ID DO NOT TOUCH
+
+      # Airtable field names (match your base exactly)
+      AIRTABLE_FIELD_ROOM: room
+      AIRTABLE_FIELD_DATE_UTC: date
+      AIRTABLE_FIELD_CLASS_ID: Class ID
+
+      MTEK_BASE_URL: https://bcycle.marianatek.com
+
+      # Optional: how many Airtable rows to process per run (safety)
+      MAX_RECORDS: "500"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Run resolver
+        env:
+          AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          DISPATCH_RECORD_ID: ${{ github.event.client_payload.record_id }}
+        run: node scripts/resolve-class-id.mjs
