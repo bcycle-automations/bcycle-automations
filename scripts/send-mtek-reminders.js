@@ -223,7 +223,7 @@ async function processHourWindow(targetDate, hour, studiosByLocationId) {
     `${MTEK_BASE}/reservations` +
     `?class_session_min_datetime=${encodeURIComponent(startDateTime)}` +
     `&class_session_max_datetime=${encodeURIComponent(endDateTime)}` +
-    `&status=pending&page_size=1000`;
+    `&status=pending&reservation_type=standard&page_size=1000`;
 
   console.log(`Reservations URL: ${reservationsUrl}`);
 
