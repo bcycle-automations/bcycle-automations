@@ -1,14 +1,35 @@
 /* eslint-disable no-console */
 /**
- * Resolve Class ID Automation (robust datetime handling)
+ * Resolve Class ID Automation (robust datetime handling + Airtable string formatting)
  *
- * Key fixes:
- * - Airtable "fx" formula date strings are NOT reliably parsed by `new Date()` in Node.
- * - We parse common Airtable/UI formats deterministically.
- * - We query MTEK within a small ±WINDOW_MINUTES range and pick the closest match.
+ * Fixes:
+ * - Airtable cellFormat=string requires timeZone + userLocale
+ * - Parses Airtable "fx" formula date strings deterministically (e.g., "2/2/2026 7:15am EST")
+ * - Queries MTEK within a small ±WINDOW_MINUTES range and picks the closest session
+ *
+ * Required env:
+ * - AIRTABLE_TOKEN
+ * - AIRTABLE_BASE_ID
+ * - AIRTABLE_TABLE_NAME
+ * - AIRTABLE_VIEW_NAME
+ * - AIRTABLE_FIELD_ROOM
+ * - AIRTABLE_FIELD_DATE_UTC      (yes, can be your "date" formula field name)
+ * - AIRTABLE_FIELD_CLASS_ID
+ * - MTEK_API_TOKEN
+ * - MTEK_BASE_URL
+ *
+ * Optional env:
+ * - MAX_RECORDS
+ * - DISPATCH_RECORD_ID
+ * - WINDOW_MINUTES              (default 2)
+ * - DEFAULT_TZ_OFFSET           (default -05:00) used only if Airtable string has NO tz
+ * - AIRTABLE_TIMEZONE           (default America/New_York) used for cellFormat=string rendering
+ * - AIRTABLE_USER_LOCALE        (default en-US) used for cellFormat=string rendering
  */
 
 const AIRTABLE_API_BASE = "https://api.airtable.com/v0";
+
+/* ---------------- Env helpers ---------------- */
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -21,6 +42,8 @@ function getEnv(name, fallback = "") {
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+
+/* ---------------- HTTP helper ---------------- */
 
 async function httpJson(url, { method = "GET", headers = {}, body } = {}) {
   const res = await fetch(url, {
@@ -56,7 +79,7 @@ async function httpJson(url, { method = "GET", headers = {}, body } = {}) {
  * Handles:
  * 1) ISO strings like: 2026-02-02T12:15:00.000Z (safe)
  * 2) ISO strings w/ offset: 2026-02-02T07:15:00-05:00 (safe)
- * 3) Formula/UI-like strings: "2/2/2026 7:15am EST" or "2/2/2026 7:15 AM"
+ * 3) Airtable string cellFormat outputs like: "2/2/2026 7:15am EST"
  *
  * Notes:
  * - If no timezone is present in the string, we fall back to DEFAULT_TZ_OFFSET env (e.g. "-05:00").
@@ -64,7 +87,6 @@ async function httpJson(url, { method = "GET", headers = {}, body } = {}) {
 function airtableDatetimeToUtcIso(raw) {
   if (raw == null || raw === "") throw new Error(`Missing Airtable datetime value`);
 
-  // If Airtable gives a number (rare), treat as epoch ms
   if (typeof raw === "number") {
     const d = new Date(raw);
     if (Number.isNaN(d.getTime())) throw new Error(`Invalid epoch datetime: ${raw}`);
@@ -73,17 +95,17 @@ function airtableDatetimeToUtcIso(raw) {
 
   const s = String(raw).trim();
 
-  // Case 1: ISO with Z or offset → Date parsing is reliable
-  // Examples: 2026-02-02T12:15:00.000Z, 2026-02-02T07:15:00-05:00
+  // ISO with Z or offset
   if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
     const d = new Date(s);
     if (Number.isNaN(d.getTime())) throw new Error(`Invalid ISO datetime: ${s}`);
     return d.toISOString().replace(".000Z", "Z");
   }
 
-  // Case 2: "M/D/YYYY h:mma [TZ]" or "M/D/YYYY h:mm AM [TZ]"
-  // Examples: "2/2/2026 7:15am EST", "02/02/2026 7:15 AM", etc.
-  // We parse this ourselves to avoid locale-dependent Date parsing.
+  // Common Airtable string formats (from cellFormat=string):
+  // "2/2/2026 7:15am EST"
+  // "02/02/2026 7:15 AM"
+  // "2/2/2026 7:15 AM EST"
   const m = s.match(
     /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)?\s*(EST|EDT|ET|UTC|GMT)?$/i
   );
@@ -121,16 +143,15 @@ function airtableDatetimeToUtcIso(raw) {
   const defaultOffset = String(getEnv("DEFAULT_TZ_OFFSET", "-05:00")).trim();
 
   // Map common abbreviations
-  // EST = UTC-5, EDT = UTC-4, ET = defaultOffset (you decide via env)
   let offset = defaultOffset;
-
   if (tzAbbrev === "UTC" || tzAbbrev === "GMT") offset = "+00:00";
   if (tzAbbrev === "EST") offset = "-05:00";
   if (tzAbbrev === "EDT") offset = "-04:00";
   if (tzAbbrev === "ET") offset = defaultOffset;
 
-  // Build a stable ISO with offset: YYYY-MM-DDTHH:mm:00±HH:MM
   const pad2 = (n) => String(n).padStart(2, "0");
+
+  // Build stable ISO with offset then convert to UTC
   const isoWithOffset = `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:${pad2(
     minute
   )}:00${offset}`;
@@ -150,10 +171,21 @@ function addMinutesUtcIso(utcIso, minutes) {
 
 /* ---------------- Airtable ---------------- */
 
-async function airtableGetRecord({ baseId, tableName, recordId, token }) {
-  const url = new URL(`${AIRTABLE_API_BASE}/${baseId}/${encodeURIComponent(tableName)}/${recordId}`);
-  // Asking for string cell format helps when the field is formula/display-oriented
+async function airtableGetRecord({
+  baseId,
+  tableName,
+  recordId,
+  token,
+  timeZone,
+  userLocale,
+}) {
+  const url = new URL(
+    `${AIRTABLE_API_BASE}/${baseId}/${encodeURIComponent(tableName)}/${recordId}`
+  );
   url.searchParams.set("cellFormat", "string");
+  url.searchParams.set("timeZone", timeZone);
+  url.searchParams.set("userLocale", userLocale);
+
   return httpJson(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
 }
 
@@ -163,6 +195,8 @@ async function airtableListRecordsAll({
   viewName,
   token,
   maxRecords,
+  timeZone,
+  userLocale,
 }) {
   const records = [];
   let offset;
@@ -171,7 +205,9 @@ async function airtableListRecordsAll({
     const url = new URL(`${AIRTABLE_API_BASE}/${baseId}/${encodeURIComponent(tableName)}`);
     url.searchParams.set("view", viewName);
     url.searchParams.set("pageSize", "100");
-    url.searchParams.set("cellFormat", "string"); // important for formula fields
+    url.searchParams.set("cellFormat", "string");
+    url.searchParams.set("timeZone", timeZone);
+    url.searchParams.set("userLocale", userLocale);
     if (offset) url.searchParams.set("offset", offset);
 
     const data = await httpJson(url.toString(), {
@@ -238,18 +274,12 @@ async function mtekListClassSessionsInWindow({
   return { url: url.toString(), data };
 }
 
-/**
- * Pick the closest class session by datetime within the returned window.
- * Tries to find exact match first, otherwise returns closest.
- */
 function pickClosestSessionId({ sessions, targetUtcIso }) {
   if (!Array.isArray(sessions) || sessions.length === 0) return null;
 
   const targetMs = new Date(targetUtcIso).getTime();
   if (!Number.isFinite(targetMs)) throw new Error(`Bad targetUtcIso: ${targetUtcIso}`);
 
-  // MTEK data format can vary; common is item.attributes.start_datetime / datetime.
-  // We'll look for a few likely keys.
   function getSessionUtcIso(item) {
     const a = item?.attributes ?? {};
     return (
@@ -302,7 +332,7 @@ async function main() {
   const viewName = requireEnv("AIRTABLE_VIEW_NAME");
 
   const fieldRoom = requireEnv("AIRTABLE_FIELD_ROOM");
-  const fieldDate = requireEnv("AIRTABLE_FIELD_DATE_UTC"); // can be real datetime OR formula output
+  const fieldDate = requireEnv("AIRTABLE_FIELD_DATE_UTC");
   const fieldClassId = requireEnv("AIRTABLE_FIELD_CLASS_ID");
 
   const mtekBaseUrl = requireEnv("MTEK_BASE_URL");
@@ -311,6 +341,10 @@ async function main() {
   if (!Number.isFinite(windowMinutes) || windowMinutes < 0) {
     throw new Error(`Invalid WINDOW_MINUTES: ${getEnv("WINDOW_MINUTES")}`);
   }
+
+  // Airtable string formatting requirements
+  const airtableTimeZone = String(getEnv("AIRTABLE_TIMEZONE", "America/New_York")).trim();
+  const airtableUserLocale = String(getEnv("AIRTABLE_USER_LOCALE", "en-US")).trim();
 
   // Safety cap for FULL runs only (optional). Set to "" to disable.
   const maxRecordsRaw = String(getEnv("MAX_RECORDS", "")).trim();
@@ -327,7 +361,14 @@ async function main() {
   console.log(`Airtable base=${baseId} table="${tableName}" view="${viewName}"`);
   console.log(`Using Airtable date field name: "${fieldDate}"`);
   console.log(`WINDOW_MINUTES=${windowMinutes} (query ± window around target)`);
-  console.log(`DEFAULT_TZ_OFFSET=${String(getEnv("DEFAULT_TZ_OFFSET", "-05:00")).trim()} (only used if Airtable string has no tz)`);
+  console.log(
+    `Airtable cellFormat=string => timeZone=${airtableTimeZone} userLocale=${airtableUserLocale}`
+  );
+  console.log(
+    `DEFAULT_TZ_OFFSET=${String(getEnv("DEFAULT_TZ_OFFSET", "-05:00")).trim()} (used only if Airtable string has no tz)`
+  );
+  if (dispatchRecordId) console.log(`Dispatch scope: record_id=${dispatchRecordId}`);
+  if (!dispatchRecordId && maxRecords) console.log(`MAX_RECORDS safety cap (full runs): ${maxRecords}`);
 
   let records = [];
 
@@ -337,6 +378,8 @@ async function main() {
       tableName,
       recordId: dispatchRecordId,
       token: airtableToken,
+      timeZone: airtableTimeZone,
+      userLocale: airtableUserLocale,
     });
     records = [one];
   } else {
@@ -346,6 +389,8 @@ async function main() {
       viewName,
       token: airtableToken,
       maxRecords,
+      timeZone: airtableTimeZone,
+      userLocale: airtableUserLocale,
     });
   }
 
@@ -368,7 +413,11 @@ async function main() {
       continue;
     }
 
-    if (existingClassId !== undefined && existingClassId !== null && String(existingClassId).trim() !== "") {
+    if (
+      existingClassId !== undefined &&
+      existingClassId !== null &&
+      String(existingClassId).trim() !== ""
+    ) {
       skipped++;
       console.log(`SKIP ${r.id}: already has Class ID = ${existingClassId}`);
       continue;
