@@ -30,7 +30,7 @@ const RES_FIELDS = {
   SPOT_NAME: "Spot number", // text
   CLASSES_LINK: "Classes", // linked record (editable)
   CUSTOMERS_LINK: "Customers", // linked record (editable)
-  IS_NEW: "New?", // checkbox/single select
+  IS_NEW: "NEW?", // checkbox/single select
 };
 
 // Make webhook
