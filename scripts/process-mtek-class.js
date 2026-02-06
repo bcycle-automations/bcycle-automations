@@ -29,7 +29,7 @@ const RES_FIELDS = {
   STATUS: "Status", // text or single select
   SPOT_NAME: "Spot number", // text
   CLASSES_LINK: "Classes", // linked record (editable)
-  CUSTOMERS_LINK: "Customers", // linked record (editable)
+  CUSTOMERS_LINK: "Customer", // linked record (editable)
   IS_NEW: "NEW?", // checkbox/single select
 };
 
