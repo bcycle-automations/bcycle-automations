@@ -30,7 +30,7 @@ const RES_FIELDS = {
   SPOT_NAME: "Spot number",
   CLASS_LINK: "Classes",      // ✅ not "Class!"
   CUSTOMER_LINK: "Customers", // ⚠️ only if your editable link field is actually named this
-  IS_NEW: "New?",
+  IS_NEW: "NEW?",
   USER_ID: "MTEK User ID",
   SPOT_ID: "MTEK Spot ID",
   EMAIL: "Email",
