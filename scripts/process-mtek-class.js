@@ -25,15 +25,15 @@ const CLASS_FIELDS = {
 };
 
 const RES_FIELDS = {
-  RESERVATION_ID: "MTEK Reservation ID", // text (unique key)
-  STATUS: "Status", // text or single select
-  SPOT_NAME: "Spot number", // text
-  CLASS_LINK: "Class!", // linked record to class table
-  CUSTOMER_LINK: "Customer", // linked record to Customers table (optional)
-  IS_NEW: "New?", // checkbox or single select
-  USER_ID: "MTEK User ID", // optional text
-  SPOT_ID: "MTEK Spot ID", // optional text
-  EMAIL: "Email", // optional text
+  RESERVATION_ID: "MTEK Reservation ID",
+  STATUS: "Status",
+  SPOT_NAME: "Spot number",
+  CLASS_LINK: "Classes",      // ✅ not "Class!"
+  CUSTOMER_LINK: "Customers", // ⚠️ only if your editable link field is actually named this
+  IS_NEW: "New?",
+  USER_ID: "MTEK User ID",
+  SPOT_ID: "MTEK Spot ID",
+  EMAIL: "Email",
 };
 
 // Webhook
