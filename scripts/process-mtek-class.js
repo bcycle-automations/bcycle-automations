@@ -25,7 +25,7 @@ const CLASS_FIELDS = {
 };
 
 const RES_FIELDS = {
-  RESERVATION_ID: "MTEK Reservation ID", // text, used for performUpsert
+  RESERVATION_ID: "MTEK Reservation ID", // text
   STATUS: "Status", // text or single select
   SPOT_NAME: "Spot number", // text
   CLASSES_LINK: "Classes", // linked record (editable)
@@ -45,12 +45,21 @@ if (!MTEK_API_TOKEN) throw new Error("Missing env: MTEK_API_TOKEN");
 // MTEK pagination
 const MTEK_PAGE_SIZE = 200;
 
+// Airtable batch limits
+const AIRTABLE_BATCH_SIZE = 10;
+
 // ------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------
 function sanitizeId(id) {
   if (!id) return id;
   return String(id).replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+}
+
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
 function getPayloadFromEvent() {
@@ -124,6 +133,30 @@ async function airtablePatchClasses(body) {
   return res.json();
 }
 
+async function airtableDeleteRecords(tableName, recordIds) {
+  if (!recordIds.length) return;
+
+  const base = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableName)}`;
+
+  for (const batch of chunk(recordIds, AIRTABLE_BATCH_SIZE)) {
+    const qs = batch.map((id) => `records[]=${encodeURIComponent(id)}`).join("&");
+    const url = `${base}?${qs}`;
+
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Airtable DELETE ${url} failed: ${res.status} ${text}`);
+    }
+
+    const json = await res.json();
+    console.log(`> Deleted ${json.records?.length || 0} reservation record(s)`);
+  }
+}
+
 async function mtekRequest(path, options = {}) {
   const url = path.startsWith("http") ? path : `${MTEK_BASE}${path}`;
   const res = await fetch(url, {
@@ -145,7 +178,7 @@ async function mtekRequest(path, options = {}) {
 }
 
 // ------------------------------------------------------------
-// Airtable upserts
+// Airtable upserts / creates
 // ------------------------------------------------------------
 async function upsertCustomer({ email, name }) {
   if (!email) throw new Error("Cannot upsert customer with empty email");
@@ -180,48 +213,18 @@ async function upsertCustomer({ email, name }) {
   return record;
 }
 
-async function upsertClassReservation({
-  reservationId,
-  status,
-  spotName,
-  classRecordId,
-  customerRecordId, // nullable
-  isNew,
-}) {
-  if (!reservationId) throw new Error("Missing reservationId for upsertClassReservation");
+async function createClassReservationsBatch(records) {
+  if (!records.length) return;
 
-  const fields = {
-    [RES_FIELDS.RESERVATION_ID]: String(reservationId),
-    [RES_FIELDS.STATUS]: status || "",
-    [RES_FIELDS.SPOT_NAME]: spotName || "",
-    [RES_FIELDS.CLASSES_LINK]: [classRecordId],
-    [RES_FIELDS.IS_NEW]: !!isNew,
-  };
-
-  // Only link customer if we successfully upserted them (email existed)
-  if (customerRecordId) {
-    fields[RES_FIELDS.CUSTOMERS_LINK] = [customerRecordId];
-  }
-
-  const body = {
-    performUpsert: {
-      fieldsToMergeOn: [RES_FIELDS.RESERVATION_ID],
-    },
-    records: [{ fields }],
-  };
+  const body = { records: records.map((fields) => ({ fields })) };
 
   const json = await airtableRequestTable(CLASS_RESERVATIONS_TABLE, {
-    method: "PATCH",
+    method: "POST",
     body: JSON.stringify(body),
   });
 
-  const record = json.records?.[0];
-  if (!record) throw new Error("No class reservation record returned from Airtable upsert");
-
-  console.log(
-    `> Upserted reservation ${reservationId} -> ${record.id} (status=${status})`
-  );
-  return record;
+  console.log(`> Created ${json.records?.length || 0} reservation record(s)`);
+  return json;
 }
 
 async function updateClassLastUpdate(classRecordId) {
@@ -241,16 +244,63 @@ async function updateClassLastUpdate(classRecordId) {
 }
 
 // ------------------------------------------------------------
+// Delete existing reservations for this class (Airtable)
+// ------------------------------------------------------------
+async function listExistingReservationRecordIdsForClass(classRecordId) {
+  const recordIds = [];
+  let offset = null;
+
+  // Linked record fields return arrays; easiest filter is to search the joined list.
+  // This matches record IDs like "recXXXXXXXXXXXXXX" inside the linked array.
+  const filterByFormula = `FIND("${classRecordId}", ARRAYJOIN({${RES_FIELDS.CLASSES_LINK}}))`;
+
+  do {
+    const params = new URLSearchParams();
+    params.set("pageSize", "100");
+    params.set("filterByFormula", filterByFormula);
+    params.set("fields[]", RES_FIELDS.CLASSES_LINK);
+    if (offset) params.set("offset", offset);
+
+    const url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${encodeURIComponent(
+      CLASS_RESERVATIONS_TABLE
+    )}?${params.toString()}`;
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Airtable GET ${url} failed: ${res.status} ${text}`);
+    }
+
+    const json = await res.json();
+    for (const r of json.records || []) recordIds.push(r.id);
+    offset = json.offset || null;
+  } while (offset);
+
+  return recordIds;
+}
+
+async function deleteExistingReservationsForClass(classRecordId) {
+  const ids = await listExistingReservationRecordIdsForClass(classRecordId);
+  console.log(`> Found ${ids.length} existing Airtable reservation(s) to delete for class ${classRecordId}`);
+
+  if (ids.length) {
+    await airtableDeleteRecords(CLASS_RESERVATIONS_TABLE, ids);
+  }
+}
+
+// ------------------------------------------------------------
 // MTEK helpers
 // ------------------------------------------------------------
 
-// Pull ALL reservations using your endpoint:
+// Pull ALL reservations using:
 // /reservations?class_session=[ID]&page_size=200
 async function getAllReservationsForClassSession(classSessionId) {
   const all = [];
   let page = 1;
 
-  // Use links.next if present, otherwise fall back to ?page=N
   let nextUrl = `${MTEK_BASE}/reservations?class_session=${encodeURIComponent(
     classSessionId
   )}&page_size=${MTEK_PAGE_SIZE}&page=${page}`;
@@ -334,12 +384,15 @@ async function main() {
 
   // 1) Pull ALL reservations for this class session (includes cancelled + waitlist)
   const reservations = await getAllReservationsForClassSession(mtekClassId);
-
   console.log(`> Found ${reservations.length} reservation(s) for session ${mtekClassId}`);
 
-  const makePayload = [];
+  // 2) Delete ALL existing Airtable reservation records for this class
+  await deleteExistingReservationsForClass(classRecordId);
 
-  // 2) Process each reservation
+  const makePayload = [];
+  const recordsToCreate = [];
+
+  // 3) Build new Airtable reservation records (and upsert customers when email exists)
   for (const r of reservations) {
     const reservationId = r?.id != null ? String(r.id) : null;
     const status = r?.attributes?.status ?? "";
@@ -366,7 +419,7 @@ async function main() {
 
     const isNew = hasNewTag463(r);
 
-    // 3) Upsert customer ONLY if email exists
+    // Upsert customer ONLY if email exists
     let customerRecordId = null;
     let customerFields = {};
 
@@ -378,17 +431,22 @@ async function main() {
       console.log("   - No email found for user; skipping customer upsert/link");
     }
 
-    // 4) Upsert reservation ALWAYS (even if no email)
-    await upsertClassReservation({
-      reservationId,
-      status,
-      spotName,
-      classRecordId,
-      customerRecordId, // may be null
-      isNew,
-    });
+    // Build reservation record fields for Airtable CREATE
+    const fields = {
+      [RES_FIELDS.RESERVATION_ID]: reservationId,
+      [RES_FIELDS.STATUS]: status || "",
+      [RES_FIELDS.SPOT_NAME]: spotName || "",
+      [RES_FIELDS.CLASSES_LINK]: [classRecordId],
+      [RES_FIELDS.IS_NEW]: !!isNew,
+    };
 
-    // 5) Make payload only when we have a customer record (same behavior as before)
+    if (customerRecordId) {
+      fields[RES_FIELDS.CUSTOMERS_LINK] = [customerRecordId];
+    }
+
+    recordsToCreate.push(fields);
+
+    // Make payload only when we have a customer record (same behavior as before)
     if (customerRecordId) {
       makePayload.push({
         classRecordId,
@@ -397,16 +455,22 @@ async function main() {
         reservationStatus: status,
         customerRecordId,
         measurementNoteId: customerFields["Measurement Note ID"] || null,
-        updatedBoardNameSpivi: customerFields["Updated board name in Spivi"] || null,
+        updatedBoardNameSpivi:
+          customerFields["Updated board name in Spivi"] || null,
         oldZfBoardName: customerFields["OLD ZF BOARD NAME"] || null,
       });
     }
   }
 
-  // 6) Update class record last update time
+  // 4) Create reservations in Airtable in batches of 10
+  for (const batch of chunk(recordsToCreate, AIRTABLE_BATCH_SIZE)) {
+    await createClassReservationsBatch(batch);
+  }
+
+  // 5) Update class record last update time
   await updateClassLastUpdate(classRecordId);
 
-  // 7) Send to Make
+  // 6) Send to Make
   await sendMakeWebhook(makePayload);
 
   console.log("> Done processing class");
