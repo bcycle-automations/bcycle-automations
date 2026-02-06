@@ -1,36 +1,60 @@
 // scripts/process-mtek-class.js
+/* eslint-disable no-console */
 import fs from "node:fs";
 import process from "node:process";
 
-// Base from your working Postman URL
+// ------------------------------------------------------------
+// CONFIG
+// ------------------------------------------------------------
+
+// Airtable
 const AIRTABLE_BASE_ID = "appofCRTxHoIe6dXI";
 const AIRTABLE_BASE_URL = "https://api.airtable.com/v0";
 
-const { AIRTABLE_TOKEN, MTEK_API_TOKEN } = process.env;
+// Mariana Tek (MTEK)
+const MTEK_BASE = "https://bcycle.marianatek.com/api";
 
-// Hard-coded Make webhook URL
+// Tables
+const CLASSES_TABLE_NAME = "CTT SYNC DO NOT TOUCH";
+const CLASS_RESERVATIONS_TABLE = "Class Reservations";
+const CUSTOMERS_TABLE = "Customers";
+
+// Airtable field mappings (EDIT THESE TO MATCH YOUR BASE)
+const CLASS_FIELDS = {
+  LAST_UPDATE_TIME: "Last update time", // <-- confirm exact field name
+};
+
+const RES_FIELDS = {
+  // Strongly recommended to have a text field that stores the MTEK reservation id
+  RESERVATION_ID: "MTEK Reservation ID", // <-- confirm exact field name (text)
+  STATUS: "Status", // text or single select
+  SPOT_NAME: "Spot number", // or "Spot" / "Spot Name" (text)
+  CLASS_LINK: "Class!", // linked record to class table
+  CUSTOMER_LINK: "Customer", // linked record to Customers table
+  IS_NEW: "New?", // checkbox or single select
+  USER_ID: "MTEK User ID", // optional
+  SPOT_ID: "MTEK Spot ID", // optional
+  EMAIL: "Email", // optional (store the email we used)
+};
+
+// Webhook
 const SECOND_CLASS_WEBHOOK_URL =
   "https://hook.us2.make.com/njbqpqqh6i6lxr34ycro62pzh6ip5h33";
 
+// Tokens
+const { AIRTABLE_TOKEN, MTEK_API_TOKEN } = process.env;
 if (!AIRTABLE_TOKEN) throw new Error("Missing env: AIRTABLE_TOKEN");
 if (!MTEK_API_TOKEN) throw new Error("Missing env: MTEK_API_TOKEN");
 
-const MTEK_BASE = "https://bcycle.marianatek.com/api";
-
-// Tables in base appofCRTxHoIe6dXI
-const CLASSES_TABLE_NAME = "CTT SYNC DO NOT TOUCH";
-const CLASSES_TABLE_SEGMENT = encodeURIComponent(CLASSES_TABLE_NAME);
-const CLASS_RESERVATIONS_TABLE = "Class Reservations";
-const CUSTOMERS_TABLE = "Customers";
+// Pagination
+const PAGE_SIZE = 100;
 
 // ------------------------------------------------------------
 // Helper to strip zero-width & stray whitespace from IDs
 // ------------------------------------------------------------
 function sanitizeId(id) {
   if (!id) return id;
-  return String(id)
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .trim();
+  return String(id).replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
 }
 
 // ------------------------------------------------------------
@@ -38,9 +62,7 @@ function sanitizeId(id) {
 // ------------------------------------------------------------
 function getPayloadFromEvent() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
-  if (!eventPath) {
-    throw new Error("GITHUB_EVENT_PATH not set");
-  }
+  if (!eventPath) throw new Error("GITHUB_EVENT_PATH not set");
 
   const raw = fs.readFileSync(eventPath, "utf8");
   const event = JSON.parse(raw);
@@ -53,12 +75,8 @@ function getPayloadFromEvent() {
     null;
   const rawMtekClassId = event.client_payload?.mtek_class_id || null;
 
-  if (!rawClassRecordId) {
-    throw new Error("No airtable_record_id in client_payload");
-  }
-  if (!rawMtekClassId) {
-    throw new Error("No mtek_class_id in client_payload");
-  }
+  if (!rawClassRecordId) throw new Error("No airtable_record_id in client_payload");
+  if (!rawMtekClassId) throw new Error("No mtek_class_id in client_payload");
 
   const classRecordId = sanitizeId(rawClassRecordId);
   const mtekClassId = String(rawMtekClassId).trim();
@@ -74,9 +92,7 @@ function getPayloadFromEvent() {
 // HTTP helpers
 // ------------------------------------------------------------
 async function airtableRequestTable(tableName, options = {}) {
-  const url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${encodeURIComponent(
-    tableName
-  )}`;
+  const url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableName)}`;
   const res = await fetch(url, {
     ...options,
     headers: {
@@ -89,17 +105,16 @@ async function airtableRequestTable(tableName, options = {}) {
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
-      `Airtable ${options.method || "GET"} ${url} failed: ${
-        res.status
-      } ${text}`
+      `Airtable ${options.method || "GET"} ${url} failed: ${res.status} ${text}`
     );
   }
-
   return res.json();
 }
 
 async function airtablePatchClasses(body) {
-  const url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${CLASSES_TABLE_SEGMENT}`;
+  const url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${encodeURIComponent(
+    CLASSES_TABLE_NAME
+  )}`;
   const res = await fetch(url, {
     method: "PATCH",
     headers: {
@@ -134,14 +149,12 @@ async function mtekRequest(path, options = {}) {
       `MTEK ${options.method || "GET"} ${url} failed: ${res.status} ${text}`
     );
   }
-
   return res.json();
 }
 
 // ------------------------------------------------------------
 // Airtable upserts
 // ------------------------------------------------------------
-
 async function upsertCustomer({ email, name }) {
   if (!email) throw new Error("Cannot upsert customer with empty email");
 
@@ -169,12 +182,10 @@ async function upsertCustomer({ email, name }) {
   });
 
   const record = json.records?.[0];
-  if (!record) {
-    throw new Error("No customer record returned from Airtable upsert");
-  }
+  if (!record) throw new Error("No customer record returned from Airtable upsert");
 
   console.log(`> Upserted customer ${lowerEmail} -> ${record.id}`);
-  return record; // { id, fields: {...} }
+  return record;
 }
 
 async function upsertClassReservation({
@@ -183,75 +194,98 @@ async function upsertClassReservation({
   classRecordId,
   customerRecordId,
   isNew,
+  userId,
+  spotId,
+  email,
 }) {
-  const cleanClassId = sanitizeId(classRecordId);
+  const reservationId = reservation?.data?.id ? String(reservation.data.id) : null;
+  if (!reservationId) throw new Error("Reservation missing data.id");
 
+  const status = reservation?.data?.attributes?.status ?? "";
+
+  // NOTE: performUpsert requires the merge fields to already exist in the table schema.
+  // Make sure RES_FIELDS.RESERVATION_ID points to an existing field.
   const body = {
     performUpsert: {
-      fieldsToMergeOn: ["Reservation ID"],
+      fieldsToMergeOn: [RES_FIELDS.RESERVATION_ID],
     },
     records: [
       {
         fields: {
-          "Reservation ID": reservation.data.id,
-          Status: reservation.data.attributes.status,
-          "Reservation Date": reservation.data.attributes.creation_date,
-          "Spot number": spotName || null,
-          Classes: [cleanClassId],
-          Customer: [customerRecordId],
-          "NEW?": isNew,
+          [RES_FIELDS.RESERVATION_ID]: reservationId,
+          [RES_FIELDS.STATUS]: status,
+          [RES_FIELDS.SPOT_NAME]: spotName || "",
+          [RES_FIELDS.CLASS_LINK]: [classRecordId],
+          [RES_FIELDS.CUSTOMER_LINK]: [customerRecordId],
+          [RES_FIELDS.IS_NEW]: !!isNew,
+          ...(RES_FIELDS.USER_ID ? { [RES_FIELDS.USER_ID]: userId || "" } : {}),
+          ...(RES_FIELDS.SPOT_ID ? { [RES_FIELDS.SPOT_ID]: spotId || "" } : {}),
+          ...(RES_FIELDS.EMAIL ? { [RES_FIELDS.EMAIL]: email || "" } : {}),
         },
       },
     ],
   };
 
-  await airtableRequestTable(CLASS_RESERVATIONS_TABLE, {
+  const json = await airtableRequestTable(CLASS_RESERVATIONS_TABLE, {
     method: "PATCH",
     body: JSON.stringify(body),
   });
 
-  console.log(
-    `> Upserted class reservation ${reservation.data.id} for customer ${customerRecordId}`
-  );
+  const record = json.records?.[0];
+  if (!record) throw new Error("No class reservation record returned from Airtable upsert");
+
+  console.log(`> Upserted reservation ${reservationId} -> ${record.id} (status=${status})`);
+  return record;
 }
 
 async function updateClassLastUpdate(classRecordId) {
-  const cleanId = sanitizeId(classRecordId);
-  const now = new Date().toISOString();
-
   const body = {
     records: [
       {
-        id: cleanId,
+        id: classRecordId,
         fields: {
-          "Last update time": now,
+          [CLASS_FIELDS.LAST_UPDATE_TIME]: new Date().toISOString(),
         },
       },
     ],
   };
 
   await airtablePatchClasses(body);
-
-  console.log(`> Updated Last update time on class ${cleanId} -> ${now}`);
+  console.log(`> Updated class last update time for ${classRecordId}`);
 }
 
 // ------------------------------------------------------------
 // MTEK helpers
 // ------------------------------------------------------------
 
-// Assumes MTEK endpoint: /class_sessions/{id}?include=reservations
-async function getClassSessionWithReservations(classId) {
-  return mtekRequest(`/class_sessions/${classId}?include=reservations`);
-}
+// Fetch reservation IDs via relationship endpoint + pagination (so you actually get them all)
+async function getAllReservationIdsForClassSession(classId) {
+  const ids = [];
+  let path = `/class_sessions/${classId}/relationships/reservations?page[size]=${PAGE_SIZE}`;
 
-function extractReservationIdsFromSession(sessionJson) {
-  const included = sessionJson.included || [];
-  const reservations = included.filter((i) => i.type === "reservations");
-  return reservations.map((r) => r.id);
+  while (path) {
+    const json = await mtekRequest(path);
+
+    const data = Array.isArray(json?.data) ? json.data : [];
+    for (const item of data) {
+      if (item?.id != null) ids.push(String(item.id));
+    }
+
+    // JSON:API style "links.next" pagination
+    const next = json?.links?.next || null;
+    if (next) {
+      // sometimes it's full URL, sometimes relative
+      path = next.startsWith("http") ? next.replace(MTEK_BASE, "") : next;
+    } else {
+      path = null;
+    }
+  }
+
+  return [...new Set(ids)];
 }
 
 async function getReservation(reservationId) {
-  return mtekRequest(`/reservations/${reservationId}`);
+  return mtekRequest(`/reservations/${reservationId}?include=tags`);
 }
 
 async function getUser(userId) {
@@ -262,59 +296,51 @@ async function getSpot(spotId) {
   return mtekRequest(`/spots/${spotId}`);
 }
 
-function isActiveReservationStatus(status) {
+// IMPORTANT: We now process ALL statuses (including cancel + waitlist)
+function shouldProcessReservation(_status) {
   return true;
 }
 
 function hasNewTag463(reservation) {
-  const tags = reservation.data.relationships?.tags?.data || [];
+  const tags = reservation?.data?.relationships?.tags?.data || [];
   return tags.some((t) => String(t.id) === "463");
 }
 
 // ------------------------------------------------------------
 // Make webhook
 // ------------------------------------------------------------
-
 async function sendMakeWebhook(reservationsPayload) {
-  if (!reservationsPayload.length) {
-    console.log("> No reservations to send to Make webhook");
-    return;
-  }
-
   const res = await fetch(SECOND_CLASS_WEBHOOK_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ reservations: reservationsPayload }),
+    body: JSON.stringify(reservationsPayload),
   });
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Make webhook POST failed: ${res.status} ${text}`);
+    throw new Error(`Make webhook failed: ${res.status} ${text}`);
   }
 
-  console.log(
-    `> Sent ${reservationsPayload.length} reservations to Make webhook`
-  );
+  console.log(`> Sent ${reservationsPayload.length} item(s) to Make webhook`);
 }
 
 // ------------------------------------------------------------
 // Main
 // ------------------------------------------------------------
-
 async function main() {
   const { classRecordId, mtekClassId } = getPayloadFromEvent();
 
   console.log(`> Using MTEK Class Session ID from payload: ${mtekClassId}`);
 
-  // 1) Get class session + reservations from MTEK
-  const classSession = await getClassSessionWithReservations(mtekClassId);
-  const reservationIds = extractReservationIdsFromSession(classSession);
+  // 1) Get *all* reservation IDs (paginated)
+  const reservationIds = await getAllReservationIdsForClassSession(mtekClassId);
 
   console.log(
     `> Found ${reservationIds.length} reservation(s) for session ${mtekClassId}`
   );
+  console.log("> Reservation IDs (sample):", reservationIds.slice(0, 10));
 
   const makePayload = [];
 
@@ -323,18 +349,18 @@ async function main() {
     console.log(`>> Processing reservation ${reservationId}`);
 
     const reservation = await getReservation(reservationId);
-    const status = reservation.data.attributes.status;
+    const status = reservation?.data?.attributes?.status ?? "";
 
-    if (!isActiveReservationStatus(status)) {
-      console.log(`   - Skipping (status = ${status})`);
+    if (!shouldProcessReservation(status)) {
+      console.log(`   - Skipping by rule (status = ${status})`);
       continue;
     }
 
-    const userRel = reservation.data.relationships?.user?.data;
-    const spotRel = reservation.data.relationships?.spot?.data;
+    const userRel = reservation?.data?.relationships?.user?.data;
+    const spotRel = reservation?.data?.relationships?.spot?.data;
 
-    const userId = userRel?.id;
-    const spotId = spotRel?.id;
+    const userId = userRel?.id ? String(userRel.id) : null;
+    const spotId = spotRel?.id ? String(spotRel.id) : null;
 
     const [user, spot] = await Promise.all([
       userId ? getUser(userId) : null,
@@ -345,15 +371,17 @@ async function main() {
     const spotAttrs = spot?.data?.attributes || {};
 
     const email = userAttrs.email || userAttrs.email_address || null;
-
-    if (!email) {
-      console.log("   - Skipping reservation (no user email)");
-      continue;
-    }
-
     const fullName = userAttrs.full_name || userAttrs.name || null;
     const spotName = spotAttrs.name || null;
+
     const isNew = hasNewTag463(reservation);
+
+    // If you truly need *every* reservation in Airtable, you can remove this skip
+    // and upsert a customer-less reservation keyed by userId.
+    if (!email) {
+      console.log(`   - Skipping reservation (no user email). status=${status}, userId=${userId}`);
+      continue;
+    }
 
     // 3) Upsert customer in Customers table
     const customerRecord = await upsertCustomer({
@@ -364,21 +392,27 @@ async function main() {
     const customerRecordId = customerRecord.id;
     const customerFields = customerRecord.fields || {};
 
-    // 4) Upsert reservation in Class Reservations table
+    // 4) Upsert reservation in Class Reservations table (now includes cancel/waitlist too)
     await upsertClassReservation({
       reservation,
       spotName,
       classRecordId,
       customerRecordId,
       isNew,
+      userId,
+      spotId,
+      email,
     });
 
     // 5) Add to Make payload (from customer record fields)
     makePayload.push({
+      classRecordId,
+      mtekClassId,
+      reservationId: String(reservation?.data?.id || ""),
+      reservationStatus: status,
       customerRecordId,
       measurementNoteId: customerFields["Measurement Note ID"] || null,
-      updatedBoardNameSpivi:
-        customerFields["Updated board name in Spivi"] || null,
+      updatedBoardNameSpivi: customerFields["Updated board name in Spivi"] || null,
       oldZfBoardName: customerFields["OLD ZF BOARD NAME"] || null,
     });
   }
