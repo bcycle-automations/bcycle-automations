@@ -263,8 +263,7 @@ async function getSpot(spotId) {
 }
 
 function isActiveReservationStatus(status) {
-  const s = (status || "").toLowerCase();
-  return !s.includes("cancel") && !s.includes("waitlist");
+  return true;
 }
 
 function hasNewTag463(reservation) {
