@@ -1,0 +1,36 @@
+name: Import Instructor Ratings (CSV → Airtable + Customer link)
+
+on:
+  workflow_dispatch:
+    inputs:
+      form_record_id:
+        description: "Airtable record ID in tblu4fK3CDzDhBjK1 (the form submissions table)"
+        required: true
+        type: string
+
+jobs:
+  run-import:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run import
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          MTEK_BASE_URL: ${{ secrets.MTEK_BASE_URL }} # e.g. https://bcycle.marianatek.com
+
+          AIRTABLE_BASE_ID: app3XN0v7vjPALgAV
+          FORM_TABLE_ID: tblu4fK3CDzDhBjK1
+          FEEDBACKS_TABLE_ID: tbl2ZcYV8LCcihQvP
+          LOGS_TABLE_ID: tbljXmfkQ0eitjsqr
+          FORM_RECORD_ID: ${{ inputs.form_record_id }}
+
+        run: node scripts/import-instructor-ratings.js
