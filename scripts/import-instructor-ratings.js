@@ -53,7 +53,7 @@ const FEEDBACK_FIELDS = {
   RATING: "Rating",
   COMMENT: "COMMENT",
   CLASSTYPE: "CLASSTYPE",
-  CAL_NAME: "CAL_NAME",
+  CAL_NAME: "Instructor Name",
   TYPE: "Type - Public",
   DIRECTED_TO: "Type",
 };
