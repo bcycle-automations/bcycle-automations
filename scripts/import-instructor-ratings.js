@@ -46,19 +46,19 @@ const FORM_FIELDS = {
 
 /* ---- Feedbacks table ---- */
 const FEEDBACK_FIELDS = {
-  CONTACT: "Contact",              // TEXT
-  CUSTOMER: "Customer",            // LINKED RECORD
-  STUDIO: "Studio",                // LINKED RECORD
-  DATE: "DATE OF RATING",           // DATE (no time)
-  RATING: "Rating",
-  COMMENT: "COMMENT",
-  CLASSTYPE: "CLASSTYPE",
-  CAL_NAME: "Instructor Name",
-  TYPE: "Type - Public",
-  DIRECTED_TO: "Type",
+  CONTACT: "Contact",            // TEXT
+  CUSTOMER: "Customer",          // LINKED RECORD
+  STUDIO: "Studio",              // LINKED RECORD
+  DATE: "DATE OF RATING",        // DATE (no time)
+  RATING: "Rating",              // NUMBER
+  COMMENT: "COMMENT",            // LONG TEXT
+  CLASSTYPE: "CLASSTYPE",        // TEXT / SINGLE SELECT (your choice)
+  INSTRUCTOR_NAME: "Instructor Name", // TEXT
+  TYPE_PUBLIC: "Type - Public",  // OPTIONAL (if exists)
+  TYPE: "Type",                  // SINGLE SELECT -> set to "Instructor Feedback"
 };
 
-const DIRECTED_TO_VALUE = "Instructor Feedback";
+const TYPE_VALUE = "Instructor Feedback";
 
 /* ---- Logs table ---- */
 const LOG_FIELDS = {
@@ -90,8 +90,9 @@ async function fetchJson(url, options = {}) {
       ...(options.headers || {}),
     },
   });
+
   if (!res.ok) {
-    const t = await res.text();
+    const t = await res.text().catch(() => "");
     throw new Error(`${res.status} ${res.statusText}: ${t}`);
   }
   return res.json();
@@ -104,19 +105,20 @@ async function fetchMtek(url) {
       Accept: "application/vnd.api+json",
     },
   });
+
   if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`MTEK ${res.status}: ${t}`);
+    const t = await res.text().catch(() => "");
+    throw new Error(`MTEK ${res.status} ${res.statusText}: ${t}`);
   }
   return res.json();
 }
 
 function escapeFormula(v) {
-  return String(v || "").replace(/"/g, '\\"');
+  return String(v ?? "").replace(/"/g, '\\"');
 }
 
 function looksLikeEmail(v) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim());
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v ?? "").trim());
 }
 
 /* ============================================================
@@ -126,9 +128,9 @@ function looksLikeEmail(v) {
 function normalizeHeader(h) {
   return String(h || "")
     .toLowerCase()
+    .trim()
     .replace(/\s+/g, " ")
-    .replace(/[_-]/g, "")
-    .trim();
+    .replace(/[_-]/g, "");
 }
 
 function parseCSV(text) {
@@ -147,21 +149,44 @@ function parseCSV(text) {
         i++;
       } else if (c === '"') {
         inQuotes = false;
-      } else cur += c;
+      } else {
+        cur += c;
+      }
     } else {
       if (c === '"') inQuotes = true;
       else if (c === ",") {
-        row.push(cur); cur = "";
+        row.push(cur);
+        cur = "";
       } else if (c === "\n") {
         row.push(cur);
         rows.push(row);
-        row = []; cur = "";
-      } else if (c !== "\r") cur += c;
+        row = [];
+        cur = "";
+      } else if (c !== "\r") {
+        cur += c;
+      }
     }
   }
+
   row.push(cur);
   rows.push(row);
-  return rows.filter(r => r.some(c => String(c).trim()));
+
+  // Remove empty trailing rows
+  return rows.filter((r) => r.some((c) => String(c).trim() !== ""));
+}
+
+function makeHeaderIndex(headers) {
+  const map = new Map();
+  headers.forEach((h, i) => map.set(normalizeHeader(h), i));
+  return map;
+}
+
+function getCell(row, headerIndex, ...headerCandidates) {
+  for (const h of headerCandidates) {
+    const idx = headerIndex.get(normalizeHeader(h));
+    if (idx !== undefined && idx !== -1) return row[idx];
+  }
+  return "";
 }
 
 /* ============================================================
@@ -170,31 +195,48 @@ function parseCSV(text) {
 
 function parseDateOnlyToISO(v) {
   if (!v) return null;
-  const d = new Date(v);
+
+  const raw = String(v).trim();
+  if (!raw) return null;
+
+  // Let JS parse common formats (incl. M/D/YYYY)
+  const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return null;
+
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
 }
 
 /* ============================================================
-   AIRTABLE META – FIND CUSTOMER TABLE
+   AIRTABLE META – FIND CUSTOMER TABLE + PRIMARY FIELD
 ============================================================ */
 
 async function getCustomersLinkInfo() {
   const meta = await fetchJson(`${AIRTABLE_META_API}/bases/${AIRTABLE_BASE_ID}/tables`);
-  const feedbacks = meta.tables.find(t => t.id === FEEDBACKS_TABLE_ID);
-  const customerField = feedbacks.fields.find(f => f.name === FEEDBACK_FIELDS.CUSTOMER);
+  const feedbacks = meta.tables.find((t) => t.id === FEEDBACKS_TABLE_ID);
+  if (!feedbacks) throw new Error(`Meta: feedbacks table not found: ${FEEDBACKS_TABLE_ID}`);
 
-  const table = meta.tables.find(t => t.id === customerField.options.linkedTableId);
-  const primary = table.fields.find(f => f.id === table.primaryFieldId);
+  const customerField = feedbacks.fields.find((f) => f.name === FEEDBACK_FIELDS.CUSTOMER);
+  if (!customerField?.options?.linkedTableId) {
+    throw new Error(`Meta: could not resolve linked table for field "${FEEDBACK_FIELDS.CUSTOMER}"`);
+  }
+
+  const customersTable = meta.tables.find((t) => t.id === customerField.options.linkedTableId);
+  if (!customersTable) throw new Error(`Meta: customers linked table not found`);
+
+  const primaryField = customersTable.fields.find((f) => f.id === customersTable.primaryFieldId);
+  if (!primaryField) throw new Error(`Meta: customers primary field not found`);
 
   return {
-    tableId: table.id,
-    primaryField: primary.name,
+    tableId: customersTable.id,
+    primaryField: primaryField.name,
   };
 }
 
 async function findCustomerByEmail(linkInfo, email) {
-  const formula = `{${linkInfo.primaryField}} = "${escapeFormula(email)}"`;
+  const e = String(email || "").trim();
+  if (!e) return null;
+
+  const formula = `{${linkInfo.primaryField}} = "${escapeFormula(e)}"`;
   const url =
     `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${linkInfo.tableId}` +
     `?pageSize=1&filterByFormula=${encodeURIComponent(formula)}`;
@@ -208,28 +250,32 @@ async function findCustomerByEmail(linkInfo, email) {
 ============================================================ */
 
 async function resolveEmailViaMtek(name) {
+  const q = String(name || "").trim();
+  if (!q) return null;
   if (!MTEK_API_TOKEN) return null;
 
   try {
     const url = new URL("/api/users", MTEK_BASE_URL);
-    url.searchParams.set("name_query", name);
+    url.searchParams.set("name_query", q);
     url.searchParams.set("page_size", "5");
 
     const json = await fetchMtek(url.toString());
     const users = Array.isArray(json.data) ? json.data : [];
 
     for (const u of users) {
-      const email = u.attributes?.email;
-      if (looksLikeEmail(email)) return email;
+      const email = u?.attributes?.email;
+      if (looksLikeEmail(email)) return String(email).trim();
     }
     return null;
-  } catch {
+  } catch (err) {
+    console.warn(`⚠️ MTEK lookup failed for "${q}": ${err?.message || err}`);
     return null;
   }
 }
 
 /* ============================================================
    DEDUPE CHECK
+   Key: Contact(text) + Studio(link) + DATE OF RATING (date-only)
 ============================================================ */
 
 async function feedbackExists({ contact, studioId, dateISO }) {
@@ -244,7 +290,55 @@ async function feedbackExists({ contact, studioId, dateISO }) {
     `?pageSize=1&filterByFormula=${encodeURIComponent(formula)}`;
 
   const out = await fetchJson(url);
-  return out.records?.length > 0;
+  return (out.records?.length || 0) > 0;
+}
+
+/* ============================================================
+   LOGGING
+============================================================ */
+
+async function createLog() {
+  const out = await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${LOGS_TABLE_ID}`, {
+    method: "POST",
+    body: JSON.stringify({
+      records: [
+        {
+          fields: {
+            [LOG_FIELDS.STATUS]: LOG_STATUS.STARTED,
+            [LOG_FIELDS.TYPE]: LOG_TYPE_VALUE,
+          },
+        },
+      ],
+    }),
+  });
+
+  const id = out?.records?.[0]?.id;
+  if (!id) throw new Error("Failed to create log record");
+  return id;
+}
+
+async function updateLog(logId, fields) {
+  await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${LOGS_TABLE_ID}/${logId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields }),
+  });
+}
+
+/* ============================================================
+   FORM LOAD + CSV DOWNLOAD
+============================================================ */
+
+async function loadFormRecord() {
+  return fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FORM_TABLE_ID}/${FORM_RECORD_ID}`);
+}
+
+async function downloadCsvToTemp(csvUrl) {
+  const csvPath = path.join(os.tmpdir(), `ratings_${Date.now()}.csv`);
+  const res = await fetch(csvUrl);
+  if (!res.ok) throw new Error(`CSV download failed ${res.status} ${res.statusText}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  fs.writeFileSync(csvPath, buf);
+  return csvPath;
 }
 
 /* ============================================================
@@ -252,92 +346,95 @@ async function feedbackExists({ contact, studioId, dateISO }) {
 ============================================================ */
 
 async function main() {
-  let logId;
+  let logId = null;
   let imported = 0;
   let ignored = 0;
   const issues = [];
 
   try {
-    /* ---- Create log ---- */
-    const log = await fetchJson(
-      `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${LOGS_TABLE_ID}`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          records: [{
-            fields: {
-              [LOG_FIELDS.STATUS]: LOG_STATUS.STARTED,
-              [LOG_FIELDS.TYPE]: LOG_TYPE_VALUE,
-            },
-          }],
-        }),
-      }
-    );
-    logId = log.records[0].id;
+    logId = await createLog();
 
-    /* ---- Load form record ---- */
-    const form = await fetchJson(
-      `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FORM_TABLE_ID}/${FORM_RECORD_ID}`
-    );
+    const form = await loadFormRecord();
+    const studioId = form?.fields?.[FORM_FIELDS.STUDIO]?.[0];
+    const csvUrl = form?.fields?.[FORM_FIELDS.CSV_UPLOAD]?.[0]?.url;
 
-    const studioId = form.fields[FORM_FIELDS.STUDIO]?.[0];
-    const csvUrl = form.fields[FORM_FIELDS.CSV_UPLOAD]?.[0]?.url;
+    if (!studioId) throw new Error(`Missing "${FORM_FIELDS.STUDIO}" on form record`);
+    if (!csvUrl) throw new Error(`Missing "${FORM_FIELDS.CSV_UPLOAD}" attachment on form record`);
 
-    if (!studioId || !csvUrl) throw new Error("Missing Studio or CSV Upload on form record");
-
-    /* ---- Download CSV ---- */
-    const csvPath = path.join(os.tmpdir(), `ratings_${Date.now()}.csv`);
-    const buf = await fetch(csvUrl).then(r => r.arrayBuffer());
-    fs.writeFileSync(csvPath, Buffer.from(buf));
+    const csvPath = await downloadCsvToTemp(csvUrl);
     const csvText = fs.readFileSync(csvPath, "utf8");
 
     const rows = parseCSV(csvText);
-    const headers = rows[0].map(normalizeHeader);
-    const data = rows.slice(1);
+    if (rows.length < 2) throw new Error("CSV has no data rows");
 
-    const idx = name => headers.indexOf(normalizeHeader(name));
+    const headerIndex = makeHeaderIndex(rows[0]);
+
+    // Debug: see what the importer thinks the headers are
+    console.log("CSV headers:", rows[0]);
+    console.log("CSV headers (normalized):", rows[0].map(normalizeHeader));
 
     const customerLinkInfo = await getCustomersLinkInfo();
 
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      const line = i + 2;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const line = i + 1;
 
-      const contact = row[idx("contact")]?.trim();
-      const dateISO = parseDateOnlyToISO(row[idx("date")] || row[idx("date of rating")]);
+      // Pull from CSV (supports shifting order + slight naming variations)
+      const contact = String(getCell(row, headerIndex, "Contact")).trim();
+
+      const dateRaw = getCell(row, headerIndex, "DATE OF RATING", "Date");
+      const dateISO = parseDateOnlyToISO(dateRaw);
+
+      const ratingRaw = String(getCell(row, headerIndex, "Rating", "RATING")).trim();
+      const comment = String(getCell(row, headerIndex, "Comment", "COMMENT")).trim();
+      const classType = String(getCell(row, headerIndex, "Class", "CLASSTYPE")).trim();
+      const instructor = String(getCell(row, headerIndex, "Instructor", "Instructor Name", "CAL_NAME")).trim();
+      const typePublic = String(getCell(row, headerIndex, "Type", "Type - Public")).trim(); // optional
 
       if (!contact || !dateISO) {
         ignored++;
-        issues.push(`Line ${line}: Missing contact or date`);
+        issues.push(`Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`);
         continue;
       }
 
+      // Dedup
       if (await feedbackExists({ contact, studioId, dateISO })) {
         ignored++;
         continue;
       }
 
+      // Resolve Customer linked record
       let customerId = null;
-      let email = looksLikeEmail(contact) ? contact : await resolveEmailViaMtek(contact);
+      const email = looksLikeEmail(contact) ? contact : await resolveEmailViaMtek(contact);
 
       if (email) {
         customerId = await findCustomerByEmail(customerLinkInfo, email);
-        if (!customerId) {
-          issues.push(`Line ${line}: Customer not found in Airtable for ${email}`);
-        }
+        if (!customerId) issues.push(`Line ${line}: Customer not found in Airtable for ${email}`);
+      } else {
+        issues.push(`Line ${line}: Could not resolve email from Contact "${contact}"`);
       }
 
+      // Build Airtable fields
       const fields = {
         [FEEDBACK_FIELDS.CONTACT]: contact,
         [FEEDBACK_FIELDS.STUDIO]: [studioId],
         [FEEDBACK_FIELDS.DATE]: dateISO,
-        [FEEDBACK_FIELDS.DIRECTED_TO]: DIRECTED_TO_VALUE,
+        [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE, // sets "Type" single select
       };
 
       if (customerId) fields[FEEDBACK_FIELDS.CUSTOMER] = [customerId];
-      if (row[idx("rating")]) fields[FEEDBACK_FIELDS.RATING] = Number(row[idx("rating")]);
-      if (row[idx("comment")]) fields[FEEDBACK_FIELDS.COMMENT] = row[idx("comment")];
-      if (row[idx("class")]) fields[FEEDBACK_FIELDS.CLASSTYPE] = row[idx("class")];
+      if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor; // ✅ FIX
+      if (ratingRaw && !Number.isNaN(Number(ratingRaw))) fields[FEEDBACK_FIELDS.RATING] = Number(ratingRaw);
+      if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
+      if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
+
+      // Optional: if you actually want to store the CSV "Type - Public"/"Type" value somewhere
+      // Only set if the field exists and you want it.
+      if (typePublic) {
+        // If your Airtable field is a checkbox/text and exists:
+        // fields[FEEDBACK_FIELDS.TYPE_PUBLIC] = typePublic;
+        // Leaving commented to avoid Airtable "unknown field" failures.
+      }
 
       await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}`, {
         method: "POST",
@@ -347,37 +444,31 @@ async function main() {
       imported++;
     }
 
-    await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${LOGS_TABLE_ID}/${logId}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        fields: {
-          [LOG_FIELDS.STATUS]: issues.length ? LOG_STATUS.ISSUE : LOG_STATUS.COMPLETED,
-          [LOG_FIELDS.IMPORTED]: imported,
-          [LOG_FIELDS.IGNORED]: ignored,
-          ...(issues.length ? { [LOG_FIELDS.ISSUE_LOG]: issues.join("\n") } : {}),
-        },
-      }),
+    await updateLog(logId, {
+      [LOG_FIELDS.STATUS]: issues.length ? LOG_STATUS.ISSUE : LOG_STATUS.COMPLETED,
+      [LOG_FIELDS.IMPORTED]: imported,
+      [LOG_FIELDS.IGNORED]: ignored,
+      ...(issues.length ? { [LOG_FIELDS.ISSUE_LOG]: issues.join("\n") } : {}),
     });
 
-    console.log("✅ Import completed");
-
+    console.log(`✅ Import completed. Imported=${imported}, Ignored=${ignored}, Issues=${issues.length}`);
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("❌ Fatal:", msg);
+
     if (logId) {
-      await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${LOGS_TABLE_ID}/${logId}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          fields: {
-            [LOG_FIELDS.STATUS]: LOG_STATUS.ISSUE,
-            [LOG_FIELDS.ISSUE_LOG]: err.message,
-          },
-        }),
-      });
+      try {
+        await updateLog(logId, {
+          [LOG_FIELDS.STATUS]: LOG_STATUS.ISSUE,
+          [LOG_FIELDS.ISSUE_LOG]: msg,
+        });
+      } catch (e) {
+        console.error("Also failed to update log record:", e?.message || e);
+      }
     }
-    throw err;
+
+    process.exit(1);
   }
 }
 
-main().catch(e => {
-  console.error("❌ Fatal:", e.message);
-  process.exit(1);
-});
+main();
