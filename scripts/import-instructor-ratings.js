@@ -54,8 +54,8 @@ const FEEDBACK_FIELDS = {
   COMMENT: "COMMENT",
   CLASSTYPE: "CLASSTYPE",
   CAL_NAME: "CAL_NAME",
-  TYPE: "Type",
-  DIRECTED_TO: "Directed to",
+  TYPE: "Type - Public",
+  DIRECTED_TO: "Type",
 };
 
 const DIRECTED_TO_VALUE = "Instructor Feedback";
