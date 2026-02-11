@@ -50,7 +50,7 @@ const FEEDBACK_FIELDS = {
   CUSTOMER: "Customer",            // LINKED RECORD
   STUDIO: "Studio",                // LINKED RECORD
   DATE: "DATE OF RATING",           // DATE (no time)
-  RATING: "RATING",
+  RATING: "Rating",
   COMMENT: "COMMENT",
   CLASSTYPE: "CLASSTYPE",
   CAL_NAME: "CAL_NAME",
