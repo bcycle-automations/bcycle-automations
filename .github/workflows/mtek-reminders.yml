@@ -32,8 +32,17 @@ jobs:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_STUDIOS_TABLE: ${{ secrets.AIRTABLE_STUDIOS_TABLE }}
-          MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
           TIMEZONE: "America/Toronto"
+
+          # Microsoft Graph (send email)
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_CLIENT_ID: ${{ secrets.M365_CLIENT_ID }}
+          M365_CLIENT_SECRET: ${{ secrets.M365_CLIENT_SECRET }}
+          M365_SENDER_UPN: ${{ secrets.M365_SENDER_UPN }}
+
+          # Optional (safe defaults)
+          FROM_NAME: "b.cycle"
+          MAX_EMAILS_PER_MINUTE: "20"
 
       - name: Commit updated state file
         run: |
