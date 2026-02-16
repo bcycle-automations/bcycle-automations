@@ -36,7 +36,7 @@ jobs:
       AIRTABLE_VIEW_NAME: NO ID DO NOT TOUCH
 
       AIRTABLE_FIELD_ROOM: room
-      AIRTABLE_FIELD_DATE_UTC: date
+      AIRTABLE_FIELD_DATE_UTC: date-github
       AIRTABLE_FIELD_CLASS_ID: Class ID
 
       # MTEK
