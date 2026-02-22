@@ -454,9 +454,6 @@ async function main() {
       [RES_FIELDS.SPOT_NAME]: spotName || "",
       [RES_FIELDS.CLASSES_LINK]: [classRecordId],
       [RES_FIELDS.IS_NEW]: !!isNew,
-
-      // ✅ NEW: store class record id directly in reservation record for reliable deletes
-      [RES_FIELDS.CLASS_RECORD_ID]: classRecordId,
     };
 
     if (customerRecordId) {
