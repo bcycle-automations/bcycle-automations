@@ -31,6 +31,10 @@ const RES_FIELDS = {
   CLASSES_LINK: "Classes", // linked record (editable)
   CUSTOMERS_LINK: "Customer", // linked record (editable)
   IS_NEW: "NEW?", // checkbox/single select
+
+  // ✅ NEW: This is the field in "Class Reservations" that stores the CLASS Airtable Record ID (recXXXX)
+  // Must match the field name EXACTLY in Airtable
+  CLASS_RECORD_ID: "Record ID",
 };
 
 // Make webhook
@@ -61,6 +65,14 @@ function chunk(arr, size) {
   return out;
 }
 
+/**
+ * Airtable filterByFormula string escaping:
+ * {Field}="value"
+ */
+function airtableFormulaString(value) {
+  return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 function getPayloadFromEvent() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) throw new Error("GITHUB_EVENT_PATH not set");
@@ -86,6 +98,15 @@ function getPayloadFromEvent() {
   console.log("> Cleaned class record id:", JSON.stringify(classRecordId));
   console.log("> MTEK class id from payload:", JSON.stringify(mtekClassId));
 
+  // Basic sanity check (won't block, but helps logs)
+  if (!String(classRecordId).startsWith("rec")) {
+    console.log(
+      `WARNING: classRecordId does not start with "rec". Value=${JSON.stringify(
+        classRecordId
+      )}`
+    );
+  }
+
   return { classRecordId, mtekClassId };
 }
 
@@ -108,7 +129,6 @@ async function airtableRequest(url, options = {}) {
     );
   }
 
-  // DELETE responses are JSON too; keep consistent.
   return res.json();
 }
 
@@ -237,9 +257,10 @@ async function updateClassLastUpdate(classRecordId) {
 }
 
 // ------------------------------------------------------------
-// Find + delete existing Airtable reservations linked to this class
-// IMPORTANT: We do NOT rely on formulas; we read the linked record IDs
-// from the API and check inclusion in code.
+// Find + delete existing Airtable reservations for this class
+// ✅ NEW APPROACH:
+// We use filterByFormula on the "Class Reservations" table where {Record ID} equals the class record id.
+// This avoids issues where the linked "Classes" field points to a different table.
 // ------------------------------------------------------------
 async function listExistingReservationRecordIdsForClass(classRecordId) {
   const recordIds = [];
@@ -248,7 +269,16 @@ async function listExistingReservationRecordIdsForClass(classRecordId) {
   do {
     const params = new URLSearchParams();
     params.set("pageSize", String(AIRTABLE_PAGE_SIZE));
-    params.append("fields[]", RES_FIELDS.CLASSES_LINK);
+
+    // Only fetch records where the stored class record id matches
+    params.set(
+      "filterByFormula",
+      `{${RES_FIELDS.CLASS_RECORD_ID}}=${airtableFormulaString(classRecordId)}`
+    );
+
+    // You can keep this, but it's optional since we only need rec.id for deletes
+    params.append("fields[]", RES_FIELDS.CLASS_RECORD_ID);
+
     if (offset) params.set("offset", offset);
 
     const url = `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${encodeURIComponent(
@@ -258,11 +288,7 @@ async function listExistingReservationRecordIdsForClass(classRecordId) {
     const json = await airtableRequest(url);
 
     for (const rec of json.records || []) {
-      const linked = rec.fields?.[RES_FIELDS.CLASSES_LINK] || [];
-      // Airtable API returns linked record IDs here
-      if (Array.isArray(linked) && linked.includes(classRecordId)) {
-        recordIds.push(rec.id);
-      }
+      recordIds.push(rec.id);
     }
 
     offset = json.offset || null;
@@ -273,9 +299,11 @@ async function listExistingReservationRecordIdsForClass(classRecordId) {
 
 async function deleteExistingReservationsForClass(classRecordId) {
   const ids = await listExistingReservationRecordIdsForClass(classRecordId);
+
   console.log(
-    `> Found ${ids.length} existing Airtable reservation(s) to delete for class ${classRecordId}`
+    `> Found ${ids.length} existing Airtable reservation(s) to delete for class ${classRecordId} using {${RES_FIELDS.CLASS_RECORD_ID}}`
   );
+
   await airtableDeleteRecords(CLASS_RESERVATIONS_TABLE, ids);
 }
 
@@ -374,7 +402,7 @@ async function main() {
   const reservations = await getAllReservationsForClassSession(mtekClassId);
   console.log(`> Found ${reservations.length} reservation(s) for session ${mtekClassId}`);
 
-  // 2) Delete ALL existing Airtable reservation records linked to this class
+  // 2) Delete ALL existing Airtable reservation records for this class (by {Record ID})
   await deleteExistingReservationsForClass(classRecordId);
 
   const makePayload = [];
@@ -426,6 +454,9 @@ async function main() {
       [RES_FIELDS.SPOT_NAME]: spotName || "",
       [RES_FIELDS.CLASSES_LINK]: [classRecordId],
       [RES_FIELDS.IS_NEW]: !!isNew,
+
+      // ✅ NEW: store class record id directly in reservation record for reliable deletes
+      [RES_FIELDS.CLASS_RECORD_ID]: classRecordId,
     };
 
     if (customerRecordId) {
