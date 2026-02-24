@@ -1,12 +1,15 @@
-name: Import Instructor Ratings (CSV → Airtable + Customer link)
+name: Import Instructor Ratings (CSV → Airtable)
 
 on:
   workflow_dispatch:
     inputs:
       form_record_id:
-        description: "Airtable record ID in tblu4fK3CDzDhBjK1 (the form submissions table)"
+        description: "Airtable record ID in tblu4fK3CDzDhBjK1 (form submissions table)"
         required: true
         type: string
+
+  repository_dispatch:
+    types: [airtable_form_created]
 
 jobs:
   run-import:
@@ -21,16 +24,23 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Resolve form record id
+        id: rid
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "FORM_RECORD_ID=${{ inputs.form_record_id }}" >> $GITHUB_ENV
+          else
+            echo "FORM_RECORD_ID=${{ github.event.client_payload.form_record_id }}" >> $GITHUB_ENV
+          fi
+
       - name: Run import
         env:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
-          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
-          MTEK_BASE_URL: ${{ secrets.MTEK_BASE_URL }} # e.g. https://bcycle.marianatek.com
 
           AIRTABLE_BASE_ID: app3XN0v7vjPALgAV
           FORM_TABLE_ID: tblu4fK3CDzDhBjK1
           FEEDBACKS_TABLE_ID: tbl2ZcYV8LCcihQvP
           LOGS_TABLE_ID: tbljXmfkQ0eitjsqr
-          FORM_RECORD_ID: ${{ inputs.form_record_id }}
+          FORM_RECORD_ID: ${{ env.FORM_RECORD_ID }}
 
         run: node scripts/import-instructor-ratings.js
