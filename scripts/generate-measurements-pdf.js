@@ -3,15 +3,19 @@ import process from "node:process";
 import { google } from "googleapis";
 
 /**
- * OPTION 3 (No Drive file creation, keep WORKING SHEET hardcoded):
+ * OPTION 2 (Reuse ONE working sheet + LIVE export URL):
  * - Re-uses ONE existing Google Sheet ("working sheet") every run.
- * - Service account edits the sheet (Sheets API only).
- * - PDF is provided as a PUBLIC export URL (so Airtable can fetch it).
- * - Optional cleanup clears data after updating Airtable (keeps spots in col A).
+ * - Clears previous run's data AT THE START (not the end).
+ * - Writes new class data, then updates Airtable with a PUBLIC export URL.
+ * - DOES NOT clear at the end (so the PDF link won't immediately go blank).
  *
  * IMPORTANT REQUIREMENTS (do once in Google Drive):
  * 1) Share the working sheet to the service account email as Editor
  * 2) Set the working sheet "General access" to "Anyone with the link" as Viewer
+ *
+ * IMPORTANT TRADEOFF:
+ * - Airtable stores a link to a LIVE export of the working sheet, not a snapshot.
+ * - Old Airtable records will show whatever is currently in the working sheet.
  *
  * Usage:
  *   node scripts/generate-measurements-pdf.js <CLASS_RECORD_ID>
@@ -49,20 +53,20 @@ const RES_FIELDS = {
 };
 
 // Google Sheets (WORKING SHEET — hardcoded)
-const WORKING_SPREADSHEET_ID = "11P2Yn3VYkmH-tq8pEc-oA2fRQerBlyC7OwBHB82omv4";
+const WORKING_SPREADSHEET_ID = "PASTE_WORKING_SPREADSHEET_ID_HERE";
 const GOOGLE_SHEET_NAME = "Sheet1";
 
 // Template layout assumptions:
 // - A1 = class name (we overwrite)
-// - A2:A{MAX_ROWS} = spot numbers pre-filled
-// - We write A:I on the row for each spot
+// - Column A contains spot numbers (pre-filled).
+// - You said your data starts at B4, so we treat row 4 as the first data row.
 const CLASS_NAME_CELL = "A1";
-const SPOT_COL_RANGE_START_ROW = 2;
+const DATA_START_ROW = 4; // <-- per your note: clear/write data from row 4 down
 const MAX_ROWS = 250;
 
-// Cleanup:
-// - clears A1 and B:I rows 2..MAX_ROWS (keeps spot numbers in col A)
-const CLEANUP_AFTER_EXPORT = true;
+// When mapping spot numbers, we read them from column A starting at DATA_START_ROW
+// (because rows 1-3 are headers / title area in your sheet).
+const SPOT_COL_RANGE_START_ROW = DATA_START_ROW;
 
 // -------------------------------
 // SECRETS FROM ENV
@@ -235,6 +239,26 @@ async function main() {
 
   const sheets = await getSheetsClient();
 
+  // ------------------------------------------------------------
+  // CLEANUP AT START (KEY CHANGE FOR OPTION 2)
+  // ------------------------------------------------------------
+  // Clear the class name cell and clear previous data B..I starting at row 4.
+  // We do NOT clear at the end anymore.
+  console.log("Clearing previous run data (start of run)...");
+  await withRetry(() =>
+    sheets.spreadsheets.values.clear({
+      spreadsheetId: WORKING_SPREADSHEET_ID,
+      range: `${GOOGLE_SHEET_NAME}!${CLASS_NAME_CELL}`,
+    })
+  );
+
+  await withRetry(() =>
+    sheets.spreadsheets.values.clear({
+      spreadsheetId: WORKING_SPREADSHEET_ID,
+      range: `${GOOGLE_SHEET_NAME}!B${DATA_START_ROW}:I${MAX_ROWS}`,
+    })
+  );
+
   // Fetch class record
   const classRecord = await airtableGetRecord(AIRTABLE_CLASSES_TABLE, recordId);
   const cf = classRecord.fields || {};
@@ -258,7 +282,7 @@ async function main() {
     })
   );
 
-  // Map spot numbers -> row numbers using column A (starting at row 2)
+  // Map spot numbers -> row numbers using column A (starting at row 4)
   const spotRange = `${GOOGLE_SHEET_NAME}!A${SPOT_COL_RANGE_START_ROW}:A${MAX_ROWS}`;
   const spotRes = await withRetry(() =>
     sheets.spreadsheets.values.get({
@@ -277,7 +301,7 @@ async function main() {
     const spot = normalizeSpot(row[0]);
     if (!spot) continue;
 
-    // i=0 corresponds to sheet row 2
+    // i=0 corresponds to DATA_START_ROW
     spotToRow[spot] = SPOT_COL_RANGE_START_ROW + i;
   }
 
@@ -304,6 +328,7 @@ async function main() {
       continue;
     }
 
+    // Write A:I (A is spot, B..I is data)
     const row = [
       spot,
       firstLookup(f[RES_FIELDS.NAME]),
@@ -339,32 +364,10 @@ async function main() {
   });
 
   console.log("Updated Airtable with PDF + sheet link");
-  console.log("PDF:", pdfUrl);
+  console.log("PDF (live export):", pdfUrl);
 
-  // Optional cleanup
-  if (CLEANUP_AFTER_EXPORT) {
-    console.log("Cleaning up working sheet...");
-
-    // Clear A1 (class name)
-    await withRetry(() =>
-      sheets.spreadsheets.values.clear({
-        spreadsheetId: WORKING_SPREADSHEET_ID,
-        range: `${GOOGLE_SHEET_NAME}!A1`,
-      })
-    );
-
-    // Clear B:I (keep spot numbers in col A)
-    await withRetry(() =>
-      sheets.spreadsheets.values.clear({
-        spreadsheetId: WORKING_SPREADSHEET_ID,
-        range: `${GOOGLE_SHEET_NAME}!B${SPOT_COL_RANGE_START_ROW}:I${MAX_ROWS}`,
-      })
-    );
-
-    console.log("Cleanup done.");
-  }
-
-  console.log("Success!");
+  // NO cleanup at end (key change)
+  console.log("Done (no end-of-run cleanup).");
 }
 
 main().catch((err) => {
