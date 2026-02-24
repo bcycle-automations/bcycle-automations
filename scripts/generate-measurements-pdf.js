@@ -1,4 +1,31 @@
 // scripts/generate-measurements-pdf.js
+/**
+ * Generate class measurements sheet + export PDF + update Airtable
+ *
+ * Permanent Google auth fix:
+ * - Uses GOOGLE_SERVICE_ACCOUNT_JSON (no OAuth refresh tokens, no weekly re-auth)
+ *
+ * What it does:
+ * 1) Fetch class record from Airtable
+ * 2) Copy a Google Sheets template into destination Drive folder
+ * 3) Write class name into the sheet
+ * 4) Map spot numbers (from column A) to row numbers
+ * 5) For each reservation (non-cancelled), write measurements into the correct row
+ * 6) Export the sheet to PDF (Drive API)
+ * 7) Upload PDF back to Drive (in same destination folder)
+ * 8) Make the PDF "anyone with link can view"
+ * 9) Update Airtable with:
+ *    - DOWNLOAD_PDF attachment = public download URL
+ *    - PDF LINK = spreadsheet webViewLink
+ *
+ * Required env:
+ * - AIRTABLE_TOKEN
+ * - GOOGLE_SERVICE_ACCOUNT_JSON   (entire service account JSON key file contents)
+ *
+ * Usage:
+ *   node scripts/generate-measurements-pdf.js <CLASS_RECORD_ID>
+ */
+
 import process from "node:process";
 import { google } from "googleapis";
 
@@ -38,51 +65,53 @@ const GOOGLE_TEMPLATE_SPREADSHEET_ID =
   "11P2Yn3VYkmH-tq8pEc-oA2fRQerBlyC7OwBHB82omv4";
 const GOOGLE_DESTINATION_FOLDER_ID = "19K3Cvfuxr6Zszjvrr0xRtlEX9V5Bg_M6";
 const GOOGLE_SHEET_NAME = "Sheet1";
-const CLASS_NAME_CELL = "A1"; // where the class name goes
-const MAX_ROWS = 200;
+
+// IMPORTANT: if A1 is used for class name, spot numbers should start below it.
+// We will write class name into A1 and map spots from A2 down.
+const CLASS_NAME_CELL = "A1";
+const SPOT_COL_RANGE_START_ROW = 2;
+
+// Safety bound for reading the template spots
+const MAX_ROWS = 250;
 
 // -------------------------------
 // SECRETS FROM ENV
 // -------------------------------
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
-const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID;
-const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-const GOOGLE_OAUTH_REFRESH_TOKEN = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
+const GOOGLE_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 
 if (!AIRTABLE_TOKEN) throw new Error("Missing env: AIRTABLE_TOKEN");
-if (!GOOGLE_OAUTH_CLIENT_ID)
-  throw new Error("Missing env: GOOGLE_OAUTH_CLIENT_ID");
-if (!GOOGLE_OAUTH_CLIENT_SECRET)
-  throw new Error("Missing env: GOOGLE_OAUTH_CLIENT_SECRET");
-if (!GOOGLE_OAUTH_REFRESH_TOKEN)
-  throw new Error("Missing env: GOOGLE_OAUTH_REFRESH_TOKEN");
+if (!GOOGLE_SERVICE_ACCOUNT_JSON)
+  throw new Error("Missing env: GOOGLE_SERVICE_ACCOUNT_JSON");
 
 // -------------------------------
-// GOOGLE AUTH (OAuth2 with refresh token)
+// GOOGLE AUTH (Service Account)
 // -------------------------------
 
 async function getGoogleClients() {
+  let creds;
+  try {
+    creds = JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON);
+  } catch {
+    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON");
+  }
+
   const scopes = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
   ];
 
-  const oauth2Client = new google.auth.OAuth2(
-    GOOGLE_OAUTH_CLIENT_ID,
-    GOOGLE_OAUTH_CLIENT_SECRET
-  );
-
-  // Use your refresh token; client will auto-refresh access tokens
-  oauth2Client.setCredentials({
-    refresh_token: GOOGLE_OAUTH_REFRESH_TOKEN,
+  const auth = new google.auth.GoogleAuth({
+    credentials: creds,
+    scopes,
   });
 
-  // Sanity check – throws if credentials are invalid
-  await oauth2Client.getAccessToken();
+  // sanity check
+  await auth.getClient();
 
-  const drive = google.drive({ version: "v3", auth: oauth2Client });
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const drive = google.drive({ version: "v3", auth });
+  const sheets = google.sheets({ version: "v4", auth });
 
   return { drive, sheets };
 }
@@ -149,6 +178,98 @@ function normalizeSpot(val) {
   return String(val).trim();
 }
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function withRetry(fn, { tries = 5, baseDelayMs = 400 } = {}) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message || err);
+
+      // Retry on common transient issues
+      const transient =
+        msg.includes("429") ||
+        msg.includes("Rate Limit") ||
+        msg.includes("quota") ||
+        msg.includes("ECONNRESET") ||
+        msg.includes("ETIMEDOUT") ||
+        msg.includes("503") ||
+        msg.includes("500");
+
+      if (!transient || i === tries - 1) throw err;
+
+      const delay = baseDelayMs * Math.pow(2, i);
+      console.warn(`Retrying after error (${i + 1}/${tries}): ${msg}`);
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
+
+// -------------------------------
+// PDF EXPORT + UPLOAD HELPERS
+// -------------------------------
+
+async function exportSpreadsheetToPdfBuffer(drive, spreadsheetId) {
+  // Export the Google Sheet to PDF (authenticated)
+  const resp = await withRetry(() =>
+    drive.files.export(
+      {
+        fileId: spreadsheetId,
+        mimeType: "application/pdf",
+      },
+      { responseType: "arraybuffer" }
+    )
+  );
+
+  // googleapis returns ArrayBuffer-ish data in resp.data
+  return Buffer.from(resp.data);
+}
+
+async function uploadPdfToDrive(drive, { pdfBuffer, name, parentFolderId }) {
+  const createResp = await withRetry(() =>
+    drive.files.create({
+      requestBody: {
+        name,
+        parents: [parentFolderId],
+        mimeType: "application/pdf",
+      },
+      media: {
+        mimeType: "application/pdf",
+        body: pdfBuffer,
+      },
+      fields: "id, webViewLink, webContentLink",
+    })
+  );
+
+  const fileId = createResp.data.id;
+  if (!fileId) throw new Error("Drive PDF upload failed (no file id)");
+
+  return createResp.data;
+}
+
+async function makeAnyoneWithLinkReader(drive, fileId) {
+  await withRetry(() =>
+    drive.permissions.create({
+      fileId,
+      requestBody: {
+        role: "reader",
+        type: "anyone",
+      },
+    })
+  );
+}
+
+function driveDirectDownloadUrl(fileId) {
+  // Public (when permission is "anyone with link")
+  return `https://drive.google.com/uc?export=download&id=${fileId}`;
+}
+
 // -------------------------------
 // MAIN LOGIC
 // -------------------------------
@@ -172,8 +293,7 @@ async function main() {
   const cf = classRecord.fields || {};
 
   const className =
-    (cf[CLASS_FIELDS.NAME] && String(cf[CLASS_FIELDS.NAME]).trim()) ||
-    recordId;
+    (cf[CLASS_FIELDS.NAME] && String(cf[CLASS_FIELDS.NAME]).trim()) || recordId;
 
   const reservationIds = Array.isArray(cf[CLASS_FIELDS.RESERVATIONS])
     ? cf[CLASS_FIELDS.RESERVATIONS]
@@ -182,13 +302,16 @@ async function main() {
   console.log(`Found ${reservationIds.length} reservations`);
 
   // Copy template spreadsheet
-  const copyResp = await drive.files.copy({
-    fileId: GOOGLE_TEMPLATE_SPREADSHEET_ID,
-    requestBody: {
-      name: `Class Info + Measurements - ${className}`,
-      parents: [GOOGLE_DESTINATION_FOLDER_ID],
-    },
-  });
+  const copyResp = await withRetry(() =>
+    drive.files.copy({
+      fileId: GOOGLE_TEMPLATE_SPREADSHEET_ID,
+      requestBody: {
+        name: `Class Info + Measurements - ${className}`,
+        parents: [GOOGLE_DESTINATION_FOLDER_ID],
+      },
+      fields: "id, webViewLink",
+    })
+  );
 
   const spreadsheetId = copyResp.data.id;
   if (!spreadsheetId)
@@ -196,19 +319,24 @@ async function main() {
 
   console.log("New spreadsheet:", spreadsheetId);
 
-  // Write class name into A1 (or wherever you want)
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `${GOOGLE_SHEET_NAME}!${CLASS_NAME_CELL}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [[className]] },
-  });
+  // Write class name into the template
+  await withRetry(() =>
+    sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${GOOGLE_SHEET_NAME}!${CLASS_NAME_CELL}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[className]] },
+    })
+  );
 
-  // Load spot numbers from column A
-  const spotRes = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${GOOGLE_SHEET_NAME}!A1:A${MAX_ROWS}`,
-  });
+  // Load spot numbers from column A (starting from row 2 to avoid A1 class name)
+  const spotRange = `${GOOGLE_SHEET_NAME}!A${SPOT_COL_RANGE_START_ROW}:A${MAX_ROWS}`;
+  const spotRes = await withRetry(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: spotRange,
+    })
+  );
 
   const spotRows = spotRes.data.values || [];
   const spotToRow = {};
@@ -216,18 +344,23 @@ async function main() {
   for (let i = 0; i < spotRows.length; i++) {
     const row = spotRows[i];
     if (!row || row.length === 0) continue;
+
     const spot = normalizeSpot(row[0]);
-    if (spot) spotToRow[spot] = i + 1; // sheet rows are 1-based
+    if (!spot) continue;
+
+    // i=0 corresponds to sheet row SPOT_COL_RANGE_START_ROW
+    const sheetRowNumber = SPOT_COL_RANGE_START_ROW + i;
+    spotToRow[spot] = sheetRowNumber;
   }
 
   console.log("Mapped spot numbers:", Object.keys(spotToRow).length);
 
   // Loop through reservations
   for (const resId of reservationIds) {
-    const r = await airtableGetRecord(AIRTABLE_CLASS_RES_TABLE, resId);
+    const r = await withRetry(() => airtableGetRecord(AIRTABLE_CLASS_RES_TABLE, resId));
     const f = r.fields || {};
 
-    const status = (f[RES_FIELDS.STATUS] || "").toLowerCase();
+    const status = String(f[RES_FIELDS.STATUS] || "").toLowerCase();
 
     if (status.includes("cancel")) {
       console.log(`Skipping ${resId} (cancelled)`);
@@ -254,37 +387,62 @@ async function main() {
       firstLookup(f[RES_FIELDS.NOTES]),
     ];
 
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `${GOOGLE_SHEET_NAME}!A${rowNumber}:I${rowNumber}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [row] },
-    });
+    await withRetry(() =>
+      sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${GOOGLE_SHEET_NAME}!A${rowNumber}:I${rowNumber}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [row] },
+      })
+    );
 
     console.log(`Wrote row ${rowNumber} for reservation ${resId}`);
   }
 
-  // Get webViewLink
-  const meta = await drive.files.get({
-    fileId: spreadsheetId,
-    fields: "webViewLink",
+  // Get spreadsheet webViewLink (for your "PDF LINK" field)
+  const sheetMeta = await withRetry(() =>
+    drive.files.get({
+      fileId: spreadsheetId,
+      fields: "webViewLink",
+    })
+  );
+  const spreadsheetWebViewLink = sheetMeta.data.webViewLink || "";
+
+  // Export spreadsheet to PDF buffer (authenticated)
+  console.log("Exporting spreadsheet to PDF...");
+  const pdfBuffer = await exportSpreadsheetToPdfBuffer(drive, spreadsheetId);
+
+  // Upload PDF back to Drive (in destination folder)
+  const pdfName = `Class Measurements - ${className}.pdf`;
+  console.log("Uploading PDF to Drive:", pdfName);
+
+  const pdfFile = await uploadPdfToDrive(drive, {
+    pdfBuffer,
+    name: pdfName,
+    parentFolderId: GOOGLE_DESTINATION_FOLDER_ID,
   });
 
-  const webViewLink = meta.data.webViewLink;
+  const pdfFileId = pdfFile.id;
+  if (!pdfFileId) throw new Error("Uploaded PDF missing file id");
 
-  // Construct PDF URL
-  const pdfUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=pdf`;
+  // Make PDF publicly accessible (anyone with link)
+  await makeAnyoneWithLinkReader(drive, pdfFileId);
+
+  // Public direct download URL for Airtable attachment
+  const pdfDownloadUrl = driveDirectDownloadUrl(pdfFileId);
 
   // Update Airtable
   await airtableUpdateRecord(AIRTABLE_CLASSES_TABLE, recordId, {
-    [CLASS_FIELDS.DOWNLOAD_PDF]: [{ url: pdfUrl }],
-    [CLASS_FIELDS.PDF_LINK]: webViewLink,
+    [CLASS_FIELDS.DOWNLOAD_PDF]: [{ url: pdfDownloadUrl }],
+    [CLASS_FIELDS.PDF_LINK]: spreadsheetWebViewLink,
   });
 
-  console.log("Success! Updated Airtable with PDF + link");
+  console.log("Success! Updated Airtable with PDF + sheet link");
+  console.log("PDF download:", pdfDownloadUrl);
+  if (spreadsheetWebViewLink) console.log("Sheet link:", spreadsheetWebViewLink);
 }
 
 main().catch((err) => {
-  console.error("Error:", err);
+  console.error("Error:", err?.stack || err);
   process.exit(1);
 });
