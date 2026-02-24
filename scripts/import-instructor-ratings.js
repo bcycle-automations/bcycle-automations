@@ -382,7 +382,7 @@ async function main() {
       // Pull from CSV (supports shifting order + slight naming variations)
       const contact = String(getCell(row, headerIndex, "Contact")).trim();
 
-      const dateRaw = getCell(row, headerIndex, "DATE OF RATING", "Date");
+      const dateRaw = getCell(row, headerIndex, "Response Date", "DATE OF RATING", "Date");
       const dateISO = parseDateOnlyToISO(dateRaw);
 
       const ratingRaw = String(getCell(row, headerIndex, "Rating", "RATING")).trim();
