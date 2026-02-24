@@ -49,7 +49,7 @@ const RES_FIELDS = {
 };
 
 // Google Sheets (WORKING SHEET — hardcoded)
-const WORKING_SPREADSHEET_ID = "d/11P2Yn3VYkmH-tq8pEc-oA2fRQerBlyC7OwBHB82omv4";
+const WORKING_SPREADSHEET_ID = "11P2Yn3VYkmH-tq8pEc-oA2fRQerBlyC7OwBHB82omv4";
 const GOOGLE_SHEET_NAME = "Sheet1";
 
 // Template layout assumptions:
