@@ -3,26 +3,30 @@ import process from "node:process";
 import { google } from "googleapis";
 
 /**
- * OPTION 2 (Reuse ONE working sheet + LIVE export URL):
- * - Re-uses ONE existing Google Sheet ("working sheet") every run.
- * - Clears previous run's data AT THE START (not the end).
- * - Writes new class data, then updates Airtable with a PUBLIC export URL.
- * - DOES NOT clear at the end (so the PDF link won't immediately go blank).
+ * OPTION 2 (single working sheet + live PDF export link)
  *
- * IMPORTANT REQUIREMENTS (do once in Google Drive):
- * 1) Share the working sheet to the service account email as Editor
- * 2) Set the working sheet "General access" to "Anyone with the link" as Viewer
+ * What it does:
+ * 1) Clears previous run data at the START (A1 and B4:I{MAX_ROWS})
+ * 2) Reads the Airtable class + linked reservations
+ * 3) Writes rows into the WORKING spreadsheet (no Drive file creation)
+ * 4) Updates Airtable:
+ *    - PDF LINK (text) = sheet edit link
+ *    - Download PDF (attachment) = simple PDF export URL (most compatible with Airtable fetcher)
  *
- * IMPORTANT TRADEOFF:
- * - Airtable stores a link to a LIVE export of the working sheet, not a snapshot.
- * - Old Airtable records will show whatever is currently in the working sheet.
+ * IMPORTANT tradeoff:
+ * - The "PDF" is a LIVE export of the working sheet, not a snapshot.
+ * - If the working sheet is overwritten later, old Airtable records will point to the new content.
+ *
+ * One-time Google Drive requirements:
+ * - Share the working spreadsheet to the service account as Editor
+ * - Set working spreadsheet "General access" to "Anyone with the link" = Viewer (so Airtable can fetch)
  *
  * Usage:
  *   node scripts/generate-measurements-pdf.js <CLASS_RECORD_ID>
  */
 
 // -------------------------------
-// NON-SENSITIVE CONFIG
+// CONFIG
 // -------------------------------
 
 // Airtable
@@ -34,8 +38,8 @@ const AIRTABLE_CLASS_RES_TABLE = "Class Reservations";
 const CLASS_FIELDS = {
   NAME: "Class!",
   RESERVATIONS: "Class Reservations",
-  DOWNLOAD_PDF: "Download PDF",
-  PDF_LINK: "PDF LINK",
+  DOWNLOAD_PDF: "Download PDF", // Attachment field
+  PDF_LINK: "PDF LINK", // URL/text field
 };
 
 // Reservation table fields
@@ -52,24 +56,20 @@ const RES_FIELDS = {
   NOTES: "Class NOTES (from Customer)",
 };
 
-// Google Sheets (WORKING SHEET — hardcoded)
-const WORKING_SPREADSHEET_ID = "11P2Yn3VYkmH-tq8pEc-oA2fRQerBlyC7OwBHB82omv4";
+// Google Sheets (working sheet only — hardcoded)
+const WORKING_SPREADSHEET_ID = "PASTE_WORKING_SPREADSHEET_ID_HERE";
 const GOOGLE_SHEET_NAME = "Sheet1";
 
-// Template layout assumptions:
-// - A1 = class name (we overwrite)
-// - Column A contains spot numbers (pre-filled).
-// - You said your data starts at B4, so we treat row 4 as the first data row.
+// Layout assumptions for YOUR sheet:
+// - A1: class name
+// - Spots are in column A starting at row 4
+// - Data should be written across A:I on each spot row
 const CLASS_NAME_CELL = "A1";
-const DATA_START_ROW = 4; // <-- per your note: clear/write data from row 4 down
+const DATA_START_ROW = 4; // you said your sheet’s data begins at B4
 const MAX_ROWS = 250;
 
-// When mapping spot numbers, we read them from column A starting at DATA_START_ROW
-// (because rows 1-3 are headers / title area in your sheet).
-const SPOT_COL_RANGE_START_ROW = DATA_START_ROW;
-
 // -------------------------------
-// SECRETS FROM ENV
+// SECRETS
 // -------------------------------
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
@@ -85,7 +85,7 @@ if (!WORKING_SPREADSHEET_ID || WORKING_SPREADSHEET_ID.includes("PASTE_")) {
 }
 
 // -------------------------------
-// GOOGLE AUTH (Service Account - Sheets only)
+// GOOGLE (Sheets only)
 // -------------------------------
 
 async function getSheetsClient() {
@@ -101,9 +101,7 @@ async function getSheetsClient() {
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
-  // sanity check
   await auth.getClient();
-
   return google.sheets({ version: "v4", auth });
 }
 
@@ -146,18 +144,21 @@ async function airtableUpdateRecord(tableName, recordId, fields) {
     body: JSON.stringify({ fields }),
   });
 
+  const txt = await res.text();
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(
-      `Airtable PATCH ${tableName}/${recordId} failed: ${res.status} ${txt}`
-    );
+    throw new Error(`Airtable PATCH ${tableName}/${recordId} failed: ${res.status} ${txt}`);
   }
 
-  return res.json();
+  try {
+    return JSON.parse(txt);
+  } catch {
+    // Extremely rare, but keep it debuggable
+    return { raw: txt };
+  }
 }
 
 // -------------------------------
-// UTILITIES
+// UTIL
 // -------------------------------
 
 function firstLookup(val) {
@@ -201,24 +202,12 @@ async function withRetry(fn, { tries = 5, baseDelayMs = 400 } = {}) {
   throw lastErr;
 }
 
-// Public PDF export URL
-// NOTE: Works only if the sheet is "Anyone with the link" viewable.
-function publicPdfExportUrl(spreadsheetId) {
-  const params = new URLSearchParams({
-    format: "pdf",
-    portrait: "true",
-    fitw: "true",
-    sheetnames: "false",
-    printtitle: "false",
-    pagenumbers: "false",
-    gridlines: "false",
-    fzr: "false",
-  });
-
-  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?${params.toString()}`;
+// Airtable attachment fetcher tends to behave better with the simplest URL:
+function pdfExportUrlSimple(spreadsheetId) {
+  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=pdf`;
 }
 
-function publicSheetLink(spreadsheetId) {
+function sheetEditLink(spreadsheetId) {
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
 }
 
@@ -239,11 +228,7 @@ async function main() {
 
   const sheets = await getSheetsClient();
 
-  // ------------------------------------------------------------
-  // CLEANUP AT START (KEY CHANGE FOR OPTION 2)
-  // ------------------------------------------------------------
-  // Clear the class name cell and clear previous data B..I starting at row 4.
-  // We do NOT clear at the end anymore.
+  // 1) CLEAR PREVIOUS RUN AT START (A1 and B4:I...)
   console.log("Clearing previous run data (start of run)...");
   await withRetry(() =>
     sheets.spreadsheets.values.clear({
@@ -259,7 +244,7 @@ async function main() {
     })
   );
 
-  // Fetch class record
+  // 2) Fetch class record
   const classRecord = await airtableGetRecord(AIRTABLE_CLASSES_TABLE, recordId);
   const cf = classRecord.fields || {};
 
@@ -272,7 +257,7 @@ async function main() {
 
   console.log(`Found ${reservationIds.length} reservations`);
 
-  // Write class name into A1
+  // 3) Write class name
   await withRetry(() =>
     sheets.spreadsheets.values.update({
       spreadsheetId: WORKING_SPREADSHEET_ID,
@@ -282,8 +267,8 @@ async function main() {
     })
   );
 
-  // Map spot numbers -> row numbers using column A (starting at row 4)
-  const spotRange = `${GOOGLE_SHEET_NAME}!A${SPOT_COL_RANGE_START_ROW}:A${MAX_ROWS}`;
+  // 4) Map spot numbers -> rows from column A starting at row 4
+  const spotRange = `${GOOGLE_SHEET_NAME}!A${DATA_START_ROW}:A${MAX_ROWS}`;
   const spotRes = await withRetry(() =>
     sheets.spreadsheets.values.get({
       spreadsheetId: WORKING_SPREADSHEET_ID,
@@ -297,17 +282,14 @@ async function main() {
   for (let i = 0; i < spotRows.length; i++) {
     const row = spotRows[i];
     if (!row || row.length === 0) continue;
-
     const spot = normalizeSpot(row[0]);
     if (!spot) continue;
-
-    // i=0 corresponds to DATA_START_ROW
-    spotToRow[spot] = SPOT_COL_RANGE_START_ROW + i;
+    spotToRow[spot] = DATA_START_ROW + i;
   }
 
   console.log("Mapped spot numbers:", Object.keys(spotToRow).length);
 
-  // Fill rows for each reservation
+  // 5) Loop reservations and write rows
   for (const resId of reservationIds) {
     const r = await withRetry(() =>
       airtableGetRecord(AIRTABLE_CLASS_RES_TABLE, resId)
@@ -328,7 +310,6 @@ async function main() {
       continue;
     }
 
-    // Write A:I (A is spot, B..I is data)
     const row = [
       spot,
       firstLookup(f[RES_FIELDS.NAME]),
@@ -353,20 +334,20 @@ async function main() {
     console.log(`Wrote row ${rowNumber} for reservation ${resId}`);
   }
 
-  // Build links for Airtable
-  const pdfUrl = publicPdfExportUrl(WORKING_SPREADSHEET_ID);
-  const sheetUrl = publicSheetLink(WORKING_SPREADSHEET_ID);
+  // 6) Update Airtable with links
+  const pdfUrl = pdfExportUrlSimple(WORKING_SPREADSHEET_ID);
+  const sheetUrl = sheetEditLink(WORKING_SPREADSHEET_ID);
 
-  // Update Airtable
-  await airtableUpdateRecord(AIRTABLE_CLASSES_TABLE, recordId, {
+  console.log("Updating Airtable...");
+  const updated = await airtableUpdateRecord(AIRTABLE_CLASSES_TABLE, recordId, {
     [CLASS_FIELDS.DOWNLOAD_PDF]: [{ url: pdfUrl }],
     [CLASS_FIELDS.PDF_LINK]: sheetUrl,
   });
 
-  console.log("Updated Airtable with PDF + sheet link");
-  console.log("PDF (live export):", pdfUrl);
-
-  // NO cleanup at end (key change)
+  // Debug visibility: show what Airtable says it stored
+  const downloadField = updated?.fields?.[CLASS_FIELDS.DOWNLOAD_PDF];
+  console.log("Airtable returned Download PDF:", downloadField);
+  console.log("PDF export URL:", pdfUrl);
   console.log("Done (no end-of-run cleanup).");
 }
 
