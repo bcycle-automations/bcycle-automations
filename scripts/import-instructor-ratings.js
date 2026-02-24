@@ -54,17 +54,16 @@ const FORM_FIELD_IDS = {
 
 /**
  * FEEDBACKS TABLE FIELD NAMES (destination)
- * (These are Airtable field *names* on the Feedbacks table)
  */
 const FEEDBACK_FIELDS = {
-  CONTACT: "Contact",                // TEXT
-  STUDIO: "Studio",                  // LINKED RECORD
-  DATE: "DATE OF RATING",            // DATE (or date-like string if your field is text)
-  RATING: "Rating",                  // NUMBER (or text if your field is text)
-  COMMENT: "COMMENT",                // LONG TEXT / TEXT
-  CLASSTYPE: "CLASSTYPE",            // TEXT / SINGLE SELECT
-  INSTRUCTOR_NAME: "Instructor Name",// TEXT
-  TYPE: "Type",                      // SINGLE SELECT
+  CONTACT: "Contact",                 // TEXT
+  STUDIO: "Studio",                   // LINKED RECORD
+  DATE: "DATE OF RATING",             // DATE
+  RATING: "Rating",                   // NUMBER
+  COMMENT: "COMMENT",                 // TEXT / LONG TEXT
+  CLASSTYPE: "CLASSTYPE",             // TEXT / SINGLE SELECT
+  INSTRUCTOR_NAME: "Instructor Name", // TEXT
+  TYPE: "Type",                       // SINGLE SELECT
 };
 
 const TYPE_VALUE = "Instructor Feedback";
@@ -161,6 +160,7 @@ function parseCSV(text) {
   row.push(cur);
   rows.push(row);
 
+  // Remove empty trailing rows
   return rows.filter((r) => r.some((c) => String(c).trim() !== ""));
 }
 
@@ -170,13 +170,15 @@ function makeHeaderIndex(headers) {
   return map;
 }
 
-function getCell(row, headerIndex, ...headerCandidates) {
-  for (const h of headerCandidates) {
-    const key = normalizeHeader(h);
-    const idx = headerIndex.get(key);
-    if (idx !== undefined && idx !== -1) return row[idx];
-  }
-  return "";
+function hasHeader(headerIndex, headerName) {
+  if (!headerName) return false;
+  return headerIndex.has(normalizeHeader(headerName));
+}
+
+function getCell(row, headerIndex, headerName) {
+  const idx = headerIndex.get(normalizeHeader(headerName));
+  if (idx === undefined || idx === -1) return "";
+  return row[idx];
 }
 
 /* ============================================================
@@ -197,7 +199,6 @@ function parseDateOnlyToISO(v) {
 
 /* ============================================================
    DEDUPE CHECK
-   Key: Contact(text) + Studio(link) + DATE OF RATING (date-only)
 ============================================================ */
 
 async function feedbackExists({ contact, studioId, dateISO }) {
@@ -251,8 +252,8 @@ async function updateLog(logId, fields) {
 ============================================================ */
 
 /**
- * IMPORTANT: returnFieldsByFieldId=true
- * This ensures form.fields is keyed by field IDs, so renaming fields won’t break the script.
+ * returnFieldsByFieldId=true
+ * Ensures `form.fields` keys are FIELD IDS (stable even if field names change).
  */
 async function loadFormRecord() {
   const url =
@@ -278,6 +279,24 @@ function getFormTextField(form, fieldId, fallback) {
 }
 
 /* ============================================================
+   HEADER VALIDATION
+============================================================ */
+
+function validateMappedHeaders(headerIndex, mapping) {
+  const missing = [];
+  for (const [key, headerName] of Object.entries(mapping)) {
+    if (!headerName || !String(headerName).trim()) {
+      missing.push(`${key}: (blank mapping)`);
+      continue;
+    }
+    if (!hasHeader(headerIndex, headerName)) {
+      missing.push(`${key}: "${headerName}"`);
+    }
+  }
+  return missing;
+}
+
+/* ============================================================
    MAIN
 ============================================================ */
 
@@ -292,15 +311,13 @@ async function main() {
 
     const form = await loadFormRecord();
 
-    // Required from the form submission (by field ID)
     const studioId = form?.fields?.[FORM_FIELD_IDS.STUDIO]?.[0];
     const csvUrl = form?.fields?.[FORM_FIELD_IDS.CSV_UPLOAD]?.[0]?.url;
 
     if (!studioId) throw new Error(`Missing Studio (fieldId=${FORM_FIELD_IDS.STUDIO}) on form record`);
     if (!csvUrl) throw new Error(`Missing CSV Upload (fieldId=${FORM_FIELD_IDS.CSV_UPLOAD}) attachment on form record`);
 
-    // CSV header mappings come from editable/prefilled form text fields (by field ID)
-    // If someone changes them, we automatically use the new values.
+    // CSV header mappings come from editable/prefilled form text fields
     const CSV_HEADERS = {
       CONTACT: getFormTextField(form, FORM_FIELD_IDS.CONTACT_HEADER, "Contact"),
       DATE: getFormTextField(form, FORM_FIELD_IDS.DATE_HEADER, "Response Date"),
@@ -320,6 +337,19 @@ async function main() {
 
     console.log("CSV headers:", rows[0]);
     console.log("Using header mapping from form record:", CSV_HEADERS);
+
+    // ✅ HARD FAIL if any mapped header does not exist in the CSV.
+    // Also write it to the issue log.
+    const missingHeaders = validateMappedHeaders(headerIndex, CSV_HEADERS);
+    if (missingHeaders.length) {
+      const msg =
+        `Mapped CSV headers not found in uploaded CSV:\n` +
+        missingHeaders.map((m) => `- ${m}`).join("\n") +
+        `\n\nCSV headers seen:\n` +
+        rows[0].map((h) => `- ${h}`).join("\n");
+      issues.push(msg);
+      throw new Error(msg);
+    }
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
@@ -341,13 +371,11 @@ async function main() {
         continue;
       }
 
-      // Dedup (Contact + Studio + same day)
       if (await feedbackExists({ contact, studioId, dateISO })) {
         ignored++;
         continue;
       }
 
-      // Build Airtable fields (NO customer/email resolution anymore)
       const fields = {
         [FEEDBACK_FIELDS.CONTACT]: contact,
         [FEEDBACK_FIELDS.STUDIO]: [studioId],
@@ -372,7 +400,7 @@ async function main() {
       [LOG_FIELDS.STATUS]: issues.length ? LOG_STATUS.ISSUE : LOG_STATUS.COMPLETED,
       [LOG_FIELDS.IMPORTED]: imported,
       [LOG_FIELDS.IGNORED]: ignored,
-      ...(issues.length ? { [LOG_FIELDS.ISSUE_LOG]: issues.join("\n") } : {}),
+      ...(issues.length ? { [LOG_FIELDS.ISSUE_LOG]: issues.join("\n\n") } : {}),
     });
 
     console.log(`✅ Import completed. Imported=${imported}, Ignored=${ignored}, Issues=${issues.length}`);
@@ -380,11 +408,14 @@ async function main() {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("❌ Fatal:", msg);
 
+    // Ensure the log captures any fatal error, including missing headers
     if (logId) {
       try {
         await updateLog(logId, {
           [LOG_FIELDS.STATUS]: LOG_STATUS.ISSUE,
-          [LOG_FIELDS.ISSUE_LOG]: msg,
+          [LOG_FIELDS.IMPORTED]: imported,
+          [LOG_FIELDS.IGNORED]: ignored,
+          [LOG_FIELDS.ISSUE_LOG]: issues.length ? issues.join("\n\n") : msg,
         });
       } catch (e) {
         console.error("Also failed to update log record:", e?.message || e);
