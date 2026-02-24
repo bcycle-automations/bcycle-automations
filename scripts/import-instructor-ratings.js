@@ -15,10 +15,7 @@ const {
   FEEDBACKS_TABLE_ID,
   LOGS_TABLE_ID,
   FORM_RECORD_ID,
-  MTEK_API_TOKEN,
 } = process.env;
-
-const MTEK_BASE_URL = (process.env.MTEK_BASE_URL || "https://bcycle.marianatek.com").replace(/\/+$/, "");
 
 function requireEnv(name) {
   if (!process.env[name]) throw new Error(`Missing env var: ${name}`);
@@ -36,26 +33,38 @@ requireEnv("FORM_RECORD_ID");
 ============================================================ */
 
 const AIRTABLE_API = "https://api.airtable.com/v0";
-const AIRTABLE_META_API = "https://api.airtable.com/v0/meta";
 
-/* ---- Form table ---- */
-const FORM_FIELDS = {
-  CSV_UPLOAD: "CSV Upload",
-  STUDIO: "Studio",
+/**
+ * FORM TABLE FIELD IDS (from your screenshot)
+ * These live on the Form table record and can be prefilled by the form URL.
+ * People might edit them; we always read whatever is in the submitted record.
+ */
+const FORM_FIELD_IDS = {
+  CSV_UPLOAD: "fld9aPVBfGiKnxqNu",        // "CSV Upload" (Attachment)
+  STUDIO: "fld37o0IEnMH4Qz1z",            // "Studio" (Link to record)
+
+  // Mapping fields (Single line text) containing the CSV header to use:
+  CONTACT_HEADER: "fldcLopFy64blIgFl",    // "Contact"
+  RATING_HEADER: "fld1CnnyKmmAQuMg1",     // "Rating"
+  COMMENT_HEADER: "fldXYsNP1QjLNPVBy",    // "COMMENT"
+  CLASSTYPE_HEADER: "fldZ1CSNQY6naOeAJ",  // "CLASSTYPE"
+  DATE_HEADER: "fldBoXrIXNCD8ZTPR",       // "DATE OF RATING"
+  INSTRUCTOR_HEADER: "fldkeOL4mnfCKq0up", // "Instructor Name"
 };
 
-/* ---- Feedbacks table ---- */
+/**
+ * FEEDBACKS TABLE FIELD NAMES (destination)
+ * (These are Airtable field *names* on the Feedbacks table)
+ */
 const FEEDBACK_FIELDS = {
-  CONTACT: "Contact",            // TEXT
-  CUSTOMER: "Customer",          // LINKED RECORD
-  STUDIO: "Studio",              // LINKED RECORD
-  DATE: "DATE OF RATING",        // DATE (no time)
-  RATING: "Rating",              // NUMBER
-  COMMENT: "COMMENT",            // LONG TEXT
-  CLASSTYPE: "CLASSTYPE",        // TEXT / SINGLE SELECT (your choice)
-  INSTRUCTOR_NAME: "Instructor Name", // TEXT
-  TYPE_PUBLIC: "Type - Public",  // OPTIONAL (if exists)
-  TYPE: "Type",                  // SINGLE SELECT -> set to "Instructor Feedback"
+  CONTACT: "Contact",                // TEXT
+  STUDIO: "Studio",                  // LINKED RECORD
+  DATE: "DATE OF RATING",            // DATE (or date-like string if your field is text)
+  RATING: "Rating",                  // NUMBER (or text if your field is text)
+  COMMENT: "COMMENT",                // LONG TEXT / TEXT
+  CLASSTYPE: "CLASSTYPE",            // TEXT / SINGLE SELECT
+  INSTRUCTOR_NAME: "Instructor Name",// TEXT
+  TYPE: "Type",                      // SINGLE SELECT
 };
 
 const TYPE_VALUE = "Instructor Feedback";
@@ -98,27 +107,8 @@ async function fetchJson(url, options = {}) {
   return res.json();
 }
 
-async function fetchMtek(url) {
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${MTEK_API_TOKEN}`,
-      Accept: "application/vnd.api+json",
-    },
-  });
-
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`MTEK ${res.status} ${res.statusText}: ${t}`);
-  }
-  return res.json();
-}
-
 function escapeFormula(v) {
   return String(v ?? "").replace(/"/g, '\\"');
-}
-
-function looksLikeEmail(v) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v ?? "").trim());
 }
 
 /* ============================================================
@@ -171,7 +161,6 @@ function parseCSV(text) {
   row.push(cur);
   rows.push(row);
 
-  // Remove empty trailing rows
   return rows.filter((r) => r.some((c) => String(c).trim() !== ""));
 }
 
@@ -183,7 +172,8 @@ function makeHeaderIndex(headers) {
 
 function getCell(row, headerIndex, ...headerCandidates) {
   for (const h of headerCandidates) {
-    const idx = headerIndex.get(normalizeHeader(h));
+    const key = normalizeHeader(h);
+    const idx = headerIndex.get(key);
     if (idx !== undefined && idx !== -1) return row[idx];
   }
   return "";
@@ -199,78 +189,10 @@ function parseDateOnlyToISO(v) {
   const raw = String(v).trim();
   if (!raw) return null;
 
-  // Let JS parse common formats (incl. M/D/YYYY)
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return null;
 
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
-}
-
-/* ============================================================
-   AIRTABLE META – FIND CUSTOMER TABLE + PRIMARY FIELD
-============================================================ */
-
-async function getCustomersLinkInfo() {
-  const meta = await fetchJson(`${AIRTABLE_META_API}/bases/${AIRTABLE_BASE_ID}/tables`);
-  const feedbacks = meta.tables.find((t) => t.id === FEEDBACKS_TABLE_ID);
-  if (!feedbacks) throw new Error(`Meta: feedbacks table not found: ${FEEDBACKS_TABLE_ID}`);
-
-  const customerField = feedbacks.fields.find((f) => f.name === FEEDBACK_FIELDS.CUSTOMER);
-  if (!customerField?.options?.linkedTableId) {
-    throw new Error(`Meta: could not resolve linked table for field "${FEEDBACK_FIELDS.CUSTOMER}"`);
-  }
-
-  const customersTable = meta.tables.find((t) => t.id === customerField.options.linkedTableId);
-  if (!customersTable) throw new Error(`Meta: customers linked table not found`);
-
-  const primaryField = customersTable.fields.find((f) => f.id === customersTable.primaryFieldId);
-  if (!primaryField) throw new Error(`Meta: customers primary field not found`);
-
-  return {
-    tableId: customersTable.id,
-    primaryField: primaryField.name,
-  };
-}
-
-async function findCustomerByEmail(linkInfo, email) {
-  const e = String(email || "").trim();
-  if (!e) return null;
-
-  const formula = `{${linkInfo.primaryField}} = "${escapeFormula(e)}"`;
-  const url =
-    `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${linkInfo.tableId}` +
-    `?pageSize=1&filterByFormula=${encodeURIComponent(formula)}`;
-
-  const out = await fetchJson(url);
-  return out.records?.[0]?.id || null;
-}
-
-/* ============================================================
-   MTEK – NAME → EMAIL (USING name_query)
-============================================================ */
-
-async function resolveEmailViaMtek(name) {
-  const q = String(name || "").trim();
-  if (!q) return null;
-  if (!MTEK_API_TOKEN) return null;
-
-  try {
-    const url = new URL("/api/users", MTEK_BASE_URL);
-    url.searchParams.set("name_query", q);
-    url.searchParams.set("page_size", "5");
-
-    const json = await fetchMtek(url.toString());
-    const users = Array.isArray(json.data) ? json.data : [];
-
-    for (const u of users) {
-      const email = u?.attributes?.email;
-      if (looksLikeEmail(email)) return String(email).trim();
-    }
-    return null;
-  } catch (err) {
-    console.warn(`⚠️ MTEK lookup failed for "${q}": ${err?.message || err}`);
-    return null;
-  }
 }
 
 /* ============================================================
@@ -328,8 +250,15 @@ async function updateLog(logId, fields) {
    FORM LOAD + CSV DOWNLOAD
 ============================================================ */
 
+/**
+ * IMPORTANT: returnFieldsByFieldId=true
+ * This ensures form.fields is keyed by field IDs, so renaming fields won’t break the script.
+ */
 async function loadFormRecord() {
-  return fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FORM_TABLE_ID}/${FORM_RECORD_ID}`);
+  const url =
+    `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FORM_TABLE_ID}/${FORM_RECORD_ID}` +
+    `?returnFieldsByFieldId=true`;
+  return fetchJson(url);
 }
 
 async function downloadCsvToTemp(csvUrl) {
@@ -339,6 +268,13 @@ async function downloadCsvToTemp(csvUrl) {
   const buf = Buffer.from(await res.arrayBuffer());
   fs.writeFileSync(csvPath, buf);
   return csvPath;
+}
+
+function getFormTextField(form, fieldId, fallback) {
+  const v = form?.fields?.[fieldId];
+  if (v === undefined || v === null) return fallback;
+  const s = String(v).trim();
+  return s || fallback;
 }
 
 /* ============================================================
@@ -355,11 +291,24 @@ async function main() {
     logId = await createLog();
 
     const form = await loadFormRecord();
-    const studioId = form?.fields?.[FORM_FIELDS.STUDIO]?.[0];
-    const csvUrl = form?.fields?.[FORM_FIELDS.CSV_UPLOAD]?.[0]?.url;
 
-    if (!studioId) throw new Error(`Missing "${FORM_FIELDS.STUDIO}" on form record`);
-    if (!csvUrl) throw new Error(`Missing "${FORM_FIELDS.CSV_UPLOAD}" attachment on form record`);
+    // Required from the form submission (by field ID)
+    const studioId = form?.fields?.[FORM_FIELD_IDS.STUDIO]?.[0];
+    const csvUrl = form?.fields?.[FORM_FIELD_IDS.CSV_UPLOAD]?.[0]?.url;
+
+    if (!studioId) throw new Error(`Missing Studio (fieldId=${FORM_FIELD_IDS.STUDIO}) on form record`);
+    if (!csvUrl) throw new Error(`Missing CSV Upload (fieldId=${FORM_FIELD_IDS.CSV_UPLOAD}) attachment on form record`);
+
+    // CSV header mappings come from editable/prefilled form text fields (by field ID)
+    // If someone changes them, we automatically use the new values.
+    const CSV_HEADERS = {
+      CONTACT: getFormTextField(form, FORM_FIELD_IDS.CONTACT_HEADER, "Contact"),
+      DATE: getFormTextField(form, FORM_FIELD_IDS.DATE_HEADER, "Response Date"),
+      RATING: getFormTextField(form, FORM_FIELD_IDS.RATING_HEADER, "Rating"),
+      COMMENT: getFormTextField(form, FORM_FIELD_IDS.COMMENT_HEADER, "Comment"),
+      CLASSTYPE: getFormTextField(form, FORM_FIELD_IDS.CLASSTYPE_HEADER, "Class"),
+      INSTRUCTOR: getFormTextField(form, FORM_FIELD_IDS.INSTRUCTOR_HEADER, "Instructor"),
+    };
 
     const csvPath = await downloadCsvToTemp(csvUrl);
     const csvText = fs.readFileSync(csvPath, "utf8");
@@ -369,27 +318,22 @@ async function main() {
 
     const headerIndex = makeHeaderIndex(rows[0]);
 
-    // Debug: see what the importer thinks the headers are
     console.log("CSV headers:", rows[0]);
-    console.log("CSV headers (normalized):", rows[0].map(normalizeHeader));
-
-    const customerLinkInfo = await getCustomersLinkInfo();
+    console.log("Using header mapping from form record:", CSV_HEADERS);
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const line = i + 1;
 
-      // Pull from CSV (supports shifting order + slight naming variations)
-      const contact = String(getCell(row, headerIndex, "Contact")).trim();
+      const contact = String(getCell(row, headerIndex, CSV_HEADERS.CONTACT)).trim();
 
-      const dateRaw = getCell(row, headerIndex, "Response Date", "DATE OF RATING", "Date");
+      const dateRaw = getCell(row, headerIndex, CSV_HEADERS.DATE);
       const dateISO = parseDateOnlyToISO(dateRaw);
 
-      const ratingRaw = String(getCell(row, headerIndex, "Rating", "RATING")).trim();
-      const comment = String(getCell(row, headerIndex, "Comment", "COMMENT")).trim();
-      const classType = String(getCell(row, headerIndex, "Class", "CLASSTYPE")).trim();
-      const instructor = String(getCell(row, headerIndex, "Instructor", "Instructor Name", "CAL_NAME")).trim();
-      const typePublic = String(getCell(row, headerIndex, "Type", "Type - Public")).trim(); // optional
+      const ratingRaw = String(getCell(row, headerIndex, CSV_HEADERS.RATING)).trim();
+      const comment = String(getCell(row, headerIndex, CSV_HEADERS.COMMENT)).trim();
+      const classType = String(getCell(row, headerIndex, CSV_HEADERS.CLASSTYPE)).trim();
+      const instructor = String(getCell(row, headerIndex, CSV_HEADERS.INSTRUCTOR)).trim();
 
       if (!contact || !dateISO) {
         ignored++;
@@ -397,44 +341,24 @@ async function main() {
         continue;
       }
 
-      // Dedup
+      // Dedup (Contact + Studio + same day)
       if (await feedbackExists({ contact, studioId, dateISO })) {
         ignored++;
         continue;
       }
 
-      // Resolve Customer linked record
-      let customerId = null;
-      const email = looksLikeEmail(contact) ? contact : await resolveEmailViaMtek(contact);
-
-      if (email) {
-        customerId = await findCustomerByEmail(customerLinkInfo, email);
-        if (!customerId) issues.push(`Line ${line}: Customer not found in Airtable for ${email}`);
-      } else {
-        issues.push(`Line ${line}: Could not resolve email from Contact "${contact}"`);
-      }
-
-      // Build Airtable fields
+      // Build Airtable fields (NO customer/email resolution anymore)
       const fields = {
         [FEEDBACK_FIELDS.CONTACT]: contact,
         [FEEDBACK_FIELDS.STUDIO]: [studioId],
         [FEEDBACK_FIELDS.DATE]: dateISO,
-        [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE, // sets "Type" single select
+        [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
       };
 
-      if (customerId) fields[FEEDBACK_FIELDS.CUSTOMER] = [customerId];
-      if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor; // ✅ FIX
+      if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
       if (ratingRaw && !Number.isNaN(Number(ratingRaw))) fields[FEEDBACK_FIELDS.RATING] = Number(ratingRaw);
       if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
       if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
-
-      // Optional: if you actually want to store the CSV "Type - Public"/"Type" value somewhere
-      // Only set if the field exists and you want it.
-      if (typePublic) {
-        // If your Airtable field is a checkbox/text and exists:
-        // fields[FEEDBACK_FIELDS.TYPE_PUBLIC] = typePublic;
-        // Leaving commented to avoid Airtable "unknown field" failures.
-      }
 
       await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}`, {
         method: "POST",
