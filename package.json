@@ -5,5 +5,21 @@
   "scripts": {
     "resolve-class-id": "node scripts/resolve-class-id.mjs"
   },
-  "dependencies": {}
+  "description": "",
+  "version": "1.0.0",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bcycle-automations/bcycle-automations.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/bcycle-automations/bcycle-automations/issues"
+  },
+  "homepage": "https://github.com/bcycle-automations/bcycle-automations#readme",
+  "dependencies": {
+    "googleapis": "^171.4.0"
+  }
 }
