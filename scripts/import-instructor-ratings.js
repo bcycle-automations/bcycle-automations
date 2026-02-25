@@ -40,7 +40,7 @@ const AIRTABLE_API = "https://api.airtable.com/v0";
  */
 const FORM_FIELD_IDS = {
   CSV_UPLOAD: "fld9aPVBfGiKnxqNu",        // "CSV Upload" (Attachment)
-  STUDIO: "fld37o0IEnMH4Qz1z",            // "Studio" (Link to record)
+  STUDIO: "fld37o0IErMH4Qz1z",            // "Studio" (Link to record)
 
   // Mapping fields (Single line text) containing the CSV header to use:
   CONTACT_HEADER: "fldcLopFy64blIgFl",    // "Contact"
