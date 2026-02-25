@@ -1,7 +1,10 @@
-name: Find Email Instructor Rating (View-only)
+name: Find Email Instructor Rating (View → Airtable Email Field)
 
 on:
   workflow_dispatch: {}
+
+  repository_dispatch:
+    types: [find_email_instructor_rating]
 
 jobs:
   run-find-email:
@@ -10,15 +13,19 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Run find-email job
+      - name: Run find-email script
         env:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+
+          # Optional but required if using MTEK lookup
           MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
           MTEK_BASE_URL: ${{ secrets.MTEK_BASE_URL }}
 
