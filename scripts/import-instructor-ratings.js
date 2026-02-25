@@ -36,8 +36,7 @@ const AIRTABLE_API = "https://api.airtable.com/v0";
 
 /**
  * FORM TABLE FIELD IDS (from your screenshot)
- * These live on the Form table record and can be prefilled by the form URL.
- * People might edit them; we always read whatever is in the submitted record.
+ * Stable even if field names change.
  */
 const FORM_FIELD_IDS = {
   CSV_UPLOAD: "fld9aPVBfGiKnxqNu",        // "CSV Upload" (Attachment)
@@ -110,6 +109,35 @@ function escapeFormula(v) {
   return String(v ?? "").replace(/"/g, '\\"');
 }
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Airtable linked-record fields can come back in different shapes.
+ * Make this robust so we never falsely say “missing”.
+ */
+function asFirstLinkedRecordId(v) {
+  // Common: ["recXXXX"]
+  if (Array.isArray(v) && typeof v[0] === "string" && v[0]) return v[0];
+
+  // Sometimes: [{ id: "recXXXX" }, ...]
+  if (Array.isArray(v) && v[0] && typeof v[0] === "object" && typeof v[0].id === "string") return v[0].id;
+
+  // Rare: single string
+  if (typeof v === "string" && v) return v;
+
+  return null;
+}
+
+/**
+ * Attachment fields: [{url, filename, ...}]
+ */
+function asFirstAttachmentUrl(v) {
+  if (Array.isArray(v) && v[0] && typeof v[0] === "object" && typeof v[0].url === "string") return v[0].url;
+  return null;
+}
+
 /* ============================================================
    CSV PARSER (ORDER-INDEPENDENT)
 ============================================================ */
@@ -160,7 +188,6 @@ function parseCSV(text) {
   row.push(cur);
   rows.push(row);
 
-  // Remove empty trailing rows
   return rows.filter((r) => r.some((c) => String(c).trim() !== ""));
 }
 
@@ -251,15 +278,41 @@ async function updateLog(logId, fields) {
    FORM LOAD + CSV DOWNLOAD
 ============================================================ */
 
-/**
- * returnFieldsByFieldId=true
- * Ensures `form.fields` keys are FIELD IDS (stable even if field names change).
- */
 async function loadFormRecord() {
+  // returnFieldsByFieldId=true ensures we can reliably read by field ID
   const url =
     `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FORM_TABLE_ID}/${FORM_RECORD_ID}` +
     `?returnFieldsByFieldId=true`;
   return fetchJson(url);
+}
+
+/**
+ * Even when the UI shows values, there can be brief delays in API availability,
+ * especially for attachments. This retries and also creates great logs.
+ */
+async function loadFormRecordWithRetry({ attempts = 8, delayMs = 3000, logFn = console.log } = {}) {
+  let last = null;
+
+  for (let i = 1; i <= attempts; i++) {
+    last = await loadFormRecord();
+
+    const studioRaw = last?.fields?.[FORM_FIELD_IDS.STUDIO];
+    const csvRaw = last?.fields?.[FORM_FIELD_IDS.CSV_UPLOAD];
+
+    const studioId = asFirstLinkedRecordId(studioRaw);
+    const csvUrl = asFirstAttachmentUrl(csvRaw);
+
+    if (studioId && csvUrl) return last;
+
+    logFn(
+      `⏳ Waiting for Studio/CSV in API... attempt ${i}/${attempts} ` +
+      `(studio=${studioId ? "OK" : "missing"}, csv=${csvUrl ? "OK" : "missing"})`
+    );
+
+    if (i < attempts) await sleep(delayMs);
+  }
+
+  return last;
 }
 
 async function downloadCsvToTemp(csvUrl) {
@@ -309,121 +362,25 @@ async function main() {
   try {
     logId = await createLog();
 
-    const form = await loadFormRecord();
-
-    const studioId = form?.fields?.[FORM_FIELD_IDS.STUDIO]?.[0];
-    const csvUrl = form?.fields?.[FORM_FIELD_IDS.CSV_UPLOAD]?.[0]?.url;
-
-    if (!studioId) throw new Error(`Missing Studio (fieldId=${FORM_FIELD_IDS.STUDIO}) on form record`);
-    if (!csvUrl) throw new Error(`Missing CSV Upload (fieldId=${FORM_FIELD_IDS.CSV_UPLOAD}) attachment on form record`);
-
-    // CSV header mappings come from editable/prefilled form text fields
-    const CSV_HEADERS = {
-      CONTACT: getFormTextField(form, FORM_FIELD_IDS.CONTACT_HEADER, "Contact"),
-      DATE: getFormTextField(form, FORM_FIELD_IDS.DATE_HEADER, "Response Date"),
-      RATING: getFormTextField(form, FORM_FIELD_IDS.RATING_HEADER, "Rating"),
-      COMMENT: getFormTextField(form, FORM_FIELD_IDS.COMMENT_HEADER, "Comment"),
-      CLASSTYPE: getFormTextField(form, FORM_FIELD_IDS.CLASSTYPE_HEADER, "Class"),
-      INSTRUCTOR: getFormTextField(form, FORM_FIELD_IDS.INSTRUCTOR_HEADER, "Instructor"),
-    };
-
-    const csvPath = await downloadCsvToTemp(csvUrl);
-    const csvText = fs.readFileSync(csvPath, "utf8");
-
-    const rows = parseCSV(csvText);
-    if (rows.length < 2) throw new Error("CSV has no data rows");
-
-    const headerIndex = makeHeaderIndex(rows[0]);
-
-    console.log("CSV headers:", rows[0]);
-    console.log("Using header mapping from form record:", CSV_HEADERS);
-
-    // ✅ HARD FAIL if any mapped header does not exist in the CSV.
-    // Also write it to the issue log.
-    const missingHeaders = validateMappedHeaders(headerIndex, CSV_HEADERS);
-    if (missingHeaders.length) {
-      const msg =
-        `Mapped CSV headers not found in uploaded CSV:\n` +
-        missingHeaders.map((m) => `- ${m}`).join("\n") +
-        `\n\nCSV headers seen:\n` +
-        rows[0].map((h) => `- ${h}`).join("\n");
-      issues.push(msg);
-      throw new Error(msg);
-    }
-
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const line = i + 1;
-
-      const contact = String(getCell(row, headerIndex, CSV_HEADERS.CONTACT)).trim();
-
-      const dateRaw = getCell(row, headerIndex, CSV_HEADERS.DATE);
-      const dateISO = parseDateOnlyToISO(dateRaw);
-
-      const ratingRaw = String(getCell(row, headerIndex, CSV_HEADERS.RATING)).trim();
-      const comment = String(getCell(row, headerIndex, CSV_HEADERS.COMMENT)).trim();
-      const classType = String(getCell(row, headerIndex, CSV_HEADERS.CLASSTYPE)).trim();
-      const instructor = String(getCell(row, headerIndex, CSV_HEADERS.INSTRUCTOR)).trim();
-
-      if (!contact || !dateISO) {
-        ignored++;
-        issues.push(`Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`);
-        continue;
-      }
-
-      if (await feedbackExists({ contact, studioId, dateISO })) {
-        ignored++;
-        continue;
-      }
-
-      const fields = {
-        [FEEDBACK_FIELDS.CONTACT]: contact,
-        [FEEDBACK_FIELDS.STUDIO]: [studioId],
-        [FEEDBACK_FIELDS.DATE]: dateISO,
-        [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
-      };
-
-      if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
-      if (ratingRaw && !Number.isNaN(Number(ratingRaw))) fields[FEEDBACK_FIELDS.RATING] = Number(ratingRaw);
-      if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
-      if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
-
-      await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}`, {
-        method: "POST",
-        body: JSON.stringify({ records: [{ fields }] }),
-      });
-
-      imported++;
-    }
-
-    await updateLog(logId, {
-      [LOG_FIELDS.STATUS]: issues.length ? LOG_STATUS.ISSUE : LOG_STATUS.COMPLETED,
-      [LOG_FIELDS.IMPORTED]: imported,
-      [LOG_FIELDS.IGNORED]: ignored,
-      ...(issues.length ? { [LOG_FIELDS.ISSUE_LOG]: issues.join("\n\n") } : {}),
+    // Robust fetch (handles “UI shows it but API doesn’t yet” cases)
+    const form = await loadFormRecordWithRetry({
+      attempts: 8,
+      delayMs: 3000,
+      logFn: (m) => console.log(m),
     });
 
-    console.log(`✅ Import completed. Imported=${imported}, Ignored=${ignored}, Issues=${issues.length}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("❌ Fatal:", msg);
+    // Extract Studio + CSV robustly
+    const studioRaw = form?.fields?.[FORM_FIELD_IDS.STUDIO];
+    const csvRaw = form?.fields?.[FORM_FIELD_IDS.CSV_UPLOAD];
 
-    // Ensure the log captures any fatal error, including missing headers
-    if (logId) {
-      try {
-        await updateLog(logId, {
-          [LOG_FIELDS.STATUS]: LOG_STATUS.ISSUE,
-          [LOG_FIELDS.IMPORTED]: imported,
-          [LOG_FIELDS.IGNORED]: ignored,
-          [LOG_FIELDS.ISSUE_LOG]: issues.length ? issues.join("\n\n") : msg,
-        });
-      } catch (e) {
-        console.error("Also failed to update log record:", e?.message || e);
-      }
-    }
+    const studioId = asFirstLinkedRecordId(studioRaw);
+    const csvUrl = asFirstAttachmentUrl(csvRaw);
 
-    process.exit(1);
-  }
-}
-
-main();
+    // If still missing, dump the API response details into the issue log
+    const presentFieldIds = Object.keys(form?.fields || {});
+    const debugDump =
+      `FORM_RECORD_ID=${FORM_RECORD_ID}\n` +
+      `LoadedRecordId=${form?.id || "(unknown)"}\n` +
+      `Present field IDs (${presentFieldIds.length}): ${presentFieldIds.join(", ")}\n\n` +
+      `Studio fieldId=${FORM_FIELD_IDS.STUDIO}\n` +
+      `Studio raw=${JSON.stringify(st
