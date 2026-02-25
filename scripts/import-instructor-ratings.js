@@ -47,7 +47,7 @@ const FORM_FIELD_IDS = {
   RATING_HEADER: "fld1CnnyKmmAQuMg1",     // "Rating"
   COMMENT_HEADER: "fldXYsNP1QjLNPVBy",    // "COMMENT"
   CLASSTYPE_HEADER: "fldZ1CSNQY6naOeAJ",  // "CLASSTYPE"
-  DATE_HEADER: "fldBoXrIXNCD8ZTPR",       // "DATE OF RATING"
+  DATE_HEADER: "fldBoXrlXNCD8ZTPR",       // "DATE OF RATING"
   INSTRUCTOR_HEADER: "fldkeOL4mnfCKq0up", // "Instructor Name"
 };
 
