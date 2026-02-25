@@ -383,4 +383,124 @@ async function main() {
       `LoadedRecordId=${form?.id || "(unknown)"}\n` +
       `Present field IDs (${presentFieldIds.length}): ${presentFieldIds.join(", ")}\n\n` +
       `Studio fieldId=${FORM_FIELD_IDS.STUDIO}\n` +
-      `Studio raw=${JSON.stringify(st
+      `Studio raw=${JSON.stringify(studioRaw)}\n` +
+      `Studio parsed=${studioId || "(null)"}\n\n` +
+      `CSV fieldId=${FORM_FIELD_IDS.CSV_UPLOAD}\n` +
+      `CSV raw=${JSON.stringify(csvRaw)}\n` +
+      `CSV parsed=${csvUrl || "(null)"}\n`;
+
+    if (!studioId || !csvUrl) {
+      const msg =
+        `Missing Studio and/or CSV Upload according to Airtable API response.\n\n` +
+        debugDump;
+      issues.push(msg);
+      throw new Error(msg);
+    }
+
+    // CSV header mappings come from editable/prefilled form text fields
+    const CSV_HEADERS = {
+      CONTACT: getFormTextField(form, FORM_FIELD_IDS.CONTACT_HEADER, "Contact"),
+      DATE: getFormTextField(form, FORM_FIELD_IDS.DATE_HEADER, "Response Date"),
+      RATING: getFormTextField(form, FORM_FIELD_IDS.RATING_HEADER, "Rating"),
+      COMMENT: getFormTextField(form, FORM_FIELD_IDS.COMMENT_HEADER, "Comment"),
+      CLASSTYPE: getFormTextField(form, FORM_FIELD_IDS.CLASSTYPE_HEADER, "Class"),
+      INSTRUCTOR: getFormTextField(form, FORM_FIELD_IDS.INSTRUCTOR_HEADER, "Instructor"),
+    };
+
+    const csvPath = await downloadCsvToTemp(csvUrl);
+    const csvText = fs.readFileSync(csvPath, "utf8");
+
+    const rows = parseCSV(csvText);
+    if (rows.length < 2) throw new Error("CSV has no data rows");
+
+    const headerIndex = makeHeaderIndex(rows[0]);
+
+    console.log("CSV headers:", rows[0]);
+    console.log("Using header mapping from form record:", CSV_HEADERS);
+
+    // Hard fail if mappings don't exist in the CSV, and log what headers were seen
+    const missingHeaders = validateMappedHeaders(headerIndex, CSV_HEADERS);
+    if (missingHeaders.length) {
+      const msg =
+        `Mapped CSV headers not found in uploaded CSV:\n` +
+        missingHeaders.map((m) => `- ${m}`).join("\n") +
+        `\n\nCSV headers seen:\n` +
+        rows[0].map((h) => `- ${h}`).join("\n");
+      issues.push(msg);
+      throw new Error(msg);
+    }
+
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const line = i + 1;
+
+      const contact = String(getCell(row, headerIndex, CSV_HEADERS.CONTACT)).trim();
+      const dateRaw = getCell(row, headerIndex, CSV_HEADERS.DATE);
+      const dateISO = parseDateOnlyToISO(dateRaw);
+
+      const ratingRaw = String(getCell(row, headerIndex, CSV_HEADERS.RATING)).trim();
+      const comment = String(getCell(row, headerIndex, CSV_HEADERS.COMMENT)).trim();
+      const classType = String(getCell(row, headerIndex, CSV_HEADERS.CLASSTYPE)).trim();
+      const instructor = String(getCell(row, headerIndex, CSV_HEADERS.INSTRUCTOR)).trim();
+
+      if (!contact || !dateISO) {
+        ignored++;
+        issues.push(`Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`);
+        continue;
+      }
+
+      if (await feedbackExists({ contact, studioId, dateISO })) {
+        ignored++;
+        continue;
+      }
+
+      const fields = {
+        [FEEDBACK_FIELDS.CONTACT]: contact,
+        [FEEDBACK_FIELDS.STUDIO]: [studioId],
+        [FEEDBACK_FIELDS.DATE]: dateISO,
+        [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
+      };
+
+      if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
+      if (ratingRaw && !Number.isNaN(Number(ratingRaw))) fields[FEEDBACK_FIELDS.RATING] = Number(ratingRaw);
+      if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
+      if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
+
+      await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}`, {
+        method: "POST",
+        body: JSON.stringify({ records: [{ fields }] }),
+      });
+
+      imported++;
+    }
+
+    await updateLog(logId, {
+      [LOG_FIELDS.STATUS]: issues.length ? LOG_STATUS.ISSUE : LOG_STATUS.COMPLETED,
+      [LOG_FIELDS.IMPORTED]: imported,
+      [LOG_FIELDS.IGNORED]: ignored,
+      ...(issues.length ? { [LOG_FIELDS.ISSUE_LOG]: issues.join("\n\n") } : {}),
+    });
+
+    console.log(`✅ Import completed. Imported=${imported}, Ignored=${ignored}, Issues=${issues.length}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("❌ Fatal:", msg);
+
+    if (logId) {
+      try {
+        await updateLog(logId, {
+          [LOG_FIELDS.STATUS]: LOG_STATUS.ISSUE,
+          [LOG_FIELDS.IMPORTED]: imported,
+          [LOG_FIELDS.IGNORED]: ignored,
+          [LOG_FIELDS.ISSUE_LOG]: issues.length ? issues.join("\n\n") : msg,
+        });
+      } catch (e) {
+        console.error("Also failed to update log record:", e?.message || e);
+      }
+    }
+
+    process.exit(1);
+  }
+}
+
+main();
