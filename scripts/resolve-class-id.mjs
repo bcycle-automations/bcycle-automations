@@ -239,6 +239,20 @@ async function airtableUpdateRecord({ baseId, tableName, recordId, token, fields
   });
 }
 
+/** Resolve Airtable field ID to field name via Meta API (bases schema). */
+async function airtableGetFieldNameById({ baseId, tableName, fieldId, token }) {
+  const url = `${AIRTABLE_API_BASE}/meta/bases/${baseId}/tables`;
+  const data = await httpJson(url.toString(), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const tables = data?.tables ?? [];
+  const table = tables.find((t) => t.name === tableName);
+  if (!table) throw new Error(`Table not found in schema: ${tableName}`);
+  const field = (table.fields ?? []).find((f) => f.id === fieldId);
+  if (!field) throw new Error(`Field id ${fieldId} not found in table ${tableName}`);
+  return field.name;
+}
+
 /* ---------------- MTEK ---------------- */
 
 async function mtekGetLocationIdByName({ mtekBaseUrl, token, roomName }) {
@@ -356,8 +370,14 @@ async function main() {
   const fieldRoom = requireEnv("AIRTABLE_FIELD_ROOM");
   const fieldDate = requireEnv("AIRTABLE_FIELD_DATE_UTC");
   const fieldClassId = requireEnv("AIRTABLE_FIELD_CLASS_ID");
-  // Airtable field name for class type (matched to MTEK class_type_display). fld3ev3ALj9ShAJYs
-  const fieldClass = "Class";
+  // Class type field: resolve by field ID so we don't depend on label changes
+  const AIRTABLE_FIELD_CLASS_ID = "fld3ev3ALj9ShAJYs";
+  const fieldClass = await airtableGetFieldNameById({
+    baseId,
+    tableName,
+    fieldId: AIRTABLE_FIELD_CLASS_ID,
+    token: airtableToken,
+  });
 
   const mtekBaseUrl = requireEnv("MTEK_BASE_URL");
 
@@ -384,7 +404,7 @@ async function main() {
   console.log("Starting Resolve Class ID job (robust datetime + class_type_display validation)");
   console.log(`Airtable base=${baseId} table="${tableName}" view="${viewName}"`);
   console.log(`Using Airtable date field name: "${fieldDate}"`);
-  console.log(`Using Airtable class field name: "${fieldClass}" (matched to MTEK class_type_display)`);
+  console.log(`Using Airtable class field: "${fieldClass}" (id ${AIRTABLE_FIELD_CLASS_ID}, matched to MTEK class_type_display)`);
   console.log(`WINDOW_MINUTES=${windowMinutes} (query ± window around target)`);
   console.log(
     `Airtable cellFormat=string => timeZone=${airtableTimeZone} userLocale=${airtableUserLocale}`
@@ -431,7 +451,10 @@ async function main() {
     const fields = r.fields || {};
     const room = fields[fieldRoom];
     const dateValue = fields[fieldDate];
-    const airtableClass = fields[fieldClass];
+    let airtableClass = fields[fieldClass];
+    if (Array.isArray(airtableClass)) airtableClass = airtableClass[0];
+    airtableClass = airtableClass != null ? String(airtableClass).trim() : "";
+
     const existingClassId = fields[fieldClassId];
 
     if (!room || !dateValue) {
