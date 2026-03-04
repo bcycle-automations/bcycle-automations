@@ -115,16 +115,30 @@ function sleep(ms) {
 
 /**
  * Airtable linked-record fields can come back in different shapes.
- * Make this robust so we never falsely say “missing”.
  */
 function asFirstLinkedRecordId(v) {
   // Common: ["recXXXX"]
   if (Array.isArray(v) && typeof v[0] === "string" && v[0]) return v[0];
 
-  // Sometimes: [{ id: "recXXXX" }, ...]
+  // Sometimes: [{ id: "recXXXX", name: "Studio Name" }, ...]
   if (Array.isArray(v) && v[0] && typeof v[0] === "object" && typeof v[0].id === "string") return v[0].id;
 
   // Rare: single string
+  if (typeof v === "string" && v) return v;
+
+  return null;
+}
+
+/**
+ * Get linked record name for formula matching.
+ */
+function asFirstLinkedRecordName(v) {
+  // [{ id, name }, ...]
+  if (Array.isArray(v) && v[0] && typeof v[0] === "object" && typeof v[0].name === "string" && v[0].name) {
+    return v[0].name;
+  }
+
+  // Rare: single string already the name
   if (typeof v === "string" && v) return v;
 
   return null;
@@ -221,18 +235,40 @@ function parseDateOnlyToISO(v) {
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return null;
 
+  // Normalize to midnight UTC for consistency
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
+}
+
+/**
+ * Extract YYYY-MM-DD from ISO or any date string.
+ */
+function dateKeyFromISO(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const year = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 /* ============================================================
    DEDUPE CHECK
 ============================================================ */
 
-async function feedbackExists({ contact, studioId, dateISO }) {
+/**
+ * Dedupe on Contact + Studio (by name) + calendar date (day-only).
+ */
+async function feedbackExists({ contact, studioName, dateISO }) {
+  if (!contact || !studioName || !dateISO) return false;
+
+  const dateKey = dateKeyFromISO(dateISO);
+  if (!dateKey) return false;
+
   const formula = `AND(
     {${FEEDBACK_FIELDS.CONTACT}} = "${escapeFormula(contact)}",
-    FIND("${studioId}", ARRAYJOIN({${FEEDBACK_FIELDS.STUDIO}})) > 0,
-    IS_SAME({${FEEDBACK_FIELDS.DATE}}, DATETIME_PARSE("${dateISO}"), 'day')
+    FIND("${escapeFormula(studioName)}", ARRAYJOIN({${FEEDBACK_FIELDS.STUDIO}})) > 0,
+    DATESTR({${FEEDBACK_FIELDS.DATE}}) = "${escapeFormula(dateKey)}"
   )`;
 
   const url =
@@ -287,8 +323,7 @@ async function loadFormRecord() {
 }
 
 /**
- * Even when the UI shows values, there can be brief delays in API availability,
- * especially for attachments. This retries and also creates great logs.
+ * Robust loader to handle UI/API lag, esp. for attachments.
  */
 async function loadFormRecordWithRetry({ attempts = 8, delayMs = 3000, logFn = console.log } = {}) {
   let last = null;
@@ -306,7 +341,7 @@ async function loadFormRecordWithRetry({ attempts = 8, delayMs = 3000, logFn = c
 
     logFn(
       `⏳ Waiting for Studio/CSV in API... attempt ${i}/${attempts} ` +
-      `(studio=${studioId ? "OK" : "missing"}, csv=${csvUrl ? "OK" : "missing"})`
+        `(studio=${studioId ? "OK" : "missing"}, csv=${csvUrl ? "OK" : "missing"})`
     );
 
     if (i < attempts) await sleep(delayMs);
@@ -374,6 +409,7 @@ async function main() {
     const csvRaw = form?.fields?.[FORM_FIELD_IDS.CSV_UPLOAD];
 
     const studioId = asFirstLinkedRecordId(studioRaw);
+    const studioName = asFirstLinkedRecordName(studioRaw);
     const csvUrl = asFirstAttachmentUrl(csvRaw);
 
     // If still missing, dump the API response details into the issue log
@@ -384,14 +420,15 @@ async function main() {
       `Present field IDs (${presentFieldIds.length}): ${presentFieldIds.join(", ")}\n\n` +
       `Studio fieldId=${FORM_FIELD_IDS.STUDIO}\n` +
       `Studio raw=${JSON.stringify(studioRaw)}\n` +
-      `Studio parsed=${studioId || "(null)"}\n\n` +
+      `Studio id=${studioId || "(null)"}\n` +
+      `Studio name=${studioName || "(null)"}\n\n` +
       `CSV fieldId=${FORM_FIELD_IDS.CSV_UPLOAD}\n` +
       `CSV raw=${JSON.stringify(csvRaw)}\n` +
-      `CSV parsed=${csvUrl || "(null)"}\n`;
+      `CSV parsedUrl=${csvUrl || "(null)"}\n`;
 
-    if (!studioId || !csvUrl) {
+    if (!studioId || !studioName || !csvUrl) {
       const msg =
-        `Missing Studio and/or CSV Upload according to Airtable API response.\n\n` +
+        `Missing Studio (id or name) and/or CSV Upload according to Airtable API response.\n\n` +
         debugDump;
       issues.push(msg);
       throw new Error(msg);
@@ -449,7 +486,7 @@ async function main() {
         continue;
       }
 
-      if (await feedbackExists({ contact, studioId, dateISO })) {
+      if (await feedbackExists({ contact, studioName, dateISO })) {
         ignored++;
         continue;
       }
