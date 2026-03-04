@@ -239,8 +239,8 @@ function dateKeyFromISO(iso) {
 /* ============================================================
    DEDUPE: STUDIO-AWARE WITH ANON SPECIAL CASE
    - We only dedupe against feedbacks for the same Studio.
-   - Named contact: Contact + date (day-only)
-   - Anonymous User: date + instructor + rating
+   - Named contact: Contact + date (day-only) + class type
+   - Anonymous User: date + instructor + rating + class type
 ============================================================ */
 
 const ANON_CONTACT = "anonymous user";
@@ -249,17 +249,19 @@ function isAnonymousContact(contact) {
   return String(contact || "").trim().toLowerCase() === ANON_CONTACT;
 }
 
-function makeDedupeKey({ contact, dateKey, ratingKey, instructor }) {
+function makeDedupeKey({ contact, dateKey, ratingKey, instructor, classTypeKey }) {
   if (!contact || !dateKey) return null;
 
   if (isAnonymousContact(contact)) {
     const instr = String(instructor || "").trim().toLowerCase();
     const ratingPart = ratingKey ?? "";
-    return `anon|${dateKey}|${instr}|${ratingPart}`;
+    const classPart = String(classTypeKey || "").trim().toLowerCase();
+    return `anon|${dateKey}|${instr}|${ratingPart}|${classPart}`;
   }
 
   const normalizedContact = String(contact).trim().toLowerCase();
-  return `named|${normalizedContact}|${dateKey}`;
+  const classPart = String(classTypeKey || "").trim().toLowerCase();
+  return `named|${normalizedContact}|${dateKey}|${classPart}`;
 }
 
 /**
@@ -299,8 +301,10 @@ async function loadExistingDedupeKeysForStudio(studioId) {
           : String(ratingVal).trim();
 
       const instructor = fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] || "";
+      const classTypeVal = fields[FEEDBACK_FIELDS.CLASSTYPE] || "";
+      const classTypeKey = String(classTypeVal || "").trim().toLowerCase();
 
-      const key = makeDedupeKey({ contact, dateKey, ratingKey, instructor });
+      const key = makeDedupeKey({ contact, dateKey, ratingKey, instructor, classTypeKey });
       if (key) keys.add(key);
     }
 
@@ -539,6 +543,7 @@ async function main() {
         ratingRaw && !Number.isNaN(Number(ratingRaw)) ? String(Number(ratingRaw)) : "";
       const comment = String(getCell(row, headerIndex, CSV_HEADERS.COMMENT)).trim();
       const classType = String(getCell(row, headerIndex, CSV_HEADERS.CLASSTYPE)).trim();
+      const classTypeKey = String(classType || "").trim().toLowerCase();
       const instructor = String(getCell(row, headerIndex, CSV_HEADERS.INSTRUCTOR)).trim();
 
       if (!contact || !dateISO) {
@@ -548,7 +553,7 @@ async function main() {
         ignoredReasons.push(reason);
       } else {
         const dateKey = dateKeyFromISO(dateISO);
-        const key = makeDedupeKey({ contact, dateKey, ratingKey, instructor });
+        const key = makeDedupeKey({ contact, dateKey, ratingKey, instructor, classTypeKey });
 
         if (key && existingKeys.has(key)) {
           ignored++;
@@ -556,22 +561,22 @@ async function main() {
             ignoredReasons.push(
               `Line ${line}: Duplicate Anonymous User (studio=${studioId}, date=${dateKey}, instructor="${instructor}", rating=${
                 ratingKey || "N/A"
-              })`,
+              }, classType="${classType || ""}")`,
             );
           } else {
             ignoredReasons.push(
-              `Line ${line}: Duplicate (studio=${studioId}, contact="${contact}", date=${dateKey})`,
+              `Line ${line}: Duplicate (studio=${studioId}, contact="${contact}", date=${dateKey}, classType="${classType || ""}")`,
             );
           }
         } else {
           if (key) existingKeys.add(key);
 
-        const fields = {
-          [FEEDBACK_FIELDS.CONTACT]: contact,
-          [FEEDBACK_FIELDS.STUDIO]: [studioId],
-          [FEEDBACK_FIELDS.DATE]: dateISO,
-          [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
-        };
+          const fields = {
+            [FEEDBACK_FIELDS.CONTACT]: contact,
+            [FEEDBACK_FIELDS.STUDIO]: [studioId],
+            [FEEDBACK_FIELDS.DATE]: dateISO,
+            [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
+          };
 
           if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
           if (ratingKey) {
