@@ -343,6 +343,15 @@ async function updateLog(logId, fields) {
 
 /* ============================================================
    FORM LOAD + CSV DOWNLOAD
+
+   HOW WE GET STUDIO ID:
+   - Table:  FORM_TABLE_ID  (env) — the "form" table in your base
+   - Record: FORM_RECORD_ID (env) — one specific row (the form submission/config row)
+   - We GET that single record with ?returnFieldsByFieldId=true so fields come back by field ID.
+   - Field:  FORM_FIELD_IDS.STUDIO ("fld37o0IErMH4Qz1z") — the "Studio" linked-record field on that row
+   - Value: Airtable returns the link as an array of record IDs, e.g. ["rec7AQvxpcu0h41Wy"]
+   - We pass that raw value to asFirstLinkedRecordId() to get the first ID string → studioId
+   - So: studioId is the Airtable record ID of the linked Studio row chosen on that form record.
 ============================================================ */
 
 async function loadFormRecord() {
@@ -545,12 +554,14 @@ async function main() {
           ignored++;
           if (isAnonymousContact(contact)) {
             ignoredReasons.push(
-              `Line ${line}: Duplicate Anonymous User (date=${dateKey}, instructor="${instructor}", rating=${
+              `Line ${line}: Duplicate Anonymous User (studio=${studioId}, date=${dateKey}, instructor="${instructor}", rating=${
                 ratingKey || "N/A"
               })`,
             );
           } else {
-            ignoredReasons.push(`Line ${line}: Duplicate (contact="${contact}", date=${dateKey})`);
+            ignoredReasons.push(
+              `Line ${line}: Duplicate (studio=${studioId}, contact="${contact}", date=${dateKey})`,
+            );
           }
         } else {
           if (key) existingKeys.add(key);
