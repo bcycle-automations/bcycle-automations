@@ -57,7 +57,7 @@ const FEEDBACK_FIELDS = {
   CONTACT: "Contact",                 // TEXT
   STUDIO: "Studio",                   // LINKED RECORD
   DATE: "DATE OF RATING",             // DATE
-  RATING: "Rating",                   // NUMBER
+  RATING: "Rating",                  // NUMBER
   COMMENT: "COMMENT",                 // TEXT / LONG TEXT
   CLASSTYPE: "CLASSTYPE",             // TEXT / SINGLE SELECT
   INSTRUCTOR_NAME: "Instructor Name", // TEXT
@@ -389,6 +389,8 @@ async function main() {
   const importedRef = { count: 0 }; // mutated by batch helper
   let ignored = 0;
   const issues = [];
+  /** @type {string[]} - Ignored rows with reasons, for GitHub Actions run log */
+  const ignoredReasons = [];
 
   try {
     logId = await createLog();
@@ -475,9 +477,13 @@ async function main() {
 
       if (!contact || !dateISO) {
         ignored++;
-        issues.push(`Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`);
+        const reason = `Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`;
+        issues.push(reason);
+        ignoredReasons.push(reason);
       } else if (await feedbackExists({ contact, dateISO })) {
         ignored++;
+        const dateKey = dateKeyFromISO(dateISO);
+        ignoredReasons.push(`Line ${line}: Duplicate (contact="${contact}", date=${dateKey})`);
       } else {
         const fields = {
           [FEEDBACK_FIELDS.CONTACT]: contact,
@@ -525,9 +531,16 @@ async function main() {
       }
     }
 
-    // Final flush in case totalDataRows was 0 or not caught by progress block
+    // Flush any remaining records
     if (pendingRecords.length) {
       await flushPendingFeedbackBatch(pendingRecords, importedRef);
+    }
+
+    // Log ignored records with reasons to stdout so they appear in GitHub Actions run
+    if (ignoredReasons.length > 0) {
+      console.log("\n--- Ignored records (with reasons) ---");
+      ignoredReasons.forEach((r) => console.log(r));
+      console.log("--- End ignored records ---\n");
     }
 
     await updateLog(logId, {
