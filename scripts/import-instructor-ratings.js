@@ -120,7 +120,7 @@ function asFirstLinkedRecordId(v) {
   if (Array.isArray(v) && typeof v[0] === "string" && v[0]) return v[0];
 
   // Sometimes: [{ id: "recXXXX" }, ...]
-  if (Array.isArray(v) && v[0] && typeof v[0] === "object" && typeof v[0].id === "string") return v[0].id;
+  if (Array.isArray(v) && v[0] && typeof v[0].id === "string") return v[0].id;
 
   // Rare: single string
   if (typeof v === "string" && v) return v;
@@ -132,7 +132,7 @@ function asFirstLinkedRecordId(v) {
  * Attachment fields: [{url, ...}]
  */
 function asFirstAttachmentUrl(v) {
-  if (Array.isArray(v) && v[0] && typeof v[0] === "object" && typeof v[0].url === "string") {
+  if (Array.isArray(v) && v[0] && typeof v[0].url === "string") {
     return v[0].url;
   }
   return null;
@@ -459,10 +459,8 @@ async function main() {
       if (!contact || !dateISO) {
         ignored++;
         issues.push(`Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`);
-        // progress logging below still runs
       } else if (await feedbackExists({ contact, dateISO })) {
         ignored++;
-        // progress logging below still runs
       } else {
         const fields = {
           [FEEDBACK_FIELDS.CONTACT]: contact,
@@ -486,12 +484,23 @@ async function main() {
         imported++;
       }
 
-      // Progress log every 50 rows (and at the very end)
+      // Progress log + partial log record update every 50 rows (and at the very end)
       if (processedCount % 50 === 0 || processedCount === totalDataRows) {
         console.log(
           `Progress: processed ${processedCount}/${totalDataRows} data rows. ` +
             `Imported=${imported}, Ignored=${ignored}`,
         );
+
+        if (logId) {
+          try {
+            await updateLog(logId, {
+              [LOG_FIELDS.IMPORTED]: imported,
+              [LOG_FIELDS.IGNORED]: ignored,
+            });
+          } catch (e) {
+            console.error("Failed to update log progress:", e?.message || e);
+          }
+        }
       }
     }
 
