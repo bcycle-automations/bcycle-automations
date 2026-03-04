@@ -347,6 +347,22 @@ function getFormTextField(form, fieldId, fallback) {
 }
 
 /* ============================================================
+   BATCH WRITE HELPERS
+============================================================ */
+
+async function flushPendingFeedbackBatch(pendingRecords, importedRef) {
+  if (!pendingRecords.length) return;
+
+  await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}`, {
+    method: "POST",
+    body: JSON.stringify({ records: pendingRecords }),
+  });
+
+  importedRef.count += pendingRecords.length;
+  pendingRecords.length = 0;
+}
+
+/* ============================================================
    HEADER VALIDATION
 ============================================================ */
 
@@ -370,7 +386,7 @@ function validateMappedHeaders(headerIndex, mapping) {
 
 async function main() {
   let logId = null;
-  let imported = 0;
+  const importedRef = { count: 0 }; // mutated by batch helper
   let ignored = 0;
   const issues = [];
 
@@ -441,6 +457,7 @@ async function main() {
     }
 
     const totalDataRows = rows.length - 1;
+    const pendingRecords = [];
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
@@ -476,25 +493,29 @@ async function main() {
         if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
         if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
 
-        await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}`, {
-          method: "POST",
-          body: JSON.stringify({ records: [{ fields }] }),
-        });
+        pendingRecords.push({ fields });
 
-        imported++;
+        if (pendingRecords.length === 10) {
+          await flushPendingFeedbackBatch(pendingRecords, importedRef);
+        }
       }
 
       // Progress log + partial log record update every 50 rows (and at the very end)
       if (processedCount % 50 === 0 || processedCount === totalDataRows) {
+        // Flush any remaining records before reporting
+        if (pendingRecords.length) {
+          await flushPendingFeedbackBatch(pendingRecords, importedRef);
+        }
+
         console.log(
           `Progress: processed ${processedCount}/${totalDataRows} data rows. ` +
-            `Imported=${imported}, Ignored=${ignored}`,
+            `Imported=${importedRef.count}, Ignored=${ignored}`,
         );
 
         if (logId) {
           try {
             await updateLog(logId, {
-              [LOG_FIELDS.IMPORTED]: imported,
+              [LOG_FIELDS.IMPORTED]: importedRef.count,
               [LOG_FIELDS.IGNORED]: ignored,
             });
           } catch (e) {
@@ -504,14 +525,21 @@ async function main() {
       }
     }
 
+    // Final flush in case totalDataRows was 0 or not caught by progress block
+    if (pendingRecords.length) {
+      await flushPendingFeedbackBatch(pendingRecords, importedRef);
+    }
+
     await updateLog(logId, {
       [LOG_FIELDS.STATUS]: issues.length ? LOG_STATUS.ISSUE : LOG_STATUS.COMPLETED,
-      [LOG_FIELDS.IMPORTED]: imported,
+      [LOG_FIELDS.IMPORTED]: importedRef.count,
       [LOG_FIELDS.IGNORED]: ignored,
       ...(issues.length ? { [LOG_FIELDS.ISSUE_LOG]: issues.join("\n\n") } : {}),
     });
 
-    console.log(`✅ Import completed. Imported=${imported}, Ignored=${ignored}, Issues=${issues.length}`);
+    console.log(
+      `✅ Import completed. Imported=${importedRef.count}, Ignored=${ignored}, Issues=${issues.length}`,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("❌ Fatal:", msg);
@@ -520,7 +548,7 @@ async function main() {
       try {
         await updateLog(logId, {
           [LOG_FIELDS.STATUS]: LOG_STATUS.ISSUE,
-          [LOG_FIELDS.IMPORTED]: imported,
+          [LOG_FIELDS.IMPORTED]: importedRef.count,
           [LOG_FIELDS.IGNORED]: ignored,
           [LOG_FIELDS.ISSUE_LOG]: issues.length ? issues.join("\n\n") : msg,
         });
