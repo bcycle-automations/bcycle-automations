@@ -16,7 +16,6 @@
  * - AIRTABLE_FIELD_ROOM
  * - AIRTABLE_FIELD_DATE_UTC      (yes, can be your "date" formula field name)
  * - AIRTABLE_FIELD_CLASS_ID
- * - AIRTABLE_FIELD_CLASS         (field name for class type, e.g. "Class" / fld3ev3ALj9ShAJYs)
  * - MTEK_API_TOKEN
  * - MTEK_BASE_URL
  *
@@ -357,7 +356,8 @@ async function main() {
   const fieldRoom = requireEnv("AIRTABLE_FIELD_ROOM");
   const fieldDate = requireEnv("AIRTABLE_FIELD_DATE_UTC");
   const fieldClassId = requireEnv("AIRTABLE_FIELD_CLASS_ID");
-  const fieldClass = requireEnv("AIRTABLE_FIELD_CLASS");
+  // Airtable field name for class type (matched to MTEK class_type_display). fld3ev3ALj9ShAJYs
+  const fieldClass = "Class";
 
   const mtekBaseUrl = requireEnv("MTEK_BASE_URL");
 
