@@ -57,7 +57,7 @@ const FEEDBACK_FIELDS = {
   CONTACT: "Contact",                 // TEXT
   STUDIO: "Studio",                   // LINKED RECORD
   DATE: "DATE OF RATING",             // DATE
-  RATING: "Rating",                  // NUMBER
+  RATING: "Rating",                   // NUMBER
   COMMENT: "COMMENT",                 // TEXT / LONG TEXT
   CLASSTYPE: "CLASSTYPE",             // TEXT / SINGLE SELECT
   INSTRUCTOR_NAME: "Instructor Name", // TEXT
@@ -237,27 +237,77 @@ function dateKeyFromISO(iso) {
 }
 
 /* ============================================================
-   DEDUPE CHECK
-   (Contact + calendar date only)
+   DEDUPE KEY HELPERS
+   - Scoped to a single Studio (we only preload records for that studioId)
+   - Named contact: dedupe on contact + date
+   - Anonymous User: dedupe on date + instructor + rating
 ============================================================ */
 
-async function feedbackExists({ contact, dateISO }) {
-  if (!contact || !dateISO) return false;
+const ANON_CONTACT = "anonymous user";
 
-  const dateKey = dateKeyFromISO(dateISO);
-  if (!dateKey) return false;
+function isAnonymousContact(contact) {
+  return String(contact || "").trim().toLowerCase() === ANON_CONTACT;
+}
 
-  const formula = `AND(
-    {${FEEDBACK_FIELDS.CONTACT}} = "${escapeFormula(contact)}",
-    DATESTR({${FEEDBACK_FIELDS.DATE}}) = "${escapeFormula(dateKey)}"
-  )`;
+function makeDedupeKey({ contact, dateKey, ratingKey, instructor }) {
+  if (!contact || !dateKey) return null;
 
-  const url =
-    `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}` +
-    `?pageSize=1&filterByFormula=${encodeURIComponent(formula)}`;
+  if (isAnonymousContact(contact)) {
+    const instr = String(instructor || "").trim().toLowerCase();
+    const ratingPart = ratingKey ?? "";
+    return `anon|${dateKey}|${instr}|${ratingPart}`;
+  }
 
-  const out = await fetchJson(url);
-  return (out.records?.length || 0) > 0;
+  const normalizedContact = String(contact).trim().toLowerCase();
+  return `named|${normalizedContact}|${dateKey}`;
+}
+
+/**
+ * Load all existing feedbacks and build a dedupe set for this Studio.
+ * We fetch all records and then filter by Studio ID in JS.
+ */
+async function loadExistingDedupeKeysForStudio(studioId) {
+  const keys = new Set();
+  let offset;
+
+  do {
+    const url =
+      `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}?pageSize=100` +
+      (offset ? `&offset=${offset}` : "");
+
+    const out = await fetchJson(url);
+    const records = out.records || [];
+
+    for (const rec of records) {
+      const fields = rec.fields || {};
+      const studioField = fields[FEEDBACK_FIELDS.STUDIO];
+      const recStudioId = asFirstLinkedRecordId(studioField);
+
+      if (recStudioId !== studioId) continue; // only this Studio
+
+      const contact = String(fields[FEEDBACK_FIELDS.CONTACT] || "").trim();
+      const dateISO = fields[FEEDBACK_FIELDS.DATE];
+      if (!contact || !dateISO) continue;
+
+      const dateKey = dateKeyFromISO(dateISO);
+      if (!dateKey) continue;
+
+      const ratingVal = fields[FEEDBACK_FIELDS.RATING];
+      const ratingKey =
+        ratingVal === undefined || ratingVal === null || ratingVal === ""
+          ? ""
+          : String(ratingVal).trim();
+
+      const instructor = fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] || "";
+
+      const key = makeDedupeKey({ contact, dateKey, ratingKey, instructor });
+      if (key) keys.add(key);
+    }
+
+    offset = out.offset;
+  } while (offset);
+
+  return keys;
 }
 
 /* ============================================================
@@ -389,7 +439,6 @@ async function main() {
   const importedRef = { count: 0 }; // mutated by batch helper
   let ignored = 0;
   const issues = [];
-  /** @type {string[]} - Ignored rows with reasons, for GitHub Actions run log */
   const ignoredReasons = [];
 
   try {
@@ -426,6 +475,11 @@ async function main() {
       issues.push(msg);
       throw new Error(msg);
     }
+
+    // Preload existing feedback dedupe keys for THIS studio
+    console.log("Loading existing feedbacks for dedupe...");
+    const existingKeys = await loadExistingDedupeKeysForStudio(studioId);
+    console.log(`Loaded ${existingKeys.size} existing dedupe keys for this studio.`);
 
     const CSV_HEADERS = {
       CONTACT: getFormTextField(form, FORM_FIELD_IDS.CONTACT_HEADER, "Contact"),
@@ -471,6 +525,7 @@ async function main() {
       const dateISO = parseDateOnlyToISO(dateRaw);
 
       const ratingRaw = String(getCell(row, headerIndex, CSV_HEADERS.RATING)).trim();
+      const ratingKey = ratingRaw && !Number.isNaN(Number(ratingRaw)) ? String(Number(ratingRaw)) : "";
       const comment = String(getCell(row, headerIndex, CSV_HEADERS.COMMENT)).trim();
       const classType = String(getCell(row, headerIndex, CSV_HEADERS.CLASSTYPE)).trim();
       const instructor = String(getCell(row, headerIndex, CSV_HEADERS.INSTRUCTOR)).trim();
@@ -480,35 +535,42 @@ async function main() {
         const reason = `Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`;
         issues.push(reason);
         ignoredReasons.push(reason);
-      } else if (await feedbackExists({ contact, dateISO })) {
-        ignored++;
-        const dateKey = dateKeyFromISO(dateISO);
-        ignoredReasons.push(`Line ${line}: Duplicate (contact="${contact}", date=${dateKey})`);
       } else {
-        const fields = {
-          [FEEDBACK_FIELDS.CONTACT]: contact,
-          [FEEDBACK_FIELDS.STUDIO]: [studioId],
-          [FEEDBACK_FIELDS.DATE]: dateISO,
-          [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
-        };
+        const dateKey = dateKeyFromISO(dateISO);
+        const key = makeDedupeKey({ contact, dateKey, ratingKey, instructor });
 
-        if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
-        if (ratingRaw && !Number.isNaN(Number(ratingRaw))) {
-          fields[FEEDBACK_FIELDS.RATING] = Number(ratingRaw);
-        }
-        if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
-        if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
+        if (key && existingKeys.has(key)) {
+          ignored++;
+          ignoredReasons.push(
+            isAnonymousContact(contact)
+              ? `Line ${line}: Duplicate Anonymous User (date=${dateKey}, instructor="${instructor}", rating=${ratingKey || "N/A"})`
+              : `Line ${line}: Duplicate (contact="${contact}", date=${dateKey})`,
+          );
+        } else {
+          if (key) existingKeys.add(key);
 
-        pendingRecords.push({ fields });
+          const fields = {
+            [FEEDBACK_FIELDS.CONTACT]: contact,
+            [FEEDBACK_FIELDS.STUDIO]: [studioId],
+            [FEEDBACK_FIELDS.DATE]: dateISO,
+            [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
+          };
 
-        if (pendingRecords.length === 10) {
-          await flushPendingFeedbackBatch(pendingRecords, importedRef);
+          if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
+          if (ratingKey) fields[FEEDBACK_FIELDS.RATING] = Number(ratingKey);
+          if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
+          if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
+
+          pendingRecords.push({ fields });
+
+          if (pendingRecords.length === 10) {
+            await flushPendingFeedbackBatch(pendingRecords, importedRef);
+          }
         }
       }
 
       // Progress log + partial log record update every 50 rows (and at the very end)
       if (processedCount % 50 === 0 || processedCount === totalDataRows) {
-        // Flush any remaining records before reporting
         if (pendingRecords.length) {
           await flushPendingFeedbackBatch(pendingRecords, importedRef);
         }
@@ -531,12 +593,11 @@ async function main() {
       }
     }
 
-    // Flush any remaining records
+    // Final flush
     if (pendingRecords.length) {
       await flushPendingFeedbackBatch(pendingRecords, importedRef);
     }
 
-    // Log ignored records with reasons to stdout so they appear in GitHub Actions run
     if (ignoredReasons.length > 0) {
       console.log("\n--- Ignored records (with reasons) ---");
       ignoredReasons.forEach((r) => console.log(r));
