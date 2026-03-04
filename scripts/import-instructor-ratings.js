@@ -57,7 +57,7 @@ const FEEDBACK_FIELDS = {
   CONTACT: "Contact",                 // TEXT
   STUDIO: "Studio",                   // LINKED RECORD
   DATE: "DATE OF RATING",             // DATE
-  RATING: "Rating",                   // NUMBER
+  RATING: "Rating",                  // NUMBER
   COMMENT: "COMMENT",                 // TEXT / LONG TEXT
   CLASSTYPE: "CLASSTYPE",             // TEXT / SINGLE SELECT
   INSTRUCTOR_NAME: "Instructor Name", // TEXT
@@ -237,10 +237,10 @@ function dateKeyFromISO(iso) {
 }
 
 /* ============================================================
-   DEDUPE KEY HELPERS
-   - Scoped to a single Studio (we only preload records for that studioId)
-   - Named contact: dedupe on contact + date
-   - Anonymous User: dedupe on date + instructor + rating
+   DEDUPE: STUDIO-AWARE WITH ANON SPECIAL CASE
+   - We only dedupe against feedbacks for the same Studio.
+   - Named contact: Contact + date (day-only)
+   - Anonymous User: date + instructor + rating
 ============================================================ */
 
 const ANON_CONTACT = "anonymous user";
@@ -439,6 +439,7 @@ async function main() {
   const importedRef = { count: 0 }; // mutated by batch helper
   let ignored = 0;
   const issues = [];
+  /** @type {string[]} - Ignored rows with reasons, for GitHub Actions run log */
   const ignoredReasons = [];
 
   try {
@@ -525,7 +526,8 @@ async function main() {
       const dateISO = parseDateOnlyToISO(dateRaw);
 
       const ratingRaw = String(getCell(row, headerIndex, CSV_HEADERS.RATING)).trim();
-      const ratingKey = ratingRaw && !Number.isNaN(Number(ratingRaw)) ? String(Number(ratingRaw)) : "";
+      const ratingKey =
+        ratingRaw && !Number.isNaN(Number(ratingRaw)) ? String(Number(ratingRaw)) : "";
       const comment = String(getCell(row, headerIndex, CSV_HEADERS.COMMENT)).trim();
       const classType = String(getCell(row, headerIndex, CSV_HEADERS.CLASSTYPE)).trim();
       const instructor = String(getCell(row, headerIndex, CSV_HEADERS.INSTRUCTOR)).trim();
@@ -541,23 +543,29 @@ async function main() {
 
         if (key && existingKeys.has(key)) {
           ignored++;
-          ignoredReasons.push(
-            isAnonymousContact(contact)
-              ? `Line ${line}: Duplicate Anonymous User (date=${dateKey}, instructor="${instructor}", rating=${ratingKey || "N/A"})`
-              : `Line ${line}: Duplicate (contact="${contact}", date=${dateKey})`,
-          );
+          if (isAnonymousContact(contact)) {
+            ignoredReasons.push(
+              `Line ${line}: Duplicate Anonymous User (date=${dateKey}, instructor="${instructor}", rating=${
+                ratingKey || "N/A"
+              })`,
+            );
+          } else {
+            ignoredReasons.push(`Line ${line}: Duplicate (contact="${contact}", date=${dateKey})`);
+          }
         } else {
           if (key) existingKeys.add(key);
 
-          const fields = {
-            [FEEDBACK_FIELDS.CONTACT]: contact,
-            [FEEDBACK_FIELDS.STUDIO]: [studioId],
-            [FEEDBACK_FIELDS.DATE]: dateISO,
-            [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
-          };
+        const fields = {
+          [FEEDBACK_FIELDS.CONTACT]: contact,
+          [FEEDBACK_FIELDS.STUDIO]: [studioId],
+          [FEEDBACK_FIELDS.DATE]: dateISO,
+          [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
+        };
 
           if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
-          if (ratingKey) fields[FEEDBACK_FIELDS.RATING] = Number(ratingKey);
+          if (ratingKey) {
+            fields[FEEDBACK_FIELDS.RATING] = Number(ratingKey);
+          }
           if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
           if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
 
@@ -571,6 +579,7 @@ async function main() {
 
       // Progress log + partial log record update every 50 rows (and at the very end)
       if (processedCount % 50 === 0 || processedCount === totalDataRows) {
+        // Flush any remaining records before reporting
         if (pendingRecords.length) {
           await flushPendingFeedbackBatch(pendingRecords, importedRef);
         }
@@ -593,11 +602,12 @@ async function main() {
       }
     }
 
-    // Final flush
+    // Flush any remaining records
     if (pendingRecords.length) {
       await flushPendingFeedbackBatch(pendingRecords, importedRef);
     }
 
+    // Log ignored records with reasons to stdout so they appear in GitHub Actions run
     if (ignoredReasons.length > 0) {
       console.log("\n--- Ignored records (with reasons) ---");
       ignoredReasons.forEach((r) => console.log(r));
