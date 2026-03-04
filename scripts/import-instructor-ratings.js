@@ -238,8 +238,7 @@ function dateKeyFromISO(iso) {
 
 /* ============================================================
    DEDUPE CHECK
-   (Contact + calendar date; Studio omitted because
-    the formula layer does not expose record IDs.)
+   (Contact + calendar date only)
 ============================================================ */
 
 async function feedbackExists({ contact, dateISO }) {
@@ -441,9 +440,12 @@ async function main() {
       throw new Error(msg);
     }
 
+    const totalDataRows = rows.length - 1;
+
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const line = i + 1;
+      const line = i + 1; // CSV line number (1-based)
+      const processedCount = i; // number of data rows processed so far
 
       const contact = String(getCell(row, headerIndex, CSV_HEADERS.CONTACT)).trim();
       const dateRaw = getCell(row, headerIndex, CSV_HEADERS.DATE);
@@ -457,33 +459,40 @@ async function main() {
       if (!contact || !dateISO) {
         ignored++;
         issues.push(`Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`);
-        continue;
-      }
-
-      // Dedup: same Contact + same calendar date
-      if (await feedbackExists({ contact, dateISO })) {
+        // progress logging below still runs
+      } else if (await feedbackExists({ contact, dateISO })) {
         ignored++;
-        continue;
+        // progress logging below still runs
+      } else {
+        const fields = {
+          [FEEDBACK_FIELDS.CONTACT]: contact,
+          [FEEDBACK_FIELDS.STUDIO]: [studioId],
+          [FEEDBACK_FIELDS.DATE]: dateISO,
+          [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
+        };
+
+        if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
+        if (ratingRaw && !Number.isNaN(Number(ratingRaw))) {
+          fields[FEEDBACK_FIELDS.RATING] = Number(ratingRaw);
+        }
+        if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
+        if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
+
+        await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}`, {
+          method: "POST",
+          body: JSON.stringify({ records: [{ fields }] }),
+        });
+
+        imported++;
       }
 
-      const fields = {
-        [FEEDBACK_FIELDS.CONTACT]: contact,
-        [FEEDBACK_FIELDS.STUDIO]: [studioId],
-        [FEEDBACK_FIELDS.DATE]: dateISO,
-        [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
-      };
-
-      if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
-      if (ratingRaw && !Number.isNaN(Number(ratingRaw))) fields[FEEDBACK_FIELDS.RATING] = Number(ratingRaw);
-      if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
-      if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
-
-      await fetchJson(`${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}`, {
-        method: "POST",
-        body: JSON.stringify({ records: [{ fields }] }),
-      });
-
-      imported++;
+      // Progress log every 50 rows (and at the very end)
+      if (processedCount % 50 === 0 || processedCount === totalDataRows) {
+        console.log(
+          `Progress: processed ${processedCount}/${totalDataRows} data rows. ` +
+            `Imported=${imported}, Ignored=${ignored}`,
+        );
+      }
     }
 
     await updateLog(logId, {
