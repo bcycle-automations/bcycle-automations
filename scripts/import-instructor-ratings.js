@@ -35,19 +35,18 @@ requireEnv("FORM_RECORD_ID");
 const AIRTABLE_API = "https://api.airtable.com/v0";
 
 /**
- * FORM TABLE FIELD IDS
- * Stable even if field names change.
+ * FORM TABLE FIELD IDS (by field ID, stable)
  */
 const FORM_FIELD_IDS = {
-  CSV_UPLOAD: "fld9aPVBfGiKnxqNu", // "CSV Upload" (Attachment)
-  STUDIO: "fld37o0IErMH4Qz1z", // "Studio" (Link to record)
+  CSV_UPLOAD: "fld9aPVBfGiKnxqNu",        // "CSV Upload" (Attachment)
+  STUDIO: "fld37o0IErMH4Qz1z",            // "Studio" (Link to record)
 
   // Mapping fields (Single line text) containing the CSV header to use:
-  CONTACT_HEADER: "fldcLopFy64blIgFl", // "Contact"
-  RATING_HEADER: "fld1CnnyKmmAQuMg1", // "Rating"
-  COMMENT_HEADER: "fldXYsNP1QjLNPVBy", // "COMMENT"
-  CLASSTYPE_HEADER: "fldZ1CSNQY6naOeAJ", // "CLASSTYPE"
-  DATE_HEADER: "fldBoXrlXNCD8ZTPR", // "DATE OF RATING"
+  CONTACT_HEADER: "fldcLopFy64blIgFl",    // "Contact"
+  RATING_HEADER: "fld1CnnyKmmAQuMg1",     // "Rating"
+  COMMENT_HEADER: "fldXYsNP1QjLNPVBy",    // "COMMENT"
+  CLASSTYPE_HEADER: "fldZ1CSNQY6naOeAJ",  // "CLASSTYPE"
+  DATE_HEADER: "fldBoXrlXNCD8ZTPR",       // "DATE OF RATING"
   INSTRUCTOR_HEADER: "fldkeOL4mnfCKq0up", // "Instructor Name"
 };
 
@@ -55,14 +54,14 @@ const FORM_FIELD_IDS = {
  * FEEDBACKS TABLE FIELD NAMES (destination)
  */
 const FEEDBACK_FIELDS = {
-  CONTACT: "Contact", // TEXT
-  STUDIO: "Studio", // LINKED RECORD
-  DATE: "DATE OF RATING", // DATE (or datetime)
-  RATING: "Rating", // NUMBER
-  COMMENT: "COMMENT", // TEXT / LONG TEXT
-  CLASSTYPE: "CLASSTYPE", // TEXT / SINGLE SELECT
+  CONTACT: "Contact",                 // TEXT
+  STUDIO: "Studio",                   // LINKED RECORD
+  DATE: "DATE OF RATING",             // DATE
+  RATING: "Rating",                   // NUMBER
+  COMMENT: "COMMENT",                 // TEXT / LONG TEXT
+  CLASSTYPE: "CLASSTYPE",             // TEXT / SINGLE SELECT
   INSTRUCTOR_NAME: "Instructor Name", // TEXT
-  TYPE: "Type", // SINGLE SELECT
+  TYPE: "Type",                       // SINGLE SELECT
 };
 
 const TYPE_VALUE = "Instructor Feedback";
@@ -85,7 +84,7 @@ const LOG_STATUS = {
 const LOG_TYPE_VALUE = "Instructor Ratings Import";
 
 /* ============================================================
-   HELPERS
+   GENERAL HELPERS
 ============================================================ */
 
 async function fetchJson(url, options = {}) {
@@ -110,24 +109,32 @@ function escapeFormula(v) {
 }
 
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * Airtable linked-record fields can come back in different shapes.
+ * Linked-record field shapes
  */
 function asFirstLinkedRecordId(v) {
+  // Common: ["recXXXX"]
   if (Array.isArray(v) && typeof v[0] === "string" && v[0]) return v[0];
+
+  // Sometimes: [{ id: "recXXXX" }, ...]
   if (Array.isArray(v) && v[0] && typeof v[0] === "object" && typeof v[0].id === "string") return v[0].id;
+
+  // Rare: single string
   if (typeof v === "string" && v) return v;
+
   return null;
 }
 
 /**
- * Attachment fields: [{url, filename, ...}]
+ * Attachment fields: [{url, ...}]
  */
 function asFirstAttachmentUrl(v) {
-  if (Array.isArray(v) && v[0] && typeof v[0] === "object" && typeof v[0].url === "string") return v[0].url;
+  if (Array.isArray(v) && v[0] && typeof v[0] === "object" && typeof v[0].url === "string") {
+    return v[0].url;
+  }
   return null;
 }
 
@@ -163,8 +170,9 @@ function parseCSV(text) {
         cur += c;
       }
     } else {
-      if (c === '"') inQuotes = true;
-      else if (c === ",") {
+      if (c === '"') {
+        inQuotes = true;
+      } else if (c === ",") {
         row.push(cur);
         cur = "";
       } else if (c === "\n") {
@@ -181,6 +189,7 @@ function parseCSV(text) {
   row.push(cur);
   rows.push(row);
 
+  // Drop completely empty rows
   return rows.filter((r) => r.some((c) => String(c).trim() !== ""));
 }
 
@@ -202,58 +211,46 @@ function getCell(row, headerIndex, headerName) {
 }
 
 /* ============================================================
-   DATE NORMALIZATION (FIX: USE YYYY-MM-DD STRING)
-   This avoids timezone drift and date-only vs datetime issues.
+   DATE NORMALIZATION (DATE-ONLY)
 ============================================================ */
 
-/**
- * Parse a date-like value into "YYYY-MM-DD".
- * Notes:
- * - If your CSV is DD/MM/YYYY (not MM/DD/YYYY), tell me and I’ll flip that regex.
- */
-function parseDateToYMD(v) {
+function parseDateOnlyToISO(v) {
   if (!v) return null;
   const raw = String(v).trim();
   if (!raw) return null;
 
-  // Already ISO-like?
-  const isoYmd = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (isoYmd) return `${isoYmd[1]}-${isoYmd[2]}-${isoYmd[3]}`;
-
-  // Common numeric format: MM/DD/YYYY (or M/D/YYYY)
-  const mdy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (mdy) {
-    const mm = String(parseInt(mdy[1], 10)).padStart(2, "0");
-    const dd = String(parseInt(mdy[2], 10)).padStart(2, "0");
-    const yy = mdy[3];
-    return `${yy}-${mm}-${dd}`;
-  }
-
-  // Fall back to JS Date parsing for strings like "Mar 4 2026", "2026-03-04 10:15", etc.
   const d = new Date(raw);
-  if (!Number.isNaN(d.getTime())) {
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  }
+  if (Number.isNaN(d.getTime())) return null;
 
-  return null;
+  // Force to midnight UTC
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
+}
+
+function dateKeyFromISO(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 /* ============================================================
-   DEDUPE CHECK (FIXED)
-   - Contact compared as LOWER(TRIM())
-   - Date compared by 'YYYY-MM-DD' via DATETIME_FORMAT
+   DEDUPE CHECK
+   (Contact + calendar date; Studio omitted because
+    the formula layer does not expose record IDs.)
 ============================================================ */
 
-async function feedbackExists({ contact, studioId, dateYMD }) {
-  const normalizedContact = contact.trim().toLowerCase();
+async function feedbackExists({ contact, dateISO }) {
+  if (!contact || !dateISO) return false;
+
+  const dateKey = dateKeyFromISO(dateISO);
+  if (!dateKey) return false;
 
   const formula = `AND(
-    LOWER(TRIM({${FEEDBACK_FIELDS.CONTACT}})) = "${escapeFormula(normalizedContact)}",
-    FIND("${studioId}", ARRAYJOIN({${FEEDBACK_FIELDS.STUDIO}})) > 0,
-    DATETIME_FORMAT({${FEEDBACK_FIELDS.DATE}}, 'YYYY-MM-DD') = "${dateYMD}"
+    {${FEEDBACK_FIELDS.CONTACT}} = "${escapeFormula(contact)}",
+    DATESTR({${FEEDBACK_FIELDS.DATE}}) = "${escapeFormula(dateKey)}"
   )`;
 
   const url =
@@ -306,6 +303,9 @@ async function loadFormRecord() {
   return fetchJson(url);
 }
 
+/**
+ * Robust loader to allow for UI/API lag (esp. attachments).
+ */
 async function loadFormRecordWithRetry({ attempts = 8, delayMs = 3000, logFn = console.log } = {}) {
   let last = null;
 
@@ -384,14 +384,12 @@ async function main() {
       logFn: (m) => console.log(m),
     });
 
-    // Extract Studio + CSV robustly
     const studioRaw = form?.fields?.[FORM_FIELD_IDS.STUDIO];
     const csvRaw = form?.fields?.[FORM_FIELD_IDS.CSV_UPLOAD];
 
     const studioId = asFirstLinkedRecordId(studioRaw);
     const csvUrl = asFirstAttachmentUrl(csvRaw);
 
-    // If still missing, dump the API response details into the issue log
     const presentFieldIds = Object.keys(form?.fields || {});
     const debugDump =
       `FORM_RECORD_ID=${FORM_RECORD_ID}\n` +
@@ -399,18 +397,19 @@ async function main() {
       `Present field IDs (${presentFieldIds.length}): ${presentFieldIds.join(", ")}\n\n` +
       `Studio fieldId=${FORM_FIELD_IDS.STUDIO}\n` +
       `Studio raw=${JSON.stringify(studioRaw)}\n` +
-      `Studio parsed=${studioId || "(null)"}\n\n` +
+      `Studio id=${studioId || "(null)"}\n\n` +
       `CSV fieldId=${FORM_FIELD_IDS.CSV_UPLOAD}\n` +
       `CSV raw=${JSON.stringify(csvRaw)}\n` +
-      `CSV parsed=${csvUrl || "(null)"}\n`;
+      `CSV parsedUrl=${csvUrl || "(null)"}\n`;
 
     if (!studioId || !csvUrl) {
-      const msg = `Missing Studio and/or CSV Upload according to Airtable API response.\n\n${debugDump}`;
+      const msg =
+        `Missing Studio (id) and/or CSV Upload according to Airtable API response.\n\n` +
+        debugDump;
       issues.push(msg);
       throw new Error(msg);
     }
 
-    // CSV header mappings come from editable/prefilled form text fields
     const CSV_HEADERS = {
       CONTACT: getFormTextField(form, FORM_FIELD_IDS.CONTACT_HEADER, "Contact"),
       DATE: getFormTextField(form, FORM_FIELD_IDS.DATE_HEADER, "Response Date"),
@@ -431,7 +430,6 @@ async function main() {
     console.log("CSV headers:", rows[0]);
     console.log("Using header mapping from form record:", CSV_HEADERS);
 
-    // Hard fail if mappings don't exist in the CSV
     const missingHeaders = validateMappedHeaders(headerIndex, CSV_HEADERS);
     if (missingHeaders.length) {
       const msg =
@@ -449,31 +447,29 @@ async function main() {
 
       const contact = String(getCell(row, headerIndex, CSV_HEADERS.CONTACT)).trim();
       const dateRaw = getCell(row, headerIndex, CSV_HEADERS.DATE);
-      const dateYMD = parseDateToYMD(dateRaw);
+      const dateISO = parseDateOnlyToISO(dateRaw);
 
       const ratingRaw = String(getCell(row, headerIndex, CSV_HEADERS.RATING)).trim();
       const comment = String(getCell(row, headerIndex, CSV_HEADERS.COMMENT)).trim();
       const classType = String(getCell(row, headerIndex, CSV_HEADERS.CLASSTYPE)).trim();
       const instructor = String(getCell(row, headerIndex, CSV_HEADERS.INSTRUCTOR)).trim();
 
-      if (!contact || !dateYMD) {
+      if (!contact || !dateISO) {
         ignored++;
         issues.push(`Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`);
         continue;
       }
 
-      // DEDUPE (fixed date logic)
-      if (await feedbackExists({ contact, studioId, dateYMD })) {
+      // Dedup: same Contact + same calendar date
+      if (await feedbackExists({ contact, dateISO })) {
         ignored++;
         continue;
       }
 
-      // IMPORTANT: For Airtable "date" fields, send "YYYY-MM-DD"
-      // For datetime fields, "YYYY-MM-DD" is also accepted and interpreted as midnight.
       const fields = {
         [FEEDBACK_FIELDS.CONTACT]: contact,
         [FEEDBACK_FIELDS.STUDIO]: [studioId],
-        [FEEDBACK_FIELDS.DATE]: dateYMD,
+        [FEEDBACK_FIELDS.DATE]: dateISO,
         [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
       };
 
