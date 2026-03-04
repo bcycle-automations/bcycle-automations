@@ -6,6 +6,7 @@
  * - Airtable cellFormat=string requires timeZone + userLocale
  * - Parses Airtable "fx" formula date strings deterministically (e.g., "2/2/2026 7:15am EST")
  * - Queries MTEK within a small ±WINDOW_MINUTES range and picks the closest session
+ * - Validates match by Airtable "class" field vs MTEK class_type_display
  *
  * Required env:
  * - AIRTABLE_TOKEN
@@ -15,6 +16,7 @@
  * - AIRTABLE_FIELD_ROOM
  * - AIRTABLE_FIELD_DATE_UTC      (yes, can be your "date" formula field name)
  * - AIRTABLE_FIELD_CLASS_ID
+ * - AIRTABLE_FIELD_CLASS         (field name for class type, e.g. "Class" / fld3ev3ALj9ShAJYs)
  * - MTEK_API_TOKEN
  * - MTEK_BASE_URL
  *
@@ -274,11 +276,27 @@ async function mtekListClassSessionsInWindow({
   return { url: url.toString(), data };
 }
 
-function pickClosestSessionId({ sessions, targetUtcIso }) {
+/** Get class_type_display from a MTEK class_session item (attributes or top-level). */
+function getSessionClassTypeDisplay(item) {
+  const a = item?.attributes ?? {};
+  return String(a.class_type_display ?? a.classTypeDisplay ?? item?.class_type_display ?? "").trim();
+}
+
+/** Normalize for comparison: trim + lower. */
+function normalizeClassDisplay(s) {
+  return String(s ?? "").trim().toLowerCase();
+}
+
+function pickClosestSessionId({ sessions, targetUtcIso, expectedClassDisplay }) {
   if (!Array.isArray(sessions) || sessions.length === 0) return null;
 
   const targetMs = new Date(targetUtcIso).getTime();
   if (!Number.isFinite(targetMs)) throw new Error(`Bad targetUtcIso: ${targetUtcIso}`);
+
+  const expectedNorm =
+    expectedClassDisplay != null && String(expectedClassDisplay).trim() !== ""
+      ? normalizeClassDisplay(expectedClassDisplay)
+      : null;
 
   function getSessionUtcIso(item) {
     const a = item?.attributes ?? {};
@@ -302,6 +320,11 @@ function pickClosestSessionId({ sessions, targetUtcIso }) {
 
     const ms = new Date(dt).getTime();
     if (!Number.isFinite(ms)) continue;
+
+    if (expectedNorm !== null) {
+      const sessionClass = getSessionClassTypeDisplay(item);
+      if (normalizeClassDisplay(sessionClass) !== expectedNorm) continue;
+    }
 
     const delta = Math.abs(ms - targetMs);
 
@@ -334,6 +357,7 @@ async function main() {
   const fieldRoom = requireEnv("AIRTABLE_FIELD_ROOM");
   const fieldDate = requireEnv("AIRTABLE_FIELD_DATE_UTC");
   const fieldClassId = requireEnv("AIRTABLE_FIELD_CLASS_ID");
+  const fieldClass = requireEnv("AIRTABLE_FIELD_CLASS");
 
   const mtekBaseUrl = requireEnv("MTEK_BASE_URL");
 
@@ -352,14 +376,15 @@ async function main() {
     maxRecordsRaw === ""
       ? null
       : Number.isFinite(Number(maxRecordsRaw))
-      ? Number(maxRecordsRaw)
-      : null;
+        ? Number(maxRecordsRaw)
+        : null;
 
   const dispatchRecordId = String(getEnv("DISPATCH_RECORD_ID", "")).trim();
 
-  console.log("Starting Resolve Class ID job (robust datetime)");
+  console.log("Starting Resolve Class ID job (robust datetime + class_type_display validation)");
   console.log(`Airtable base=${baseId} table="${tableName}" view="${viewName}"`);
   console.log(`Using Airtable date field name: "${fieldDate}"`);
+  console.log(`Using Airtable class field name: "${fieldClass}" (matched to MTEK class_type_display)`);
   console.log(`WINDOW_MINUTES=${windowMinutes} (query ± window around target)`);
   console.log(
     `Airtable cellFormat=string => timeZone=${airtableTimeZone} userLocale=${airtableUserLocale}`
@@ -368,7 +393,8 @@ async function main() {
     `DEFAULT_TZ_OFFSET=${String(getEnv("DEFAULT_TZ_OFFSET", "-05:00")).trim()} (used only if Airtable string has no tz)`
   );
   if (dispatchRecordId) console.log(`Dispatch scope: record_id=${dispatchRecordId}`);
-  if (!dispatchRecordId && maxRecords) console.log(`MAX_RECORDS safety cap (full runs): ${maxRecords}`);
+  if (!dispatchRecordId && maxRecords)
+    console.log(`MAX_RECORDS safety cap (full runs): ${maxRecords}`);
 
   let records = [];
 
@@ -405,6 +431,7 @@ async function main() {
     const fields = r.fields || {};
     const room = fields[fieldRoom];
     const dateValue = fields[fieldDate];
+    const airtableClass = fields[fieldClass];
     const existingClassId = fields[fieldClassId];
 
     if (!room || !dateValue) {
@@ -428,8 +455,13 @@ async function main() {
       const minUtcIso = addMinutesUtcIso(targetUtcIso, -windowMinutes);
       const maxUtcIso = addMinutesUtcIso(targetUtcIso, +windowMinutes);
 
+      const expectedClassDisplay =
+        airtableClass != null && String(airtableClass).trim() !== ""
+          ? String(airtableClass).trim()
+          : null;
+
       console.log(
-        `DEBUG ${r.id}: room="${room}" rawDate="${dateValue}" => targetUtc="${targetUtcIso}" window=[${minUtcIso} .. ${maxUtcIso}]`
+        `DEBUG ${r.id}: room="${room}" class="${airtableClass ?? ""}" rawDate="${dateValue}" => targetUtc="${targetUtcIso}" window=[${minUtcIso} .. ${maxUtcIso}]`
       );
 
       const locationId = await mtekGetLocationIdByName({
@@ -456,12 +488,18 @@ async function main() {
       console.log(`DEBUG ${r.id}: MTEK URL: ${mtekUrl}`);
 
       const sessions = Array.isArray(data?.data) ? data.data : [];
-      const classSessionId = pickClosestSessionId({ sessions, targetUtcIso });
+      const classSessionId = pickClosestSessionId({
+        sessions,
+        targetUtcIso,
+        expectedClassDisplay,
+      });
 
       if (!classSessionId) {
         notFound++;
         console.log(
-          `NOT FOUND ${r.id}: no class_session in window (location=${locationId} targetUtc=${targetUtcIso})`
+          `NOT FOUND ${r.id}: no matching class_session in window (location=${locationId} targetUtc=${targetUtcIso}` +
+            (expectedClassDisplay ? ` class="${expectedClassDisplay}"` : "") +
+            ")"
         );
         continue;
       }
@@ -483,7 +521,7 @@ async function main() {
 
       updated++;
       console.log(
-        `UPDATED ${r.id}: room="${room}" rawDate="${dateValue}" => targetUtc="${targetUtcIso}" location=${locationId} class_session_id=${classIdNum}`
+        `UPDATED ${r.id}: room="${room}" class="${airtableClass ?? ""}" rawDate="${dateValue}" => targetUtc="${targetUtcIso}" location=${locationId} class_session_id=${classIdNum}`
       );
 
       await sleep(120);
@@ -495,7 +533,9 @@ async function main() {
   }
 
   console.log("Done");
-  console.log(JSON.stringify({ processed: records.length, updated, skipped, notFound, errors }, null, 2));
+  console.log(
+    JSON.stringify({ processed: records.length, updated, skipped, notFound, errors }, null, 2)
+  );
 
   if (errors > 0) process.exitCode = 1;
 }
