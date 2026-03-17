@@ -71,6 +71,9 @@ const __dirname = path.dirname(__filename);
 
 // Where we store per-day/hour progress
 const STATE_FILE = path.join(__dirname, "..", "state", "mtek-reminder-state.json");
+// Advisory lock file to prevent concurrent runs from corrupting state
+const LOCK_FILE = path.join(__dirname, "..", "state", "mtek-reminder-state.lock");
+const LOCK_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes — treat older locks as stale
 
 /**************************************************
  * Helpers
@@ -147,6 +150,54 @@ async function fetchJsonWithRateLimit(url, options = {}, maxRetries = 5) {
   }
 
   throw new Error(`Exceeded max retries (${maxRetries}) for ${url} after repeated 429s.`);
+}
+
+/**************************************************
+ * Lock file helpers (prevent concurrent runs)
+ **************************************************/
+async function acquireLock() {
+  const dir = path.dirname(LOCK_FILE);
+  await fs.mkdir(dir, { recursive: true });
+
+  // Try to create the lock file exclusively (atomic on POSIX filesystems).
+  // If the file already exists, fs.open with 'wx' throws EEXIST.
+  try {
+    const fh = await fs.open(LOCK_FILE, "wx");
+    await fh.writeFile(String(process.pid), "utf8");
+    await fh.close();
+    return; // Lock acquired
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
+  }
+
+  // Lock file exists — check if it is stale
+  try {
+    const stat = await fs.stat(LOCK_FILE);
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (ageMs > LOCK_MAX_AGE_MS) {
+      console.warn(`Removing stale lock file (age ${Math.round(ageMs / 1000)}s > ${LOCK_MAX_AGE_MS / 1000}s).`);
+      await fs.unlink(LOCK_FILE);
+      return acquireLock(); // Retry once after removing stale lock
+    }
+  } catch {
+    // If stat fails the lock file may have just been released — retry once
+    return acquireLock();
+  }
+
+  throw new Error(
+    `Another instance of the reminders script is already running (lock file: ${LOCK_FILE}). ` +
+      `If this is wrong, delete the lock file manually.`
+  );
+}
+
+async function releaseLock() {
+  try {
+    await fs.unlink(LOCK_FILE);
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.warn(`Could not remove lock file: ${err.message}`);
+    }
+  }
 }
 
 /**************************************************
@@ -681,7 +732,10 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  console.error("Fatal error in reminders script:", err);
-  process.exit(1);
-});
+acquireLock()
+  .then(() => main())
+  .catch((err) => {
+    console.error("Fatal error in reminders script:", err);
+    process.exit(1);
+  })
+  .finally(() => releaseLock());

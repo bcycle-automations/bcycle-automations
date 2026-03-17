@@ -6,6 +6,12 @@ on:
     - cron: "0 * * * *"
   workflow_dispatch: {}
 
+# Only one run at a time; new runs queue behind the current one (not cancelled)
+# so every scheduled hour is eventually processed.
+concurrency:
+  group: mtek-reminders
+  cancel-in-progress: false
+
 # Needed so the workflow can commit the updated state JSON file
 permissions:
   contents: write
@@ -54,6 +60,7 @@ jobs:
 
             git add state/mtek-reminder-state.json
             git commit -m "Update reminder state [skip ci]" || echo "Nothing to commit"
+            git pull --rebase origin ${{ github.ref_name }}
             git push
           else
             echo "No state changes to commit."
