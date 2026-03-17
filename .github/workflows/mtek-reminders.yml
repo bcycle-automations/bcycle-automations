@@ -6,6 +6,12 @@ on:
     - cron: "0 * * * *"
   workflow_dispatch: {}
 
+# Only one run at a time; new runs queue behind the current one (not cancelled)
+# so every scheduled hour is eventually processed.
+concurrency:
+  group: mtek-reminders
+  cancel-in-progress: false
+
 # Needed so the workflow can commit the updated state JSON file
 permissions:
   contents: write
@@ -40,6 +46,10 @@ jobs:
           M365_CLIENT_SECRET: ${{ secrets.M365_CLIENT_SECRET }}
           M365_SENDER_UPN: ${{ secrets.M365_SENDER_UPN }}
 
+          # Email log table
+          EMAIL_LOG_BASE_ID: ${{ secrets.EMAIL_LOG_BASE_ID }}
+          EMAIL_LOG_TABLE_ID: ${{ secrets.EMAIL_LOG_TABLE_ID }}
+
           # Optional (safe defaults)
           FROM_NAME: "b.cycle"
           MAX_EMAILS_PER_MINUTE: "20"
@@ -54,6 +64,7 @@ jobs:
 
             git add state/mtek-reminder-state.json
             git commit -m "Update reminder state [skip ci]" || echo "Nothing to commit"
+            git pull --rebase origin ${{ github.ref_name }}
             git push
           else
             echo "No state changes to commit."

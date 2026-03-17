@@ -31,7 +31,7 @@ jobs:
 
     env:
       # Airtable
-      AIRTABLE_BASE_ID: applRovmu340OSBSg
+      AIRTABLE_BASE_ID: ${{ secrets.RESOLVE_CLASS_AIRTABLE_BASE_ID }}
       AIRTABLE_TABLE_NAME: All Classes
       AIRTABLE_VIEW_NAME: NO ID DO NOT TOUCH
 

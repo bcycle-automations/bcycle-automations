@@ -5,7 +5,7 @@
  * ----------------------------------
  */
 
-const AIRTABLE_BASE_ID = "appWPXRyXX3KHoJRI";      // your base
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
 const AIRTABLE_TABLE_NAME = "Ratings";             // table with Contact / CAL_NAME / EMAIL (link field)
 const AIRTABLE_VIEW_NAME = "ADD EMAIL DO NOT TOUCH";
 
@@ -29,8 +29,8 @@ const MTEK_BASE_URL = "https://bcycle.marianatek.com/api";
 const MTEK_API_TOKEN = process.env.MTEK_API_TOKEN;
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
 
-if (!MTEK_API_TOKEN || !AIRTABLE_TOKEN) {
-  console.error("Missing required env vars: MTEK_API_TOKEN and/or AIRTABLE_TOKEN.");
+if (!MTEK_API_TOKEN || !AIRTABLE_TOKEN || !AIRTABLE_BASE_ID) {
+  console.error("Missing required env vars: MTEK_API_TOKEN, AIRTABLE_TOKEN, and/or AIRTABLE_BASE_ID.");
   process.exit(1);
 }
 

@@ -17,8 +17,8 @@ const REPORT_ID = process.env.MTEK_CUSTOMERS_REPORT_ID || "336";
 const REPORT_SLUG = process.env.MTEK_CUSTOMERS_REPORT_SLUG || "customers-details";
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 
-// Hard-coded Make webhook (per your request)
-const WEBHOOK_URL = "https://hook.us2.make.com/pmp8d9nca57ur9ifaai8vusahpxsi3ip";
+const WEBHOOK_URL = (process.env.MAKE_WEBHOOK_URL || "").trim();
+if (!WEBHOOK_URL) throw new Error("Missing env: MAKE_WEBHOOK_URL");
 
 // Default date = yesterday (UTC) if not provided
 function getDefaultDate() {

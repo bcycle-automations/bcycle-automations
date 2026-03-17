@@ -22,6 +22,10 @@ const {
   M365_CLIENT_SECRET,
   M365_SENDER_UPN, // noreply@bcyclespin.com
 
+  // Email log table (Airtable)
+  EMAIL_LOG_BASE_ID,
+  EMAIL_LOG_TABLE_ID,
+
   // Optional controls
   FROM_NAME, // "b.cycle" (optional; default below)
   MAX_EMAILS_PER_MINUTE, // optional; default 20
@@ -38,6 +42,8 @@ if (!M365_TENANT_ID) throw new Error("Missing env: M365_TENANT_ID");
 if (!M365_CLIENT_ID) throw new Error("Missing env: M365_CLIENT_ID");
 if (!M365_CLIENT_SECRET) throw new Error("Missing env: M365_CLIENT_SECRET");
 if (!M365_SENDER_UPN) throw new Error("Missing env: M365_SENDER_UPN");
+if (!EMAIL_LOG_BASE_ID) throw new Error("Missing env: EMAIL_LOG_BASE_ID");
+if (!EMAIL_LOG_TABLE_ID) throw new Error("Missing env: EMAIL_LOG_TABLE_ID");
 
 // ------------------- Constants -------------------
 const MTEK_BASE = "https://bcycle.marianatek.com/api";
@@ -46,9 +52,6 @@ const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 
 const EMAIL_SUBJECT = "Heads up / Rappel";
 const EMAIL_LOG_TYPE = "Reservation in 24 hours";
-
-const EMAIL_LOG_BASE_ID = "appofCRTxHoIe6dXI";
-const EMAIL_LOG_TABLE_ID = "tbloAdBJHSygcndbA";
 
 const DISPLAY_FROM_NAME = (FROM_NAME || "b.cycle").trim();
 
@@ -71,6 +74,9 @@ const __dirname = path.dirname(__filename);
 
 // Where we store per-day/hour progress
 const STATE_FILE = path.join(__dirname, "..", "state", "mtek-reminder-state.json");
+// Advisory lock file to prevent concurrent runs from corrupting state
+const LOCK_FILE = path.join(__dirname, "..", "state", "mtek-reminder-state.lock");
+const LOCK_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes — treat older locks as stale
 
 /**************************************************
  * Helpers
@@ -147,6 +153,54 @@ async function fetchJsonWithRateLimit(url, options = {}, maxRetries = 5) {
   }
 
   throw new Error(`Exceeded max retries (${maxRetries}) for ${url} after repeated 429s.`);
+}
+
+/**************************************************
+ * Lock file helpers (prevent concurrent runs)
+ **************************************************/
+async function acquireLock() {
+  const dir = path.dirname(LOCK_FILE);
+  await fs.mkdir(dir, { recursive: true });
+
+  // Try to create the lock file exclusively (atomic on POSIX filesystems).
+  // If the file already exists, fs.open with 'wx' throws EEXIST.
+  try {
+    const fh = await fs.open(LOCK_FILE, "wx");
+    await fh.writeFile(String(process.pid), "utf8");
+    await fh.close();
+    return; // Lock acquired
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
+  }
+
+  // Lock file exists — check if it is stale
+  try {
+    const stat = await fs.stat(LOCK_FILE);
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (ageMs > LOCK_MAX_AGE_MS) {
+      console.warn(`Removing stale lock file (age ${Math.round(ageMs / 1000)}s > ${LOCK_MAX_AGE_MS / 1000}s).`);
+      await fs.unlink(LOCK_FILE);
+      return acquireLock(); // Retry once after removing stale lock
+    }
+  } catch {
+    // If stat fails the lock file may have just been released — retry once
+    return acquireLock();
+  }
+
+  throw new Error(
+    `Another instance of the reminders script is already running (lock file: ${LOCK_FILE}). ` +
+      `If this is wrong, delete the lock file manually.`
+  );
+}
+
+async function releaseLock() {
+  try {
+    await fs.unlink(LOCK_FILE);
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.warn(`Could not remove lock file: ${err.message}`);
+    }
+  }
 }
 
 /**************************************************
@@ -681,7 +735,10 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  console.error("Fatal error in reminders script:", err);
-  process.exit(1);
-});
+acquireLock()
+  .then(() => main())
+  .catch((err) => {
+    console.error("Fatal error in reminders script:", err);
+    process.exit(1);
+  })
+  .finally(() => releaseLock());

@@ -8,7 +8,6 @@ import process from "node:process";
 // ------------------------------------------------------------
 
 // Airtable
-const AIRTABLE_BASE_ID = "appofCRTxHoIe6dXI";
 const AIRTABLE_BASE_URL = "https://api.airtable.com/v0";
 
 // MTEK
@@ -37,14 +36,12 @@ const RES_FIELDS = {
   CLASS_RECORD_ID: "Record ID",
 };
 
-// Make webhook
-const SECOND_CLASS_WEBHOOK_URL =
-  "https://hook.us2.make.com/njbqpqqh6i6lxr34ycro62pzh6ip5h33";
-
-// Tokens
-const { AIRTABLE_TOKEN, MTEK_API_TOKEN } = process.env;
+// Tokens + config from environment
+const { AIRTABLE_TOKEN, MTEK_API_TOKEN, AIRTABLE_BASE_ID, SECOND_CLASS_WEBHOOK_URL } = process.env;
 if (!AIRTABLE_TOKEN) throw new Error("Missing env: AIRTABLE_TOKEN");
 if (!MTEK_API_TOKEN) throw new Error("Missing env: MTEK_API_TOKEN");
+if (!AIRTABLE_BASE_ID) throw new Error("Missing env: AIRTABLE_BASE_ID");
+if (!SECOND_CLASS_WEBHOOK_URL) throw new Error("Missing env: SECOND_CLASS_WEBHOOK_URL");
 
 // Pagination / limits
 const MTEK_PAGE_SIZE = 200;
