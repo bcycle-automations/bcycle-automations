@@ -46,6 +46,10 @@ jobs:
           M365_CLIENT_SECRET: ${{ secrets.M365_CLIENT_SECRET }}
           M365_SENDER_UPN: ${{ secrets.M365_SENDER_UPN }}
 
+          # Email log table
+          EMAIL_LOG_BASE_ID: ${{ secrets.EMAIL_LOG_BASE_ID }}
+          EMAIL_LOG_TABLE_ID: ${{ secrets.EMAIL_LOG_TABLE_ID }}
+
           # Optional (safe defaults)
           FROM_NAME: "b.cycle"
           MAX_EMAILS_PER_MINUTE: "20"

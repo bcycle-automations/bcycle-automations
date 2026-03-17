@@ -29,8 +29,8 @@ jobs:
           MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
           MTEK_BASE_URL: ${{ secrets.MTEK_BASE_URL }}
 
-          AIRTABLE_BASE_ID: app3XN0v7vjPALgAV
-          FEEDBACKS_TABLE_ID: tbl2ZcYV8LCcihQvP
-          LOGS_TABLE_ID: tbljXmfkQ0eitjsqr
+          AIRTABLE_BASE_ID: ${{ secrets.RATINGS_AIRTABLE_BASE_ID }}
+          FEEDBACKS_TABLE_ID: ${{ secrets.RATINGS_FEEDBACKS_TABLE_ID }}
+          LOGS_TABLE_ID: ${{ secrets.RATINGS_LOGS_TABLE_ID }}
 
         run: node scripts/find-email-instructor-ratings.js

@@ -6,10 +6,6 @@
 
 const MTEK_BASE_URL = 'https://bcycle.marianatek.com/api';
 
-// Airtable base + table names
-const AIRTABLE_BASE_ID = 'appofCRTxHoIe6dXI';
-const AIRTABLE_BASE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
-
 const AIRTABLE_TABLE_CTT = 'CTT SYNC DO NOT TOUCH';
 const AIRTABLE_TABLE_CUSTOMERS = 'Customers';
 
@@ -26,11 +22,14 @@ const NEW_PEOPLE_TAG_ID = '463';
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
 const MTEK_API_TOKEN = process.env.MTEK_API_TOKEN;
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
 
-if (!AIRTABLE_TOKEN || !MTEK_API_TOKEN) {
-  console.error('Missing required env vars: AIRTABLE_TOKEN or MTEK_API_TOKEN');
+if (!AIRTABLE_TOKEN || !MTEK_API_TOKEN || !AIRTABLE_BASE_ID) {
+  console.error('Missing required env vars: AIRTABLE_TOKEN, MTEK_API_TOKEN, or AIRTABLE_BASE_ID');
   process.exit(1);
 }
+
+const AIRTABLE_BASE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
 
 // --------- Date helpers (Eastern Time) ---------
 

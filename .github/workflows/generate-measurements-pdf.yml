@@ -13,7 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      WORKING_SPREADSHEET_ID: ${{ secrets.WORKING_SPREADSHEET_ID }}
 
     steps:
       - name: Check out repo

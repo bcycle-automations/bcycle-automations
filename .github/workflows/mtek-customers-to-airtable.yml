@@ -28,9 +28,12 @@ jobs:
 
           # Airtable
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
-          AIRTABLE_BASE_ID: "appofCRTxHoIe6dXI"   # <-- put your CTT base ID here
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_CUSTOMERS_TABLE: "Customers"
           AIRTABLE_STUDIOS_TABLE: "Studio"
+
+          # Make webhook
+          MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
 
           # Date to target: passed by Make, e.g. 2025-12-09
           TARGET_DATE: ${{ github.event.client_payload.target_date }}

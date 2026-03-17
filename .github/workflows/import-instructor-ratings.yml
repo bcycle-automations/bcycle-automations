@@ -37,10 +37,10 @@ jobs:
         env:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
 
-          AIRTABLE_BASE_ID: app3XN0v7vjPALgAV
-          FORM_TABLE_ID: tblu4fK3CDzDhBjK1
-          FEEDBACKS_TABLE_ID: tbl2ZcYV8LCcihQvP
-          LOGS_TABLE_ID: tbljXmfkQ0eitjsqr
+          AIRTABLE_BASE_ID: ${{ secrets.RATINGS_AIRTABLE_BASE_ID }}
+          FORM_TABLE_ID: ${{ secrets.RATINGS_FORM_TABLE_ID }}
+          FEEDBACKS_TABLE_ID: ${{ secrets.RATINGS_FEEDBACKS_TABLE_ID }}
+          LOGS_TABLE_ID: ${{ secrets.RATINGS_LOGS_TABLE_ID }}
           FORM_RECORD_ID: ${{ env.FORM_RECORD_ID }}
 
         run: node scripts/import-instructor-ratings.js

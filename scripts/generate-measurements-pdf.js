@@ -30,7 +30,6 @@ import { google } from "googleapis";
 // -------------------------------
 
 // Airtable
-const AIRTABLE_BASE_ID = "appofCRTxHoIe6dXI"; // Customer Tracking Tool
 const AIRTABLE_CLASSES_TABLE = "CTT SYNC DO NOT TOUCH";
 const AIRTABLE_CLASS_RES_TABLE = "Class Reservations";
 
@@ -56,8 +55,8 @@ const RES_FIELDS = {
   NOTES: "Class NOTES (from Customer)",
 };
 
-// Google Sheets (working sheet only — hardcoded)
-const WORKING_SPREADSHEET_ID = "11P2Yn3VYkmH-tq8pEc-oA2fRQerBlyC7OwBHB82omv4";
+// Google Sheets (working sheet)
+const WORKING_SPREADSHEET_ID = process.env.WORKING_SPREADSHEET_ID || "";
 const GOOGLE_SHEET_NAME = "Sheet1";
 
 // Layout assumptions for YOUR sheet:
@@ -73,16 +72,15 @@ const MAX_ROWS = 250;
 // -------------------------------
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
 const GOOGLE_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 
 if (!AIRTABLE_TOKEN) throw new Error("Missing env: AIRTABLE_TOKEN");
+if (!AIRTABLE_BASE_ID) throw new Error("Missing env: AIRTABLE_BASE_ID");
 if (!GOOGLE_SERVICE_ACCOUNT_JSON)
   throw new Error("Missing env: GOOGLE_SERVICE_ACCOUNT_JSON");
-if (!WORKING_SPREADSHEET_ID || WORKING_SPREADSHEET_ID.includes("PASTE_")) {
-  throw new Error(
-    "Missing config: WORKING_SPREADSHEET_ID (paste the ID into the script)"
-  );
-}
+if (!WORKING_SPREADSHEET_ID)
+  throw new Error("Missing env: WORKING_SPREADSHEET_ID");
 
 // -------------------------------
 // GOOGLE (Sheets only)

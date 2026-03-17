@@ -22,6 +22,10 @@ const {
   M365_CLIENT_SECRET,
   M365_SENDER_UPN, // noreply@bcyclespin.com
 
+  // Email log table (Airtable)
+  EMAIL_LOG_BASE_ID,
+  EMAIL_LOG_TABLE_ID,
+
   // Optional controls
   FROM_NAME, // "b.cycle" (optional; default below)
   MAX_EMAILS_PER_MINUTE, // optional; default 20
@@ -38,6 +42,8 @@ if (!M365_TENANT_ID) throw new Error("Missing env: M365_TENANT_ID");
 if (!M365_CLIENT_ID) throw new Error("Missing env: M365_CLIENT_ID");
 if (!M365_CLIENT_SECRET) throw new Error("Missing env: M365_CLIENT_SECRET");
 if (!M365_SENDER_UPN) throw new Error("Missing env: M365_SENDER_UPN");
+if (!EMAIL_LOG_BASE_ID) throw new Error("Missing env: EMAIL_LOG_BASE_ID");
+if (!EMAIL_LOG_TABLE_ID) throw new Error("Missing env: EMAIL_LOG_TABLE_ID");
 
 // ------------------- Constants -------------------
 const MTEK_BASE = "https://bcycle.marianatek.com/api";
@@ -46,9 +52,6 @@ const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 
 const EMAIL_SUBJECT = "Heads up / Rappel";
 const EMAIL_LOG_TYPE = "Reservation in 24 hours";
-
-const EMAIL_LOG_BASE_ID = "appofCRTxHoIe6dXI";
-const EMAIL_LOG_TABLE_ID = "tbloAdBJHSygcndbA";
 
 const DISPLAY_FROM_NAME = (FROM_NAME || "b.cycle").trim();
 
