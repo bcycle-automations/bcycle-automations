@@ -33,9 +33,6 @@ requireEnv("FORM_RECORD_ID");
 ============================================================ */
 
 const AIRTABLE_API = "https://api.airtable.com/v0";
-const DEFAULT_AIRTABLE_CREATE_BATCH_SIZE = 10; // Airtable create endpoint max records/request
-const AIRTABLE_MAX_RETRIES = 6;
-const AIRTABLE_BASE_BACKOFF_MS = 500;
 
 /**
  * FORM TABLE FIELD IDS (by field ID, stable)
@@ -90,52 +87,21 @@ const LOG_TYPE_VALUE = "Instructor Ratings Import";
    GENERAL HELPERS
 ============================================================ */
 
-function parseRetryAfterMs(retryAfterHeader) {
-  if (!retryAfterHeader) return null;
-  const numeric = Number(retryAfterHeader);
-  if (!Number.isNaN(numeric)) return Math.max(0, numeric * 1000);
-
-  const parsedDate = Date.parse(retryAfterHeader);
-  if (!Number.isNaN(parsedDate)) return Math.max(0, parsedDate - Date.now());
-  return null;
-}
-
 async function fetchJson(url, options = {}) {
-  let attempt = 0;
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
 
-  while (attempt <= AIRTABLE_MAX_RETRIES) {
-    const res = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${AIRTABLE_TOKEN}`,
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
-    });
-
-    if (res.ok) return res.json();
-
-    const status = res.status;
-    const body = await res.text().catch(() => "");
-    const shouldRetry = status === 429 || (status >= 500 && status < 600);
-
-    if (!shouldRetry || attempt === AIRTABLE_MAX_RETRIES) {
-      throw new Error(`${status} ${res.statusText}: ${body}`);
-    }
-
-    const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
-    const expBackoffMs = AIRTABLE_BASE_BACKOFF_MS * 2 ** attempt;
-    const jitterMs = Math.floor(Math.random() * 250);
-    const sleepMs = Math.max(retryAfterMs || 0, expBackoffMs + jitterMs);
-
-    console.warn(
-      `Airtable ${status} received. Retrying request in ${sleepMs}ms (attempt ${attempt + 1}/${AIRTABLE_MAX_RETRIES})`,
-    );
-    await sleep(sleepMs);
-    attempt++;
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText}: ${t}`);
   }
-
-  throw new Error("Unreachable retry state in fetchJson");
+  return res.json();
 }
 
 function escapeFormula(v) {
@@ -144,15 +110,6 @@ function escapeFormula(v) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function getCreateBatchSize() {
-  const raw = process.env.AIRTABLE_CREATE_BATCH_SIZE;
-  if (!raw) return DEFAULT_AIRTABLE_CREATE_BATCH_SIZE;
-
-  const parsed = Number(raw);
-  if (Number.isNaN(parsed) || parsed < 1) return DEFAULT_AIRTABLE_CREATE_BATCH_SIZE;
-  return Math.min(10, Math.floor(parsed));
 }
 
 /**
@@ -309,27 +266,16 @@ function makeDedupeKey({ contact, dateKey, ratingKey, instructor, classTypeKey }
 
 /**
  * Load all existing feedbacks and build a dedupe set for this Studio.
- * We fetch only this Studio's records using filterByFormula.
+ * We fetch all records and then filter by Studio ID in JS.
  */
 async function loadExistingDedupeKeysForStudio(studioId) {
   const keys = new Set();
   let offset;
-  const studioFormula = `FIND("${escapeFormula(studioId)}", ARRAYJOIN({${FEEDBACK_FIELDS.STUDIO}}))`;
 
   do {
-    const params = new URLSearchParams({
-      pageSize: "100",
-      filterByFormula: studioFormula,
-    });
-    params.append("fields[]", FEEDBACK_FIELDS.STUDIO);
-    params.append("fields[]", FEEDBACK_FIELDS.CONTACT);
-    params.append("fields[]", FEEDBACK_FIELDS.DATE);
-    params.append("fields[]", FEEDBACK_FIELDS.RATING);
-    params.append("fields[]", FEEDBACK_FIELDS.INSTRUCTOR_NAME);
-    params.append("fields[]", FEEDBACK_FIELDS.CLASSTYPE);
-    if (offset) params.set("offset", offset);
-
-    const url = `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}?${params.toString()}`;
+    const url =
+      `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}?pageSize=100` +
+      (offset ? `&offset=${offset}` : "");
 
     const out = await fetchJson(url);
     const records = out.records || [];
@@ -339,7 +285,7 @@ async function loadExistingDedupeKeysForStudio(studioId) {
       const studioField = fields[FEEDBACK_FIELDS.STUDIO];
       const recStudioId = asFirstLinkedRecordId(studioField);
 
-      if (recStudioId !== studioId) continue;
+      if (recStudioId !== studioId) continue; // only this Studio
 
       const contact = String(fields[FEEDBACK_FIELDS.CONTACT] || "").trim();
       const dateISO = fields[FEEDBACK_FIELDS.DATE];
@@ -502,7 +448,6 @@ function validateMappedHeaders(headerIndex, mapping) {
 ============================================================ */
 
 async function main() {
-  const createBatchSize = getCreateBatchSize();
   let logId = null;
   const importedRef = { count: 0 }; // mutated by batch helper
   let ignored = 0;
@@ -642,7 +587,7 @@ async function main() {
 
           pendingRecords.push({ fields });
 
-          if (pendingRecords.length === createBatchSize) {
+          if (pendingRecords.length === 10) {
             await flushPendingFeedbackBatch(pendingRecords, importedRef);
           }
         }
@@ -650,6 +595,11 @@ async function main() {
 
       // Progress log + partial log record update every 50 rows (and at the very end)
       if (processedCount % 50 === 0 || processedCount === totalDataRows) {
+        // Flush any remaining records before reporting
+        if (pendingRecords.length) {
+          await flushPendingFeedbackBatch(pendingRecords, importedRef);
+        }
+
         console.log(
           `Progress: processed ${processedCount}/${totalDataRows} data rows. ` +
             `Imported=${importedRef.count}, Ignored=${ignored}`,
@@ -658,8 +608,7 @@ async function main() {
         if (logId) {
           try {
             await updateLog(logId, {
-              // Include in-memory rows so progress updates don't force tiny writes.
-              [LOG_FIELDS.IMPORTED]: importedRef.count + pendingRecords.length,
+              [LOG_FIELDS.IMPORTED]: importedRef.count,
               [LOG_FIELDS.IGNORED]: ignored,
             });
           } catch (e) {
