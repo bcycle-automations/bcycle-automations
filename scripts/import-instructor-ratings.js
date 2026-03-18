@@ -33,7 +33,7 @@ requireEnv("FORM_RECORD_ID");
 ============================================================ */
 
 const AIRTABLE_API = "https://api.airtable.com/v0";
-const AIRTABLE_CREATE_BATCH_SIZE = 10; // Airtable create endpoint max records/request
+const AIRTABLE_MIN_INTERVAL_MS = 225; // keep under Airtable's 5 req/sec/base cap
 const AIRTABLE_MAX_RETRIES = 6;
 const AIRTABLE_BASE_BACKOFF_MS = 500;
 
@@ -90,6 +90,15 @@ const LOG_TYPE_VALUE = "Instructor Ratings Import";
    GENERAL HELPERS
 ============================================================ */
 
+let lastAirtableRequestAt = 0;
+
+async function waitForAirtableRateLimit() {
+  const elapsed = Date.now() - lastAirtableRequestAt;
+  if (elapsed < AIRTABLE_MIN_INTERVAL_MS) {
+    await sleep(AIRTABLE_MIN_INTERVAL_MS - elapsed);
+  }
+}
+
 function parseRetryAfterMs(retryAfterHeader) {
   if (!retryAfterHeader) return null;
   const numeric = Number(retryAfterHeader);
@@ -104,6 +113,9 @@ async function fetchJson(url, options = {}) {
   let attempt = 0;
 
   while (attempt <= AIRTABLE_MAX_RETRIES) {
+    await waitForAirtableRateLimit();
+    lastAirtableRequestAt = Date.now();
+
     const res = await fetch(url, {
       ...options,
       headers: {
