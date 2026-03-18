@@ -33,6 +33,9 @@ requireEnv("FORM_RECORD_ID");
 ============================================================ */
 
 const AIRTABLE_API = "https://api.airtable.com/v0";
+const AIRTABLE_MIN_INTERVAL_MS = 225; // keep under Airtable's 5 req/sec/base cap
+const AIRTABLE_MAX_RETRIES = 6;
+const AIRTABLE_BASE_BACKOFF_MS = 500;
 
 /**
  * FORM TABLE FIELD IDS (by field ID, stable)
@@ -87,21 +90,64 @@ const LOG_TYPE_VALUE = "Instructor Ratings Import";
    GENERAL HELPERS
 ============================================================ */
 
-async function fetchJson(url, options = {}) {
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+let lastAirtableRequestAt = 0;
 
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${t}`);
+async function waitForAirtableRateLimit() {
+  const elapsed = Date.now() - lastAirtableRequestAt;
+  if (elapsed < AIRTABLE_MIN_INTERVAL_MS) {
+    await sleep(AIRTABLE_MIN_INTERVAL_MS - elapsed);
   }
-  return res.json();
+}
+
+function parseRetryAfterMs(retryAfterHeader) {
+  if (!retryAfterHeader) return null;
+  const numeric = Number(retryAfterHeader);
+  if (!Number.isNaN(numeric)) return Math.max(0, numeric * 1000);
+
+  const parsedDate = Date.parse(retryAfterHeader);
+  if (!Number.isNaN(parsedDate)) return Math.max(0, parsedDate - Date.now());
+  return null;
+}
+
+async function fetchJson(url, options = {}) {
+  let attempt = 0;
+
+  while (attempt <= AIRTABLE_MAX_RETRIES) {
+    await waitForAirtableRateLimit();
+    lastAirtableRequestAt = Date.now();
+
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${AIRTABLE_TOKEN}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+
+    if (res.ok) return res.json();
+
+    const status = res.status;
+    const body = await res.text().catch(() => "");
+    const shouldRetry = status === 429 || (status >= 500 && status < 600);
+
+    if (!shouldRetry || attempt === AIRTABLE_MAX_RETRIES) {
+      throw new Error(`${status} ${res.statusText}: ${body}`);
+    }
+
+    const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
+    const expBackoffMs = AIRTABLE_BASE_BACKOFF_MS * 2 ** attempt;
+    const jitterMs = Math.floor(Math.random() * 250);
+    const sleepMs = Math.max(retryAfterMs || 0, expBackoffMs + jitterMs);
+
+    console.warn(
+      `Airtable ${status} received. Retrying request in ${sleepMs}ms (attempt ${attempt + 1}/${AIRTABLE_MAX_RETRIES})`,
+    );
+    await sleep(sleepMs);
+    attempt++;
+  }
+
+  throw new Error("Unreachable retry state in fetchJson");
 }
 
 function escapeFormula(v) {
