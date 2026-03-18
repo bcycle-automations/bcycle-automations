@@ -36,8 +36,8 @@ jobs:
         env:
           MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
-          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-          AIRTABLE_STUDIOS_TABLE: ${{ secrets.AIRTABLE_STUDIOS_TABLE }}
+          AIRTABLE_BASE_ID: ${{ secrets.SYNC_MTEK_EMAILS_AIRTABLE_BASE_ID }}
+          AIRTABLE_STUDIOS_TABLE: "Studios"
           TIMEZONE: "America/Toronto"
 
           # Microsoft Graph (send email)

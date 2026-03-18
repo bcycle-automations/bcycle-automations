@@ -36,7 +36,8 @@ if (!MTEK_API_TOKEN) throw new Error("Missing env: MTEK_API_TOKEN");
 
 if (!AIRTABLE_TOKEN) throw new Error("Missing env: AIRTABLE_TOKEN");
 if (!AIRTABLE_BASE_ID) throw new Error("Missing env: AIRTABLE_BASE_ID");
-if (!AIRTABLE_STUDIOS_TABLE) throw new Error("Missing env: AIRTABLE_STUDIOS_TABLE");
+const STUDIO_TABLE_NAME = (AIRTABLE_STUDIOS_TABLE || "Studios").trim();
+if (!STUDIO_TABLE_NAME) throw new Error("Missing env: AIRTABLE_STUDIOS_TABLE (or default table name)");
 
 if (!M365_TENANT_ID) throw new Error("Missing env: M365_TENANT_ID");
 if (!M365_CLIENT_ID) throw new Error("Missing env: M365_CLIENT_ID");
@@ -107,7 +108,12 @@ async function fetchJsonSimple(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Request failed ${res.status} ${res.statusText} for ${url}: ${text}`);
+    const err = new Error(`Request failed ${res.status} ${res.statusText} for ${url}: ${text}`);
+    err.status = res.status;
+    err.statusText = res.statusText;
+    err.responseBody = text;
+    err.requestId = res.headers.get("x-airtable-request-id") || res.headers.get("airtable-request-id") || "";
+    throw err;
   }
   return res.json();
 }
@@ -235,37 +241,64 @@ async function saveState(state) {
  * Load Studios lookup from Airtable (once per run)
  **************************************************/
 async function loadStudiosMap() {
-  const table = encodeURIComponent(AIRTABLE_STUDIOS_TABLE);
-  let url =
-    `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${table}` +
-    `?fields[]=MTEK%20Location%20ID&fields[]=Studio%20name&fields[]=Studio%20email`;
+  const tableCandidates = [...new Set([STUDIO_TABLE_NAME, "Studios", "Studio"].filter(Boolean))];
+  let lastError = null;
 
-  const studiosByLocationId = new Map();
+  for (const tableName of tableCandidates) {
+    const table = encodeURIComponent(tableName);
+    let url =
+      `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${table}` +
+      `?fields[]=MTEK%20Location%20ID&fields[]=Studio%20name&fields[]=Studio%20email`;
 
-  while (url) {
-    const data = await fetchJsonSimple(url, { headers: AIRTABLE_HEADERS });
+    const studiosByLocationId = new Map();
+    let failed = false;
 
-    for (const rec of data.records || []) {
-      const fields = rec.fields || {};
-      const mtekId = fields["MTEK Location ID"];
-      if (mtekId != null && mtekId !== "") {
-        studiosByLocationId.set(String(mtekId), {
-          name: fields["Studio name"] || "",
-          email: fields["Studio email"] || "",
-        });
+    while (url) {
+      let data;
+      try {
+        data = await fetchJsonSimple(url, { headers: AIRTABLE_HEADERS });
+      } catch (err) {
+        failed = true;
+        lastError = err;
+        console.warn(
+          `Studios lookup failed for base=${AIRTABLE_BASE_ID}, table=${tableName}, ` +
+            `status=${err.status || "unknown"}, request_id=${err.requestId || "n/a"}.`
+        );
+        break;
+      }
+
+      for (const rec of data.records || []) {
+        const fields = rec.fields || {};
+        const mtekId = fields["MTEK Location ID"];
+        if (mtekId != null && mtekId !== "") {
+          studiosByLocationId.set(String(mtekId), {
+            name: fields["Studio name"] || "",
+            email: fields["Studio email"] || "",
+          });
+        }
+      }
+
+      if (data.offset) {
+        url =
+          `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${table}` +
+          `?fields[]=MTEK%20Location%20ID&fields[]=Studio%20name&fields[]=Studio%20email&offset=${data.offset}`;
+      } else {
+        url = null;
       }
     }
 
-    if (data.offset) {
-      url =
-        `${AIRTABLE_BASE_URL}/${AIRTABLE_BASE_ID}/${table}` +
-        `?fields[]=MTEK%20Location%20ID&fields[]=Studio%20name&fields[]=Studio%20email&offset=${data.offset}`;
-    } else {
-      url = null;
+    if (!failed) {
+      if (tableName !== STUDIO_TABLE_NAME) {
+        console.warn(`Studios lookup succeeded using fallback table name: ${tableName}`);
+      }
+      return studiosByLocationId;
     }
   }
 
-  return studiosByLocationId;
+  throw new Error(
+    `Failed to load studios from Airtable base=${AIRTABLE_BASE_ID}. Tried tables: ${tableCandidates.join(", ")}. ` +
+      `Last error: ${lastError?.message || "unknown"}`
+  );
 }
 
 /**************************************************
