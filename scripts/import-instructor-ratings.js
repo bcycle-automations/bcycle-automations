@@ -312,16 +312,27 @@ function makeDedupeKey({ contact, dateKey, ratingKey, instructor, classTypeKey }
 
 /**
  * Load all existing feedbacks and build a dedupe set for this Studio.
- * We fetch all records and then filter by Studio ID in JS.
+ * We fetch only this Studio's records using filterByFormula.
  */
 async function loadExistingDedupeKeysForStudio(studioId) {
   const keys = new Set();
   let offset;
+  const studioFormula = `FIND("${escapeFormula(studioId)}", ARRAYJOIN({${FEEDBACK_FIELDS.STUDIO}}))`;
 
   do {
-    const url =
-      `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}?pageSize=100` +
-      (offset ? `&offset=${offset}` : "");
+    const params = new URLSearchParams({
+      pageSize: "100",
+      filterByFormula: studioFormula,
+    });
+    params.append("fields[]", FEEDBACK_FIELDS.STUDIO);
+    params.append("fields[]", FEEDBACK_FIELDS.CONTACT);
+    params.append("fields[]", FEEDBACK_FIELDS.DATE);
+    params.append("fields[]", FEEDBACK_FIELDS.RATING);
+    params.append("fields[]", FEEDBACK_FIELDS.INSTRUCTOR_NAME);
+    params.append("fields[]", FEEDBACK_FIELDS.CLASSTYPE);
+    if (offset) params.set("offset", offset);
+
+    const url = `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}?${params.toString()}`;
 
     const out = await fetchJson(url);
     const records = out.records || [];
@@ -331,7 +342,7 @@ async function loadExistingDedupeKeysForStudio(studioId) {
       const studioField = fields[FEEDBACK_FIELDS.STUDIO];
       const recStudioId = asFirstLinkedRecordId(studioField);
 
-      if (recStudioId !== studioId) continue; // only this Studio
+      if (recStudioId !== studioId) continue;
 
       const contact = String(fields[FEEDBACK_FIELDS.CONTACT] || "").trim();
       const dateISO = fields[FEEDBACK_FIELDS.DATE];
@@ -633,7 +644,7 @@ async function main() {
 
           pendingRecords.push({ fields });
 
-          if (pendingRecords.length === 10) {
+          if (pendingRecords.length === AIRTABLE_CREATE_BATCH_SIZE) {
             await flushPendingFeedbackBatch(pendingRecords, importedRef);
           }
         }
@@ -641,11 +652,6 @@ async function main() {
 
       // Progress log + partial log record update every 50 rows (and at the very end)
       if (processedCount % 50 === 0 || processedCount === totalDataRows) {
-        // Flush any remaining records before reporting
-        if (pendingRecords.length) {
-          await flushPendingFeedbackBatch(pendingRecords, importedRef);
-        }
-
         console.log(
           `Progress: processed ${processedCount}/${totalDataRows} data rows. ` +
             `Imported=${importedRef.count}, Ignored=${ignored}`,
@@ -654,7 +660,8 @@ async function main() {
         if (logId) {
           try {
             await updateLog(logId, {
-              [LOG_FIELDS.IMPORTED]: importedRef.count,
+              // Include in-memory rows so progress updates don't force tiny writes.
+              [LOG_FIELDS.IMPORTED]: importedRef.count + pendingRecords.length,
               [LOG_FIELDS.IGNORED]: ignored,
             });
           } catch (e) {
