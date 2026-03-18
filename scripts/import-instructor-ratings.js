@@ -33,7 +33,7 @@ requireEnv("FORM_RECORD_ID");
 ============================================================ */
 
 const AIRTABLE_API = "https://api.airtable.com/v0";
-const AIRTABLE_MIN_INTERVAL_MS = 225; // keep under Airtable's 5 req/sec/base cap
+const DEFAULT_AIRTABLE_CREATE_BATCH_SIZE = 10; // Airtable create endpoint max records/request
 const AIRTABLE_MAX_RETRIES = 6;
 const AIRTABLE_BASE_BACKOFF_MS = 500;
 
@@ -90,15 +90,6 @@ const LOG_TYPE_VALUE = "Instructor Ratings Import";
    GENERAL HELPERS
 ============================================================ */
 
-let lastAirtableRequestAt = 0;
-
-async function waitForAirtableRateLimit() {
-  const elapsed = Date.now() - lastAirtableRequestAt;
-  if (elapsed < AIRTABLE_MIN_INTERVAL_MS) {
-    await sleep(AIRTABLE_MIN_INTERVAL_MS - elapsed);
-  }
-}
-
 function parseRetryAfterMs(retryAfterHeader) {
   if (!retryAfterHeader) return null;
   const numeric = Number(retryAfterHeader);
@@ -113,9 +104,6 @@ async function fetchJson(url, options = {}) {
   let attempt = 0;
 
   while (attempt <= AIRTABLE_MAX_RETRIES) {
-    await waitForAirtableRateLimit();
-    lastAirtableRequestAt = Date.now();
-
     const res = await fetch(url, {
       ...options,
       headers: {
@@ -156,6 +144,15 @@ function escapeFormula(v) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getCreateBatchSize() {
+  const raw = process.env.AIRTABLE_CREATE_BATCH_SIZE;
+  if (!raw) return DEFAULT_AIRTABLE_CREATE_BATCH_SIZE;
+
+  const parsed = Number(raw);
+  if (Number.isNaN(parsed) || parsed < 1) return DEFAULT_AIRTABLE_CREATE_BATCH_SIZE;
+  return Math.min(10, Math.floor(parsed));
 }
 
 /**
@@ -505,6 +502,7 @@ function validateMappedHeaders(headerIndex, mapping) {
 ============================================================ */
 
 async function main() {
+  const createBatchSize = getCreateBatchSize();
   let logId = null;
   const importedRef = { count: 0 }; // mutated by batch helper
   let ignored = 0;
@@ -644,7 +642,7 @@ async function main() {
 
           pendingRecords.push({ fields });
 
-          if (pendingRecords.length === AIRTABLE_CREATE_BATCH_SIZE) {
+          if (pendingRecords.length === createBatchSize) {
             await flushPendingFeedbackBatch(pendingRecords, importedRef);
           }
         }
