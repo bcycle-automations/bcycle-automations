@@ -87,6 +87,7 @@ const LOG_TYPE_VALUE = "Instructor Ratings Import";
 /* ---- Dedupe / batching ---- */
 const ANON_CONTACT = "anonymous user";
 const LOOKUP_CHUNK_SIZE = 25; // keep filterByFormula reasonably sized
+const EARLY_STOP_DUPLICATE_THRESHOLD = 50;
 
 /* ============================================================
    GENERAL HELPERS
@@ -347,15 +348,6 @@ async function updateLog(logId, fields) {
 
 /* ============================================================
    FORM LOAD + CSV DOWNLOAD
-
-   HOW WE GET STUDIO ID:
-   - Table:  FORM_TABLE_ID  (env) — the "form" table in your base
-   - Record: FORM_RECORD_ID (env) — one specific row (the form submission/config row)
-   - We GET that single record with ?returnFieldsByFieldId=true so fields come back by field ID.
-   - Field:  FORM_FIELD_IDS.STUDIO ("fld37o0IErMH4Qz1z") — the "Studio" linked-record field on that row
-   - Value: Airtable returns the link as an array of record IDs, e.g. ["rec7AQvxpcu0h41Wy"]
-   - We pass that raw value to asFirstLinkedRecordId() to get the first ID string → studioId
-   - So: studioId is the Airtable record ID of the linked Studio row chosen on that form record.
 ============================================================ */
 
 async function loadFormRecord() {
@@ -449,10 +441,9 @@ function validateMappedHeaders(headerIndex, mapping) {
 
 async function main() {
   let logId = null;
-  const importedRef = { count: 0 }; // mutated by batch helper
+  const importedRef = { count: 0 };
   let ignored = 0;
   const issues = [];
-  /** @type {string[]} - Ignored rows with reasons, for GitHub Actions run log */
   const ignoredReasons = [];
 
   try {
@@ -599,11 +590,17 @@ async function main() {
         instructor,
         ratingKey,
         classType,
+        dateISO,
         dateKey,
         dedupeKey,
         fields,
       });
     }
+
+    // STEP 1B: Sort newest -> oldest
+    candidateRows.sort((a, b) => {
+      return new Date(b.dateISO).getTime() - new Date(a.dateISO).getTime();
+    });
 
     console.log(
       `Prepared ${candidateRows.length} candidate rows after validation/in-file dedupe.`,
@@ -617,13 +614,17 @@ async function main() {
     const existingKeys = await loadExistingDedupeKeysByLookup(candidateKeys);
     console.log(`Found ${existingKeys.size} existing dedupe keys already in Airtable.`);
 
-    // STEP 3: Create only missing rows
+    // STEP 3: Create only missing rows, with early stop after 50 consecutive duplicates
+    let consecutiveDuplicates = 0;
+
     for (let i = 0; i < candidateRows.length; i++) {
       const candidate = candidateRows[i];
       const processedCount = i + 1;
 
       if (existingKeys.has(candidate.dedupeKey)) {
         ignored++;
+        consecutiveDuplicates++;
+
         if (isAnonymousContact(candidate.contact)) {
           ignoredReasons.push(
             `Line ${candidate.line}: Duplicate Anonymous User (studio=${studioId}, date=${candidate.dateKey}, instructor="${candidate.instructor}", rating=${
@@ -635,8 +636,23 @@ async function main() {
             `Line ${candidate.line}: Duplicate (contact="${candidate.contact}", date=${candidate.dateKey}, classType="${candidate.classType || ""}")`,
           );
         }
+
+        if (consecutiveDuplicates >= EARLY_STOP_DUPLICATE_THRESHOLD) {
+          console.log(
+            `🛑 Early stop triggered after ${consecutiveDuplicates} consecutive duplicates.`,
+          );
+          console.log(
+            `Stopped after processing ${processedCount}/${candidateRows.length} candidate rows ` +
+              `(from ${totalDataRows} CSV rows). Imported=${importedRef.count}, Ignored=${ignored}`,
+          );
+          break;
+        }
+
         continue;
       }
+
+      // Reset streak when we find a new record
+      consecutiveDuplicates = 0;
 
       // Protect against repeated duplicates within this run
       existingKeys.add(candidate.dedupeKey);
