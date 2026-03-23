@@ -54,14 +54,15 @@ const FORM_FIELD_IDS = {
  * FEEDBACKS TABLE FIELD NAMES (destination)
  */
 const FEEDBACK_FIELDS = {
-  CONTACT: "Contact",                 // TEXT
-  STUDIO: "Studio",                   // LINKED RECORD
-  DATE: "DATE OF RATING",             // DATE
-  RATING: "Rating",                  // NUMBER
-  COMMENT: "COMMENT",                 // TEXT / LONG TEXT
-  CLASSTYPE: "CLASSTYPE",             // TEXT / SINGLE SELECT
-  INSTRUCTOR_NAME: "Instructor Name", // TEXT
-  TYPE: "Type",                       // SINGLE SELECT
+  CONTACT: "Contact",                    // TEXT
+  STUDIO: "Studio",                      // LINKED RECORD
+  DATE: "DATE OF RATING",                // DATE
+  RATING: "Rating",                      // NUMBER
+  COMMENT: "COMMENT",                    // TEXT / LONG TEXT
+  CLASSTYPE: "CLASSTYPE",                // TEXT / SINGLE SELECT
+  INSTRUCTOR_NAME: "Instructor Name",    // TEXT
+  TYPE: "Type",                          // SINGLE SELECT
+  IMPORT_DEDUPE_KEY: "Import Dedupe Key" // FORMULA FIELD IN AIRTABLE
 };
 
 const TYPE_VALUE = "Instructor Feedback";
@@ -82,6 +83,10 @@ const LOG_STATUS = {
 };
 
 const LOG_TYPE_VALUE = "Instructor Ratings Import";
+
+/* ---- Dedupe / batching ---- */
+const ANON_CONTACT = "anonymous user";
+const LOOKUP_CHUNK_SIZE = 25; // keep filterByFormula reasonably sized
 
 /* ============================================================
    GENERAL HELPERS
@@ -105,11 +110,19 @@ async function fetchJson(url, options = {}) {
 }
 
 function escapeFormula(v) {
-  return String(v ?? "").replace(/"/g, '\\"');
+  return String(v ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function chunk(array, size) {
+  const out = [];
+  for (let i = 0; i < array.length; i += size) {
+    out.push(array.slice(i, i + size));
+  }
+  return out;
 }
 
 /**
@@ -237,13 +250,8 @@ function dateKeyFromISO(iso) {
 }
 
 /* ============================================================
-   DEDUPE: STUDIO-AWARE WITH ANON SPECIAL CASE
-   - We only dedupe against feedbacks for the same Studio.
-   - Named contact: Contact + date (day-only) + class type
-   - Anonymous User: date + instructor + rating + class type
+   DEDUPE: MATCHES AIRTABLE IMPORT DEDUPE KEY FORMULA
 ============================================================ */
-
-const ANON_CONTACT = "anonymous user";
 
 function isAnonymousContact(contact) {
   return String(contact || "").trim().toLowerCase() === ANON_CONTACT;
@@ -265,53 +273,45 @@ function makeDedupeKey({ contact, dateKey, ratingKey, instructor, classTypeKey }
 }
 
 /**
- * Load all existing feedbacks and build a dedupe set for this Studio.
- * We fetch all records and then filter by Studio ID in JS.
+ * Load only the dedupe keys we care about from Airtable.
+ * No full-table scan.
  */
-async function loadExistingDedupeKeysForStudio(studioId) {
-  const keys = new Set();
-  let offset;
+async function loadExistingDedupeKeysByLookup(candidateKeys) {
+  const existing = new Set();
+  if (!candidateKeys.length) return existing;
 
-  do {
-    const url =
-      `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}?pageSize=100` +
-      (offset ? `&offset=${offset}` : "");
+  const keyChunks = chunk(candidateKeys, LOOKUP_CHUNK_SIZE);
 
-    const out = await fetchJson(url);
-    const records = out.records || [];
+  for (const keyChunk of keyChunks) {
+    const formula =
+      `OR(${keyChunk
+        .map((k) => `{${FEEDBACK_FIELDS.IMPORT_DEDUPE_KEY}}="${escapeFormula(k)}"`)
+        .join(",")})`;
 
-    for (const rec of records) {
-      const fields = rec.fields || {};
-      const studioField = fields[FEEDBACK_FIELDS.STUDIO];
-      const recStudioId = asFirstLinkedRecordId(studioField);
+    let offset;
 
-      if (recStudioId !== studioId) continue; // only this Studio
+    do {
+      const url =
+        `${AIRTABLE_API}/${AIRTABLE_BASE_ID}/${FEEDBACKS_TABLE_ID}` +
+        `?pageSize=100` +
+        `&filterByFormula=${encodeURIComponent(formula)}` +
+        `&fields[]=${encodeURIComponent(FEEDBACK_FIELDS.IMPORT_DEDUPE_KEY)}` +
+        (offset ? `&offset=${encodeURIComponent(offset)}` : "");
 
-      const contact = String(fields[FEEDBACK_FIELDS.CONTACT] || "").trim();
-      const dateISO = fields[FEEDBACK_FIELDS.DATE];
-      if (!contact || !dateISO) continue;
+      const out = await fetchJson(url);
+      const records = out.records || [];
 
-      const dateKey = dateKeyFromISO(dateISO);
-      if (!dateKey) continue;
+      for (const rec of records) {
+        const fields = rec.fields || {};
+        const key = fields[FEEDBACK_FIELDS.IMPORT_DEDUPE_KEY];
+        if (key) existing.add(String(key));
+      }
 
-      const ratingVal = fields[FEEDBACK_FIELDS.RATING];
-      const ratingKey =
-        ratingVal === undefined || ratingVal === null || ratingVal === ""
-          ? ""
-          : String(ratingVal).trim();
+      offset = out.offset;
+    } while (offset);
+  }
 
-      const instructor = fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] || "";
-      const classTypeVal = fields[FEEDBACK_FIELDS.CLASSTYPE] || "";
-      const classTypeKey = String(classTypeVal || "").trim().toLowerCase();
-
-      const key = makeDedupeKey({ contact, dateKey, ratingKey, instructor, classTypeKey });
-      if (key) keys.add(key);
-    }
-
-    offset = out.offset;
-  } while (offset);
-
-  return keys;
+  return existing;
 }
 
 /* ============================================================
@@ -490,11 +490,6 @@ async function main() {
       throw new Error(msg);
     }
 
-    // Preload existing feedback dedupe keys for THIS studio
-    console.log("Loading existing feedbacks for dedupe...");
-    const existingKeys = await loadExistingDedupeKeysForStudio(studioId);
-    console.log(`Loaded ${existingKeys.size} existing dedupe keys for this studio.`);
-
     const CSV_HEADERS = {
       CONTACT: getFormTextField(form, FORM_FIELD_IDS.CONTACT_HEADER, "Contact"),
       DATE: getFormTextField(form, FORM_FIELD_IDS.DATE_HEADER, "Response Date"),
@@ -529,10 +524,13 @@ async function main() {
     const totalDataRows = rows.length - 1;
     const pendingRecords = [];
 
+    // STEP 1: Build candidate rows and dedupe keys from the CSV itself first
+    const candidateRows = [];
+    const inFileKeys = new Set();
+
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const line = i + 1; // CSV line number (1-based)
-      const processedCount = i; // number of data rows processed so far
 
       const contact = String(getCell(row, headerIndex, CSV_HEADERS.CONTACT)).trim();
       const dateRaw = getCell(row, headerIndex, CSV_HEADERS.DATE);
@@ -551,58 +549,113 @@ async function main() {
         const reason = `Line ${line}: Missing contact or date (contact="${contact}", date="${dateRaw}")`;
         issues.push(reason);
         ignoredReasons.push(reason);
-      } else {
-        const dateKey = dateKeyFromISO(dateISO);
-        const key = makeDedupeKey({ contact, dateKey, ratingKey, instructor, classTypeKey });
+        continue;
+      }
 
-        if (key && existingKeys.has(key)) {
-          ignored++;
-          if (isAnonymousContact(contact)) {
-            ignoredReasons.push(
-              `Line ${line}: Duplicate Anonymous User (studio=${studioId}, date=${dateKey}, instructor="${instructor}", rating=${
-                ratingKey || "N/A"
-              }, classType="${classType || ""}")`,
-            );
-          } else {
-            ignoredReasons.push(
-              `Line ${line}: Duplicate (studio=${studioId}, contact="${contact}", date=${dateKey}, classType="${classType || ""}")`,
-            );
-          }
+      const dateKey = dateKeyFromISO(dateISO);
+      const dedupeKey = makeDedupeKey({
+        contact,
+        dateKey,
+        ratingKey,
+        instructor,
+        classTypeKey,
+      });
+
+      if (!dedupeKey) {
+        ignored++;
+        const reason = `Line ${line}: Could not compute dedupe key`;
+        issues.push(reason);
+        ignoredReasons.push(reason);
+        continue;
+      }
+
+      // Ignore duplicate rows inside the CSV itself
+      if (inFileKeys.has(dedupeKey)) {
+        ignored++;
+        const reason = `Line ${line}: Duplicate inside CSV (key="${dedupeKey}")`;
+        ignoredReasons.push(reason);
+        continue;
+      }
+
+      inFileKeys.add(dedupeKey);
+
+      const fields = {
+        [FEEDBACK_FIELDS.CONTACT]: contact,
+        [FEEDBACK_FIELDS.STUDIO]: [studioId],
+        [FEEDBACK_FIELDS.DATE]: dateISO,
+        [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
+      };
+
+      if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
+      if (ratingKey) {
+        fields[FEEDBACK_FIELDS.RATING] = Number(ratingKey);
+      }
+      if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
+      if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
+
+      candidateRows.push({
+        line,
+        contact,
+        instructor,
+        ratingKey,
+        classType,
+        dateKey,
+        dedupeKey,
+        fields,
+      });
+    }
+
+    console.log(
+      `Prepared ${candidateRows.length} candidate rows after validation/in-file dedupe.`,
+    );
+
+    // STEP 2: Lookup only these dedupe keys in Airtable (no full-table scan)
+    const candidateKeys = candidateRows.map((r) => r.dedupeKey);
+    console.log(
+      `Looking up ${candidateKeys.length} candidate dedupe keys via "${FEEDBACK_FIELDS.IMPORT_DEDUPE_KEY}"...`,
+    );
+    const existingKeys = await loadExistingDedupeKeysByLookup(candidateKeys);
+    console.log(`Found ${existingKeys.size} existing dedupe keys already in Airtable.`);
+
+    // STEP 3: Create only missing rows
+    for (let i = 0; i < candidateRows.length; i++) {
+      const candidate = candidateRows[i];
+      const processedCount = i + 1;
+
+      if (existingKeys.has(candidate.dedupeKey)) {
+        ignored++;
+        if (isAnonymousContact(candidate.contact)) {
+          ignoredReasons.push(
+            `Line ${candidate.line}: Duplicate Anonymous User (studio=${studioId}, date=${candidate.dateKey}, instructor="${candidate.instructor}", rating=${
+              candidate.ratingKey || "N/A"
+            }, classType="${candidate.classType || ""}")`,
+          );
         } else {
-          if (key) existingKeys.add(key);
-
-          const fields = {
-            [FEEDBACK_FIELDS.CONTACT]: contact,
-            [FEEDBACK_FIELDS.STUDIO]: [studioId],
-            [FEEDBACK_FIELDS.DATE]: dateISO,
-            [FEEDBACK_FIELDS.TYPE]: TYPE_VALUE,
-          };
-
-          if (instructor) fields[FEEDBACK_FIELDS.INSTRUCTOR_NAME] = instructor;
-          if (ratingKey) {
-            fields[FEEDBACK_FIELDS.RATING] = Number(ratingKey);
-          }
-          if (comment) fields[FEEDBACK_FIELDS.COMMENT] = comment;
-          if (classType) fields[FEEDBACK_FIELDS.CLASSTYPE] = classType;
-
-          pendingRecords.push({ fields });
-
-          if (pendingRecords.length === 10) {
-            await flushPendingFeedbackBatch(pendingRecords, importedRef);
-          }
+          ignoredReasons.push(
+            `Line ${candidate.line}: Duplicate (contact="${candidate.contact}", date=${candidate.dateKey}, classType="${candidate.classType || ""}")`,
+          );
         }
+        continue;
+      }
+
+      // Protect against repeated duplicates within this run
+      existingKeys.add(candidate.dedupeKey);
+      pendingRecords.push({ fields: candidate.fields });
+
+      if (pendingRecords.length === 10) {
+        await flushPendingFeedbackBatch(pendingRecords, importedRef);
       }
 
       // Progress log + partial log record update every 50 rows (and at the very end)
-      if (processedCount % 50 === 0 || processedCount === totalDataRows) {
+      if (processedCount % 50 === 0 || processedCount === candidateRows.length) {
         // Flush any remaining records before reporting
         if (pendingRecords.length) {
           await flushPendingFeedbackBatch(pendingRecords, importedRef);
         }
 
         console.log(
-          `Progress: processed ${processedCount}/${totalDataRows} data rows. ` +
-            `Imported=${importedRef.count}, Ignored=${ignored}`,
+          `Progress: processed ${processedCount}/${candidateRows.length} candidate rows ` +
+            `(from ${totalDataRows} CSV rows). Imported=${importedRef.count}, Ignored=${ignored}`,
         );
 
         if (logId) {
