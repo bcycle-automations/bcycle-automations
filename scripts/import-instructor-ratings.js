@@ -638,15 +638,20 @@ async function main() {
         }
 
         if (consecutiveDuplicates >= EARLY_STOP_DUPLICATE_THRESHOLD) {
-          console.log(
-            `🛑 Early stop triggered after ${consecutiveDuplicates} consecutive duplicates.`,
-          );
-          console.log(
-            `Stopped after processing ${processedCount}/${candidateRows.length} candidate rows ` +
-              `(from ${totalDataRows} CSV rows). Imported=${importedRef.count}, Ignored=${ignored}`,
-          );
-          break;
-        }
+  const remaining = candidateRows.length - processedCount;
+
+  ignored += remaining;
+
+  console.log(`🛑 Early stop triggered after ${consecutiveDuplicates} consecutive duplicates.`);
+  console.log(`📉 Skipping remaining ${remaining} rows (assumed duplicates)`);
+
+  console.log(
+    `Stopped after processing ${processedCount}/${candidateRows.length} candidate rows ` +
+    `(from ${totalDataRows} CSV rows). Imported=${importedRef.count}, Ignored=${ignored}`,
+  );
+
+  break;
+}
 
         continue;
       }
