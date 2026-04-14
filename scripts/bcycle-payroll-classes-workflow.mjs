@@ -146,7 +146,7 @@ async function mtekRequestUrl(url) {
   const response = await fetch(url, {
     headers: {
       Authorization: `Bearer ${CONFIG.mtek.token}`,
-      Accept: 'application/json',
+      Accept: 'application/vnd.api+json',
     },
   });
 
