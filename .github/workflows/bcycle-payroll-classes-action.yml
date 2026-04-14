@@ -37,7 +37,7 @@ jobs:
       - name: Validate no merge conflict markers
         shell: bash
         run: |
-          if rg -n "^(<<<<<<<|=======|>>>>>>>)" scripts/bcycle-payroll-classes-workflow.mjs .github/workflows/bcycle-payroll-classes-action.yml README.md; then
+          if grep -En "^(<<<<<<<|=======|>>>>>>>)" scripts/bcycle-payroll-classes-workflow.mjs .github/workflows/bcycle-payroll-classes-action.yml README.md; then
             echo "Merge conflict markers found. Resolve conflicts and commit clean files before running this workflow." >&2
             exit 1
           fi
