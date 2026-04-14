@@ -55,6 +55,4 @@ jobs:
           AIRTABLE_CLASS_TYPES_TABLE_ID: tbliopHKhCtHLwGOf
           MTEK_BASE_URL: https://bcycle.marianatek.com
           MTEK_CLASSES_PATH: /api/class_sessions
-          MTEK_RESERVATIONS_PATH: /api/reservations
-          MTEK_CLASS_TYPES_PATH_TEMPLATE: /api/class_types/{id}
         run: node scripts/bcycle-payroll-classes-workflow.mjs

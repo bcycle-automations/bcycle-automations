@@ -19,8 +19,6 @@ const CONFIG = {
     // per request: MarianaTek base is bcycle
     baseUrl: process.env.MTEK_BASE_URL || 'https://bcycle.marianatek.com',
     classesPath: process.env.MTEK_CLASSES_PATH || '/api/class_sessions',
-    reservationsPath: process.env.MTEK_RESERVATIONS_PATH || '/api/reservations',
-    classTypesPathTemplate: process.env.MTEK_CLASS_TYPES_PATH_TEMPLATE || '/api/class_types/{id}',
     token: process.env.MTEK_API_TOKEN,
   },
   recordId: process.env.AIRTABLE_RECORD_ID,
@@ -189,20 +187,22 @@ async function mtekRequestPath(path, params = {}) {
 
 async function fetchPaginatedMtek(path, params = {}) {
   const allResults = [];
-  let nextUrl = new URL(path, CONFIG.mtek.baseUrl);
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') {
-      nextUrl.searchParams.set(key, String(value));
-    }
-  });
+  let currentPage = 1;
+  let totalPages = 1;
 
-  while (nextUrl) {
-    const page = await mtekRequestUrl(nextUrl.toString());
+  while (currentPage <= totalPages) {
+    const page = await mtekRequestPath(path, {
+      ...params,
+      page: currentPage,
+      page_size: 100,
+    });
+
     const pageResults = Array.isArray(page?.data) ? page.data : [];
     allResults.push(...pageResults);
 
-    const next = page?.links?.next;
-    nextUrl = next ? new URL(next, CONFIG.mtek.baseUrl) : null;
+    const parsedPages = Number(page?.meta?.pagination?.pages);
+    totalPages = Number.isFinite(parsedPages) && parsedPages > 0 ? parsedPages : currentPage;
+    currentPage += 1;
   }
 
   return allResults;
@@ -212,35 +212,26 @@ function getField(record, fieldName) {
   return record?.fields?.[fieldName];
 }
 
-function firstInstructorName(session) {
-  if (!Array.isArray(session?.instructors) || session.instructors.length === 0) {
-    return '';
-  }
-
-  return session.instructors[0]?.name || '';
+function sessionAttributes(session) {
+  return session?.attributes || {};
 }
 
-function templatePath(pathTemplate, replacements = {}) {
-  return Object.entries(replacements).reduce(
-    (acc, [key, value]) => acc.replaceAll(`{${key}}`, encodeURIComponent(String(value))),
-    pathTemplate,
-  );
+function instructorNameFromSession(session) {
+  const names = sessionAttributes(session).instructor_names;
+  if (Array.isArray(names)) {
+    if (names.length === 0) return '';
+    return names[0] || names.join(', ');
+  }
+
+  return typeof names === 'string' ? names : '';
 }
 
-async function resolveClassTypeName(session) {
-  const inlineName = session?.class_type?.name;
-  if (inlineName) {
-    return inlineName;
+function locationIdFromSession(session) {
+  const location = sessionAttributes(session).location;
+  if (location && typeof location === 'object') {
+    return location.id ?? null;
   }
-
-  const classTypeId = session?.class_type?.id;
-  if (!classTypeId) {
-    return '';
-  }
-
-  const classTypePath = templatePath(CONFIG.mtek.classTypesPathTemplate, { id: classTypeId });
-  const classTypeResponse = await mtekRequestPath(classTypePath);
-  return classTypeResponse?.name || '';
+  return location ?? null;
 }
 
 async function run() {
@@ -266,14 +257,15 @@ async function run() {
 
     const classRecordsToCreate = [];
     for (const session of sessions) {
-      const classTypeName = await resolveClassTypeName(session);
+      const attributes = sessionAttributes(session);
 
       classRecordsToCreate.push({
-        'MTEK Instructor': firstInstructorName(session),
-        'MTEK Class Type': classTypeName,
-        'Class Date': localDateTimeString(session?.start_datetime, 'America/Toronto'),
-        'Location ID': session?.location?.id ?? null,
+        'MTEK Instructor': instructorNameFromSession(session),
+        'MTEK Class Type': attributes.class_type_display || '',
+        'Class Date': localDateTimeString(attributes.start_datetime, 'America/Toronto'),
+        'Location ID': locationIdFromSession(session),
         'MTEK ID': session?.id ?? null,
+        'Attendance Count (Checked in)': Number(attributes.checked_in_user_count || 0),
         'Payroll Class log': [CONFIG.recordId],
       });
     }
@@ -308,24 +300,6 @@ async function run() {
     await updateRunRecord({ 'Instructors Status': 'COMPLETE - Instructors Assigned' });
 
     await updateRunRecord({ 'Attendance Status': 'Started' });
-    for (const classRecord of createdClassRecords) {
-      const classId = getField(classRecord, 'MTEK ID');
-      if (!classId) {
-        await patchClassRecord(classRecord.id, { 'Attendance Count (Checked in)': 0 });
-        continue;
-      }
-
-      const reservations = await fetchPaginatedMtek(CONFIG.mtek.reservationsPath, {
-        class_session: classId,
-      });
-
-      const checkedInCount = reservations.filter((reservation) => reservation?.status === 'check in').length;
-
-      await patchClassRecord(classRecord.id, {
-        'Attendance Count (Checked in)': checkedInCount,
-      });
-    }
-
     await updateRunRecord({ 'Attendance Status': 'COMPLETE - Attendance found' });
 
     await updateRunRecord({ 'Studio Status': 'Started' });
