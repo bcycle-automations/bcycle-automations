@@ -35,6 +35,14 @@ function requireConfig() {
   if (missing.length) {
     throw new Error(`Missing required environment variable(s): ${missing.join(', ')}`);
   }
+<<<<<<< codex/add-github-action-for-airtable-automation-rx6ake
+
+  const tokenPreview = `${CONFIG.mtek.token.slice(0, 4)}...${CONFIG.mtek.token.slice(-4)}`;
+  console.log(
+    `[MTEK] Token loaded from MTEK_API_TOKEN env var (length=${CONFIG.mtek.token.length}, preview=${tokenPreview})`,
+  );
+=======
+>>>>>>> main
 }
 
 function airtableUrl(tableId, recordId = '', query = '') {
@@ -143,6 +151,34 @@ function localDateTimeString(input, timeZone) {
 }
 
 async function mtekRequestUrl(url) {
+<<<<<<< codex/add-github-action-for-airtable-automation-rx6ake
+  const headers = {
+    Authorization: `Bearer ${CONFIG.mtek.token}`,
+    Accept: 'application/vnd.api+json',
+  };
+
+  console.log(`[MTEK] Request URL: ${url}`);
+  console.log(
+    `[MTEK] Request Authorization header: Bearer <token length=${CONFIG.mtek.token.length}>`,
+  );
+  const response = await fetch(url, { headers });
+  const rawBody = await response.text();
+
+  console.log(`[MTEK] Response status: ${response.status}`);
+  console.log(`[MTEK] Raw response body: ${rawBody}`);
+
+  if (!response.ok) {
+    throw new Error(`MTEK request failed (${response.status}) ${url}: ${rawBody}`);
+  }
+
+  try {
+    return rawBody ? JSON.parse(rawBody) : {};
+  } catch (error) {
+    throw new Error(
+      `MTEK response was not valid JSON (${url}): ${error instanceof Error ? error.message : String(error)} | raw=${rawBody}`,
+    );
+  }
+=======
   const response = await fetch(url, {
     headers: {
       Authorization: `Bearer ${CONFIG.mtek.token}`,
@@ -156,6 +192,7 @@ async function mtekRequestUrl(url) {
   }
 
   return response.json();
+>>>>>>> main
 }
 
 async function mtekRequestPath(path, params = {}) {
