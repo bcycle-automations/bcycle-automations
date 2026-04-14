@@ -16,6 +16,7 @@ const CONFIG = {
     token: process.env.AIRTABLE_TOKEN,
   },
   mtek: {
+    // per request: MarianaTek base is bcycle
     baseUrl: process.env.MTEK_BASE_URL || 'https://bcycle.marianatek.com',
     classesPath: process.env.MTEK_CLASSES_PATH || '/api/class_sessions',
     reservationsPath: process.env.MTEK_RESERVATIONS_PATH || '/api/reservations',
@@ -34,11 +35,6 @@ function requireConfig() {
   if (missing.length) {
     throw new Error(`Missing required environment variable(s): ${missing.join(', ')}`);
   }
-
-  const tokenPreview = `${CONFIG.mtek.token.slice(0, 4)}...${CONFIG.mtek.token.slice(-4)}`;
-  console.log(
-    `[MTEK] Token loaded from MTEK_API_TOKEN env var (length=${CONFIG.mtek.token.length}, preview=${tokenPreview})`,
-  );
 }
 
 function airtableUrl(tableId, recordId = '', query = '') {
@@ -147,32 +143,19 @@ function localDateTimeString(input, timeZone) {
 }
 
 async function mtekRequestUrl(url) {
-  const headers = {
-    Authorization: `Bearer ${CONFIG.mtek.token}`,
-    Accept: 'application/vnd.api+json',
-  };
-
-  console.log(`[MTEK] Request URL: ${url}`);
-  console.log(
-    `[MTEK] Request Authorization header: Bearer <token length=${CONFIG.mtek.token.length}>`,
-  );
-  const response = await fetch(url, { headers });
-  const rawBody = await response.text();
-
-  console.log(`[MTEK] Response status: ${response.status}`);
-  console.log(`[MTEK] Raw response body: ${rawBody}`);
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${CONFIG.mtek.token}`,
+      Accept: 'application/json',
+    },
+  });
 
   if (!response.ok) {
-    throw new Error(`MTEK request failed (${response.status}) ${url}: ${rawBody}`);
+    const text = await response.text();
+    throw new Error(`MTEK request failed (${response.status}) ${url}: ${text}`);
   }
 
-  try {
-    return rawBody ? JSON.parse(rawBody) : {};
-  } catch (error) {
-    throw new Error(
-      `MTEK response was not valid JSON (${url}): ${error instanceof Error ? error.message : String(error)} | raw=${rawBody}`,
-    );
-  }
+  return response.json();
 }
 
 async function mtekRequestPath(path, params = {}) {
@@ -215,6 +198,7 @@ function firstInstructorName(session) {
   if (!Array.isArray(session?.instructors) || session.instructors.length === 0) {
     return '';
   }
+
   return session.instructors[0]?.name || '';
 }
 
@@ -241,11 +225,6 @@ async function resolveClassTypeName(session) {
   return classTypeResponse?.name || '';
 }
 
-function toDateOnly(dateString) {
-  if (!dateString) return '';
-  return String(dateString).slice(0, 10);
-}
-
 async function run() {
   requireConfig();
 
@@ -260,13 +239,12 @@ async function run() {
       throw new Error('Start Date and/or End Date are missing on the run record.');
     }
 
-    // Set Classes Status to Started BEFORE fetching classes
-    await updateRunRecord({ 'Classes Status': 'Started' });
-
     const sessions = await fetchPaginatedMtek(CONFIG.mtek.classesPath, {
-      min_date: toDateOnly(startDate),
-      max_date: `${toDateOnly(endDate)}T23:59:59`,
+      start_date: startDate,
+      end_date: endDate,
     });
+
+    await updateRunRecord({ 'Classes Status': 'Started' });
 
     const classRecordsToCreate = [];
     for (const session of sessions) {
@@ -288,7 +266,6 @@ async function run() {
 
     await updateRunRecord({ 'Classes Status': 'COMPLETE - Classes found' });
 
-    // ── Instructors ──────────────────────────────────────────────────────────
     await updateRunRecord({ 'Instructors Status': 'Started' });
     const instructorRecords = await fetchAllRecords(CONFIG.airtable.instructorsTableId, ['Zingfit Name']);
     const instructorMap = new Map();
@@ -312,7 +289,6 @@ async function run() {
 
     await updateRunRecord({ 'Instructors Status': 'COMPLETE - Instructors Assigned' });
 
-    // ── Attendance ───────────────────────────────────────────────────────────
     await updateRunRecord({ 'Attendance Status': 'Started' });
     for (const classRecord of createdClassRecords) {
       const classId = getField(classRecord, 'MTEK ID');
@@ -325,9 +301,7 @@ async function run() {
         class_session: classId,
       });
 
-      const checkedInCount = reservations.filter(
-        (reservation) => reservation?.status === 'check in',
-      ).length;
+      const checkedInCount = reservations.filter((reservation) => reservation?.status === 'check in').length;
 
       await patchClassRecord(classRecord.id, {
         'Attendance Count (Checked in)': checkedInCount,
@@ -336,7 +310,6 @@ async function run() {
 
     await updateRunRecord({ 'Attendance Status': 'COMPLETE - Attendance found' });
 
-    // ── Studios ──────────────────────────────────────────────────────────────
     await updateRunRecord({ 'Studio Status': 'Started' });
     const studioRecords = await fetchAllRecords(CONFIG.airtable.studiosTableId, ['MTEK Location ID']);
     const studioMap = new Map();
@@ -358,7 +331,6 @@ async function run() {
 
     await updateRunRecord({ 'Studio Status': 'COMPLETE - Studios found' });
 
-    // ── Class Types ──────────────────────────────────────────────────────────
     await updateRunRecord({ 'Class Type Status': 'Started' });
     const classTypeRecords = await fetchAllRecords(CONFIG.airtable.classTypesTableId, ['Name']);
     const classTypeMap = new Map();
@@ -382,9 +354,8 @@ async function run() {
 
     await updateRunRecord({ 'Class Type Status': 'COMPLETE - Class types found' });
 
-    // ── Final Notes & Complete ───────────────────────────────────────────────
     const note = [
-      `# of Classes found: ${createdClassRecords.length}`,
+      `# of Class found: ${createdClassRecords.length}`,
       `# of Instructors not found: ${instructorNotFound}`,
       `# of Studios not found: ${studioNotFound}`,
       `# of Class types not found: ${classTypeNotFound}`,
