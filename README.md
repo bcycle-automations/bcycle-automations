@@ -2,11 +2,11 @@
 
 ## b.cycle PAYROLL Classes GitHub Action
 
-Workflow file: `.github/workflows/mtek-classes-sync.yml`
+Workflow file: `.github/workflows/bcycle-payroll-classes.yml`
 
 ### Triggers
 - `workflow_dispatch` with required input `record_id`
-- `repository_dispatch` with event type `airtable-mtek-classes-sync` and payload field `record_id`
+- `repository_dispatch` with event type `airtable-bcycle-payroll-classes` and payload field `record_id`
 
 ### Required secrets
 - `AIRTABLE_TOKEN`
@@ -17,4 +17,4 @@ Workflow file: `.github/workflows/mtek-classes-sync.yml`
 - MarianaTek base URL and API paths
 
 ### Script
-- `scripts/sync-mtek-classes-workflow.mjs`
+- `scripts/bcycle-payroll-classes-workflow.mjs`
