@@ -240,8 +240,8 @@ async function run() {
     }
 
     const sessions = await fetchPaginatedMtek(CONFIG.mtek.classesPath, {
-      start_date: startDate,
-      end_date: endDate,
+      min_date: startDate,
+      max_date: endDate,
     });
 
     await updateRunRecord({ 'Classes Status': 'Started' });
