@@ -227,11 +227,7 @@ function instructorNameFromSession(session) {
 }
 
 function locationIdFromSession(session) {
-  const location = sessionAttributes(session).location;
-  if (location && typeof location === 'object') {
-    return location.id ?? null;
-  }
-  return location ?? null;
+  return session?.relationships?.location?.data?.id ?? null;
 }
 
 async function run() {
@@ -277,12 +273,23 @@ async function run() {
     await updateRunRecord({ 'Classes Status': 'COMPLETE - Classes found' });
 
     await updateRunRecord({ 'Instructors Status': 'Started' });
-    const instructorRecords = await fetchAllRecords(CONFIG.airtable.instructorsTableId, ['Zingfit Name']);
+    const instructorRecords = await fetchAllRecords(CONFIG.airtable.instructorsTableId, ['Name']);
     const instructorMap = new Map();
     for (const rec of instructorRecords) {
-      const name = String(getField(rec, 'Zingfit Name') || '').trim().toLowerCase();
+      const name = String(getField(rec, 'Name') || '').trim().toLowerCase();
       if (name) instructorMap.set(name, rec.id);
     }
+
+    const mtekInstructorSample = sessions
+      .map((session) => instructorNameFromSession(session))
+      .filter(Boolean)
+      .slice(0, 5);
+    const airtableInstructorSample = instructorRecords
+      .map((rec) => String(getField(rec, 'Name') || '').trim())
+      .filter(Boolean)
+      .slice(0, 5);
+    console.log(`[DEBUG] MTEK instructor sample (first 5): ${JSON.stringify(mtekInstructorSample)}`);
+    console.log(`[DEBUG] Airtable Name sample (first 5): ${JSON.stringify(airtableInstructorSample)}`);
 
     let instructorNotFound = 0;
     for (const classRecord of createdClassRecords) {
