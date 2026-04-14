@@ -2,11 +2,11 @@
 
 ## b.cycle PAYROLL Classes GitHub Action
 
-Workflow file: `.github/workflows/bcycle-payroll-classes.yml`
+Workflow file: `.github/workflows/bcycle-payroll-classes-action.yml`
 
 ### Triggers
 - `workflow_dispatch` with required input `record_id`
-- `repository_dispatch` with event type `airtable-bcycle-payroll-classes` (legacy `airtable-mtek-classes-sync` is also supported) and payload field `record_id`
+- `repository_dispatch` with event type `airtable-bcycle-payroll-classes` and payload field `record_id`
 
 ### Required secrets
 - `AIRTABLE_TOKEN`
