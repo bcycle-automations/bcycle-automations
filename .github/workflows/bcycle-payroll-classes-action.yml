@@ -1,0 +1,60 @@
+name: b.cycle PAYROLL Classes
+
+on:
+  workflow_dispatch:
+    inputs:
+      record_id:
+        description: Airtable run record ID from tblFYdngL6XxXuvap (example recXXXX)
+        required: true
+        type: string
+  repository_dispatch:
+    types:
+      - airtable-bcycle-payroll-classes
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Resolve record id
+        id: record
+        shell: bash
+        run: |
+          RECORD_ID="${{ github.event.inputs.record_id || github.event.client_payload.record_id }}"
+          if [ -z "$RECORD_ID" ]; then
+            echo "record_id is required (workflow_dispatch input or repository_dispatch client_payload.record_id)." >&2
+            exit 1
+          fi
+          echo "record_id=$RECORD_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Validate no merge conflict markers
+        shell: bash
+        run: |
+          if grep -En "^(<<<<<<<|=======|>>>>>>>)" scripts/bcycle-payroll-classes-workflow.mjs .github/workflows/bcycle-payroll-classes-action.yml README.md; then
+            echo "Merge conflict markers found. Resolve conflicts and commit clean files before running this workflow." >&2
+            exit 1
+          fi
+
+      - name: Run b.cycle PAYROLL Classes
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          AIRTABLE_RECORD_ID: ${{ steps.record.outputs.record_id }}
+          AIRTABLE_BASE_ID: appBC0Ja4B5LKbZLW
+          AIRTABLE_RUNS_TABLE_ID: tblFYdngL6XxXuvap
+          AIRTABLE_CLASSES_TABLE_ID: tbl8RbWysEFdNuz37
+          AIRTABLE_INSTRUCTORS_TABLE_ID: tbljLkeIdWibQF6SH
+          AIRTABLE_STUDIOS_TABLE_ID: tblpogHdeAA2Z7HiD
+          AIRTABLE_CLASS_TYPES_TABLE_ID: tbliopHKhCtHLwGOf
+          MTEK_BASE_URL: https://bcycle.marianatek.com
+          MTEK_CLASSES_PATH: /api/class_sessions
+          MTEK_RESERVATIONS_PATH: /api/reservations
+          MTEK_CLASS_TYPES_PATH_TEMPLATE: /api/class_types/{id}
+        run: node scripts/bcycle-payroll-classes-workflow.mjs
