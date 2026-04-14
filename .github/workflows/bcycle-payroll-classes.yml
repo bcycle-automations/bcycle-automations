@@ -1,15 +1,16 @@
 name: b.cycle PAYROLL Classes
+run-name: b.cycle PAYROLL Classes
 
 on:
   workflow_dispatch:
     inputs:
       record_id:
         description: Airtable run record ID from tblFYdngL6XxXuvap (example: recXXXX)
-        required: true
-        type: string
+        required: false
   repository_dispatch:
     types:
       - airtable-bcycle-payroll-classes
+      - airtable-mtek-classes-sync
 
 jobs:
   sync:
