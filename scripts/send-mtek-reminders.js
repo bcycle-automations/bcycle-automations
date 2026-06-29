@@ -89,16 +89,19 @@ function sleep(ms) {
 /**
  * Return "tomorrow" in UTC (YYYY-MM-DD) and current UTC hour.
  */
-function getUtcTomorrowAndCurrentHour() {
-  const now = new Date();
-  const currentHour = now.getUTCHours();
+function getUtcTargetDateAndHour() {
+  const target = new Date(Date.now() + 27 * 60 * 60 * 1000);
 
-  now.setUTCDate(now.getUTCDate() + 1);
-  const year = now.getUTCFullYear();
-  const month = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(now.getUTCDate()).padStart(2, "0");
+  const targetHour = target.getUTCHours();
 
-  return { targetDate: `${year}-${month}-${day}`, currentHour };
+  const year = target.getUTCFullYear();
+  const month = String(target.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(target.getUTCDate()).padStart(2, "0");
+
+  return {
+    targetDate: `${year}-${month}-${day}`,
+    currentHour: targetHour,
+  };
 }
 
 /**
@@ -718,7 +721,7 @@ async function processHourWindow(targetDate, hour, studiosByLocationId) {
  **************************************************/
 async function main() {
   const state = await loadState();
-  const { targetDate, currentHour } = getUtcTomorrowAndCurrentHour();
+  const { targetDate, currentHour } = getUtcTargetDateAndHour();
 
   console.log(
     `\n=== MTEK Reminder run ===\n` +
