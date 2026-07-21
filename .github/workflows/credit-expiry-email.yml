@@ -1,0 +1,49 @@
+name: Credit Expiry Email
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_email:
+        description: "Test email address. Leave blank for a real production run."
+        required: false
+        type: string
+
+      target_date:
+        description: "Optional expiration date for testing, formatted YYYY-MM-DD. Leave blank to use 30 days from today."
+        required: false
+        type: string
+
+  schedule:
+    # Runs at 1:00 a.m. EST.
+    # GitHub cron schedules use UTC.
+    - cron: "0 6 * * *"
+
+jobs:
+  send-credit-expiry-emails:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run credit expiry automation
+        env:
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+
+          M365_CLIENT_ID: ${{ secrets.M365_CLIENT_ID }}
+          M365_CLIENT_SECRET: ${{ secrets.M365_CLIENT_SECRET }}
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_SENDER_UPN: ${{ secrets.M365_SENDER_UPN }}
+
+          TEST_EMAIL: ${{ inputs.test_email }}
+          TARGET_DATE: ${{ inputs.target_date }}
+
+        run: node credit-expiry-email.js
