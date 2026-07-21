@@ -338,7 +338,7 @@ function getMTechHeaders() {
   return {
     Authorization:
       `Bearer ${process.env.MTEK_API_TOKEN}`,
-    Accept: "application/json",
+    Accept: "application/vnd.api+json",
   };
 }
 
