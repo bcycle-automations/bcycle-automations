@@ -14,6 +14,7 @@ const FIELD_PHONE_NUMBER = 'Phone number';
 const FIELD_FIRST_CLASS_DATE = 'First Class Date (Imported)';
 const FIELD_PROFILE_CREATED = 'Profile Created';
 const FIELD_FIRST_CLASS_LINK = 'First Class';
+const FIELD_MARKETING_OPT_IN = 'Marketing opt-in';
 
 // New-people tag ID in MTEK
 const NEW_PEOPLE_TAG_ID = '463';
@@ -396,6 +397,7 @@ async function processReservation(reservation) {
   const userAttrs = userData.attributes || {};
   const phoneNumber = userAttrs.phone_number || null;
   const dateJoined = userAttrs.date_joined || null;
+  const marketingOptIn = userAttrs.marketing_opt_in;
 
   const fieldsToUpdate = {};
 
@@ -409,6 +411,10 @@ async function processReservation(reservation) {
 
   if (dateJoined !== null) {
     fieldsToUpdate[FIELD_PROFILE_CREATED] = dateJoined;
+  }
+
+  if (marketingOptIn !== null && marketingOptIn !== undefined) {
+    fieldsToUpdate[FIELD_MARKETING_OPT_IN] = marketingOptIn;
   }
 
   // Single linked record to the CTT class record
