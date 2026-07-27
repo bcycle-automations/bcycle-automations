@@ -307,9 +307,51 @@ function reservationHasNewPeopleTag(reservation) {
   return tags.some((t) => String(t.id) === NEW_PEOPLE_TAG_ID);
 }
 
+// TEMPORARY DEBUG: log raw tag shapes on reservation vs. user for a few
+// reservations so we can see exactly where the "new people" tag actually
+// lives in the MTEK API response. Read-only, no Airtable writes. Remove
+// once the tag check is confirmed/fixed.
+let debugTagSampleCount = 0;
+const DEBUG_TAG_SAMPLE_LIMIT = 5;
+
+async function debugLogTagShapes(reservation) {
+  if (debugTagSampleCount >= DEBUG_TAG_SAMPLE_LIMIT) return;
+  debugTagSampleCount++;
+
+  const resId = reservation.id;
+  const attrs = reservation.attributes || {};
+
+  console.log(
+    `DEBUG[${resId}] reservation.relationships.tags:`,
+    JSON.stringify(reservation?.relationships?.tags, null, 2)
+  );
+
+  const userId = reservation?.relationships?.user?.data?.id || null;
+  const guestEmail = attrs.guest_email || null;
+
+  try {
+    const user = guestEmail
+      ? await fetchUserByEmail(guestEmail)
+      : await fetchUserById(userId);
+
+    console.log(
+      `DEBUG[${resId}] user.attributes.tags:`,
+      JSON.stringify(user?.attributes?.tags, null, 2)
+    );
+    console.log(
+      `DEBUG[${resId}] user.relationships.tags:`,
+      JSON.stringify(user?.relationships?.tags, null, 2)
+    );
+  } catch (e) {
+    console.log(`DEBUG[${resId}] failed to fetch user for debug:`, e.message);
+  }
+}
+
 async function processReservation(reservation) {
   const resId = reservation.id;
   const attrs = reservation.attributes || {};
+
+  await debugLogTagShapes(reservation);
 
   if (!reservationHasNewPeopleTag(reservation)) {
     return { skipped: true, reason: 'no-new-people-tag' };
