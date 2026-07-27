@@ -90,30 +90,41 @@ async function fetchJson(url, options = {}) {
 async function fetchReservationsForToday() {
   const { todayStr, tomorrowStr } = getTodayAndTomorrowEastern();
 
-  const params = new URLSearchParams({
-    class_session_min_date: todayStr,
-    class_session_max_date: tomorrowStr,
-    status: 'pending',
-    page_size: '2000'
-  });
+  const allReservations = [];
+  let page = 1;
+  let totalPages = 1;
 
-  const url = `${MTEK_BASE_URL}/reservations?${params.toString()}`;
+  do {
+    const params = new URLSearchParams({
+      class_session_min_date: todayStr,
+      class_session_max_date: tomorrowStr,
+      status: 'pending',
+      page_size: '200',
+      page: String(page)
+    });
 
-  console.log(`Fetching reservations from MTEK (ET dates): ${url}`);
+    const url = `${MTEK_BASE_URL}/reservations?${params.toString()}`;
+    console.log(`Fetching reservations from MTEK (ET dates), page ${page}: ${url}`);
 
-  const json = await fetchJson(url, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${MTEK_API_TOKEN}`,
-      Accept: 'application/vnd.api+json'
-    }
-  });
+    const json = await fetchJson(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${MTEK_API_TOKEN}`,
+        Accept: 'application/vnd.api+json'
+      }
+    });
 
-  const data = json.data || [];
-  console.log(`Fetched ${data.length} reservations for today (ET).`);
-  console.log('DEBUG-PAGINATION json.links:', JSON.stringify(json.links, null, 2));
-  console.log('DEBUG-PAGINATION json.meta:', JSON.stringify(json.meta, null, 2));
-  return data;
+    const data = json.data || [];
+    allReservations.push(...data);
+
+    totalPages = json?.meta?.pagination?.pages || 1;
+    page++;
+  } while (page <= totalPages);
+
+  console.log(
+    `Fetched ${allReservations.length} reservations for today (ET) across ${totalPages} page(s).`
+  );
+  return allReservations;
 }
 
 async function fetchUserById(userId) {
@@ -433,37 +444,9 @@ async function processReservation(reservation) {
 
 // --------- Main ---------
 
-async function debugFetchReservationDirect() {
-  const reservationId = '1774593';
-  const url = `${MTEK_BASE_URL}/reservations/${reservationId}`;
-
-  try {
-    const json = await fetchJson(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${MTEK_API_TOKEN}`,
-        Accept: 'application/vnd.api+json'
-      }
-    });
-    console.log(`DEBUG-DIRECT reservation ${reservationId}:`, JSON.stringify(json.data, null, 2));
-  } catch (e) {
-    console.log(`DEBUG-DIRECT reservation ${reservationId} ERROR: ${e.message}`);
-  }
-}
-
-function debugCheckReservationInFetchedList(reservations) {
-  const targetId = '1774593';
-  const found = reservations.some((r) => String(r.id) === targetId);
-  console.log(
-    `DEBUG-DIRECT is reservation ${targetId} present in today's ${reservations.length} fetched (status=pending) reservations? ${found}`
-  );
-}
-
 (async () => {
   try {
-    await debugFetchReservationDirect();
     const reservations = await fetchReservationsForToday();
-    debugCheckReservationInFetchedList(reservations);
 
     let processed = 0;
     let skipped = 0;
