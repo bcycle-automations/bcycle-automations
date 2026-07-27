@@ -473,8 +473,34 @@ async function processReservation(reservation) {
 
 // --------- Main ---------
 
+async function debugLogTagDefinitions() {
+  const idsToCheck = [
+    { endpoint: 'reservation_tags', id: '463' },
+    { endpoint: 'reservation_tags', id: '464' },
+    { endpoint: 'user_tags', id: '246' },
+    { endpoint: 'user_tags', id: '463' }
+  ];
+
+  for (const { endpoint, id } of idsToCheck) {
+    const url = `${MTEK_BASE_URL}/${endpoint}/${id}`;
+    try {
+      const json = await fetchJson(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${MTEK_API_TOKEN}`,
+          Accept: 'application/vnd.api+json'
+        }
+      });
+      console.log(`DEBUG-TAGDEF ${endpoint}/${id}:`, JSON.stringify(json.data, null, 2));
+    } catch (e) {
+      console.log(`DEBUG-TAGDEF ${endpoint}/${id}: ERROR ${e.message}`);
+    }
+  }
+}
+
 (async () => {
   try {
+    await debugLogTagDefinitions();
     const reservations = await fetchReservationsForToday();
 
     let processed = 0;
