@@ -431,64 +431,31 @@ async function processReservation(reservation) {
 
 // --------- Main ---------
 
-async function debugLookupSpecificReservation() {
-  const classSessionId = '89689';
-  const userId = '65308';
+function debugFindSpecificReservation(reservations) {
+  const targetClassSessionId = '89689';
+  const targetUserId = '65308';
 
-  const params = new URLSearchParams({
-    class_session_id: classSessionId,
-    user_id: userId,
-    page_size: '10'
-  });
-  const url = `${MTEK_BASE_URL}/reservations?${params.toString()}`;
-
-  try {
-    const json = await fetchJson(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${MTEK_API_TOKEN}`,
-        Accept: 'application/vnd.api+json'
-      }
-    });
-    console.log(
-      `DEBUG-SPECIFIC reservations for class_session=${classSessionId} user=${userId}:`,
-      JSON.stringify(json.data, null, 2)
+  const matches = reservations.filter((r) => {
+    const csId = r?.relationships?.class_session?.data?.id;
+    const userId = r?.relationships?.user?.data?.id;
+    const behalfId = r?.relationships?.booked_on_behalf_of_user?.data?.id;
+    return (
+      csId === targetClassSessionId ||
+      userId === targetUserId ||
+      behalfId === targetUserId
     );
-  } catch (e) {
-    console.log(`DEBUG-SPECIFIC reservations lookup ERROR: ${e.message}`);
-  }
+  });
 
-  try {
-    const userJson = await fetchJson(`${MTEK_BASE_URL}/users/${userId}/`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${MTEK_API_TOKEN}`,
-        Accept: 'application/vnd.api+json'
-      }
-    });
-    console.log(`DEBUG-SPECIFIC user ${userId}:`, JSON.stringify(userJson.data, null, 2));
-  } catch (e) {
-    console.log(`DEBUG-SPECIFIC user lookup ERROR: ${e.message}`);
-  }
-
-  try {
-    const classJson = await fetchJson(`${MTEK_BASE_URL}/class_sessions/${classSessionId}`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${MTEK_API_TOKEN}`,
-        Accept: 'application/vnd.api+json'
-      }
-    });
-    console.log(`DEBUG-SPECIFIC class_session ${classSessionId}:`, JSON.stringify(classJson.data, null, 2));
-  } catch (e) {
-    console.log(`DEBUG-SPECIFIC class_session lookup ERROR: ${e.message}`);
-  }
+  console.log(
+    `DEBUG-FIND matches for class_session=${targetClassSessionId} or user=${targetUserId} in today's ${reservations.length} fetched reservations:`,
+    JSON.stringify(matches, null, 2)
+  );
 }
 
 (async () => {
   try {
-    await debugLookupSpecificReservation();
     const reservations = await fetchReservationsForToday();
+    debugFindSpecificReservation(reservations);
 
     let processed = 0;
     let skipped = 0;
