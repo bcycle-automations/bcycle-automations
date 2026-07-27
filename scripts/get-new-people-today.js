@@ -111,6 +111,8 @@ async function fetchReservationsForToday() {
 
   const data = json.data || [];
   console.log(`Fetched ${data.length} reservations for today (ET).`);
+  console.log('DEBUG-PAGINATION json.links:', JSON.stringify(json.links, null, 2));
+  console.log('DEBUG-PAGINATION json.meta:', JSON.stringify(json.meta, null, 2));
   return data;
 }
 
