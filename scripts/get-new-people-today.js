@@ -503,6 +503,18 @@ async function debugLogTagDefinitions() {
     await debugLogTagDefinitions();
     const reservations = await fetchReservationsForToday();
 
+    const tagHistogram = {};
+    for (const r of reservations) {
+      const tags = r?.relationships?.tags?.data || [];
+      for (const t of tags) {
+        tagHistogram[t.id] = (tagHistogram[t.id] || 0) + 1;
+      }
+    }
+    console.log(
+      'DEBUG-TAGHIST reservation tag id counts across all fetched reservations:',
+      JSON.stringify(tagHistogram, null, 2)
+    );
+
     let processed = 0;
     let skipped = 0;
 
