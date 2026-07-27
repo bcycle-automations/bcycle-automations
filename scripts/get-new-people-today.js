@@ -307,51 +307,9 @@ function reservationHasNewPeopleTag(reservation) {
   return tags.some((t) => String(t.id) === NEW_PEOPLE_TAG_ID);
 }
 
-// TEMPORARY DEBUG: log raw tag shapes on reservation vs. user for a few
-// reservations so we can see exactly where the "new people" tag actually
-// lives in the MTEK API response. Read-only, no Airtable writes. Remove
-// once the tag check is confirmed/fixed.
-let debugTagSampleCount = 0;
-const DEBUG_TAG_SAMPLE_LIMIT = 5;
-
-async function debugLogTagShapes(reservation) {
-  if (debugTagSampleCount >= DEBUG_TAG_SAMPLE_LIMIT) return;
-  debugTagSampleCount++;
-
-  const resId = reservation.id;
-  const attrs = reservation.attributes || {};
-
-  console.log(
-    `DEBUG[${resId}] reservation.relationships.tags:`,
-    JSON.stringify(reservation?.relationships?.tags, null, 2)
-  );
-
-  const userId = reservation?.relationships?.user?.data?.id || null;
-  const guestEmail = attrs.guest_email || null;
-
-  try {
-    const user = guestEmail
-      ? await fetchUserByEmail(guestEmail)
-      : await fetchUserById(userId);
-
-    console.log(
-      `DEBUG[${resId}] user.attributes.tags:`,
-      JSON.stringify(user?.attributes?.tags, null, 2)
-    );
-    console.log(
-      `DEBUG[${resId}] user.relationships.tags:`,
-      JSON.stringify(user?.relationships?.tags, null, 2)
-    );
-  } catch (e) {
-    console.log(`DEBUG[${resId}] failed to fetch user for debug:`, e.message);
-  }
-}
-
 async function processReservation(reservation) {
   const resId = reservation.id;
   const attrs = reservation.attributes || {};
-
-  await debugLogTagShapes(reservation);
 
   if (!reservationHasNewPeopleTag(reservation)) {
     return { skipped: true, reason: 'no-new-people-tag' };
@@ -473,48 +431,9 @@ async function processReservation(reservation) {
 
 // --------- Main ---------
 
-async function debugLogTagDefinitions() {
-  const idsToCheck = [
-    { endpoint: 'reservation_tags', id: '462' },
-    { endpoint: 'reservation_tags', id: '463' },
-    { endpoint: 'reservation_tags', id: '464' },
-    { endpoint: 'user_tags', id: '246' },
-    { endpoint: 'user_tags', id: '463' }
-  ];
-
-  for (const { endpoint, id } of idsToCheck) {
-    const url = `${MTEK_BASE_URL}/${endpoint}/${id}`;
-    try {
-      const json = await fetchJson(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${MTEK_API_TOKEN}`,
-          Accept: 'application/vnd.api+json'
-        }
-      });
-      console.log(`DEBUG-TAGDEF ${endpoint}/${id}:`, JSON.stringify(json.data, null, 2));
-    } catch (e) {
-      console.log(`DEBUG-TAGDEF ${endpoint}/${id}: ERROR ${e.message}`);
-    }
-  }
-}
-
 (async () => {
   try {
-    await debugLogTagDefinitions();
     const reservations = await fetchReservationsForToday();
-
-    const tagHistogram = {};
-    for (const r of reservations) {
-      const tags = r?.relationships?.tags?.data || [];
-      for (const t of tags) {
-        tagHistogram[t.id] = (tagHistogram[t.id] || 0) + 1;
-      }
-    }
-    console.log(
-      'DEBUG-TAGHIST reservation tag id counts across all fetched reservations:',
-      JSON.stringify(tagHistogram, null, 2)
-    );
 
     let processed = 0;
     let skipped = 0;
