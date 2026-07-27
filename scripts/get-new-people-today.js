@@ -431,31 +431,37 @@ async function processReservation(reservation) {
 
 // --------- Main ---------
 
-function debugFindSpecificReservation(reservations) {
-  const targetClassSessionId = '89689';
-  const targetUserId = '65308';
+async function debugFetchReservationDirect() {
+  const reservationId = '1774593';
+  const url = `${MTEK_BASE_URL}/reservations/${reservationId}`;
 
-  const matches = reservations.filter((r) => {
-    const csId = r?.relationships?.class_session?.data?.id;
-    const userId = r?.relationships?.user?.data?.id;
-    const behalfId = r?.relationships?.booked_on_behalf_of_user?.data?.id;
-    return (
-      csId === targetClassSessionId ||
-      userId === targetUserId ||
-      behalfId === targetUserId
-    );
-  });
+  try {
+    const json = await fetchJson(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${MTEK_API_TOKEN}`,
+        Accept: 'application/vnd.api+json'
+      }
+    });
+    console.log(`DEBUG-DIRECT reservation ${reservationId}:`, JSON.stringify(json.data, null, 2));
+  } catch (e) {
+    console.log(`DEBUG-DIRECT reservation ${reservationId} ERROR: ${e.message}`);
+  }
+}
 
+function debugCheckReservationInFetchedList(reservations) {
+  const targetId = '1774593';
+  const found = reservations.some((r) => String(r.id) === targetId);
   console.log(
-    `DEBUG-FIND matches for class_session=${targetClassSessionId} or user=${targetUserId} in today's ${reservations.length} fetched reservations:`,
-    JSON.stringify(matches, null, 2)
+    `DEBUG-DIRECT is reservation ${targetId} present in today's ${reservations.length} fetched (status=pending) reservations? ${found}`
   );
 }
 
 (async () => {
   try {
+    await debugFetchReservationDirect();
     const reservations = await fetchReservationsForToday();
-    debugFindSpecificReservation(reservations);
+    debugCheckReservationInFetchedList(reservations);
 
     let processed = 0;
     let skipped = 0;
