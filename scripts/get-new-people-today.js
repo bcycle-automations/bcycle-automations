@@ -475,6 +475,7 @@ async function processReservation(reservation) {
 
 async function debugLogTagDefinitions() {
   const idsToCheck = [
+    { endpoint: 'reservation_tags', id: '462' },
     { endpoint: 'reservation_tags', id: '463' },
     { endpoint: 'reservation_tags', id: '464' },
     { endpoint: 'user_tags', id: '246' },
