@@ -1,5 +1,7 @@
 const MTEK_BASE_URL = "https://bcycle.marianatek.com/api";
 const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
+const AIRTABLE_BASE_URL = "https://api.airtable.com/v0";
+const EMAIL_LOGS_TABLE_ID = "tbloAdBJHSygcndbA"; // "Email Logs"
 const TIME_ZONE = "America/Toronto";
 
 /*
@@ -13,6 +15,8 @@ const REQUIRED_ENVIRONMENT_VARIABLES = [
   "M365_CLIENT_SECRET",
   "M365_TENANT_ID",
   "M365_SENDER_UPN",
+  "AIRTABLE_TOKEN",
+  "CUSTOMER_BASE_ID",
 ];
 
 async function main() {
@@ -122,6 +126,15 @@ async function main() {
         subject,
         html: emailHtml,
       });
+
+      try {
+        await logEmailToAirtable(recipientEmail);
+      } catch (logError) {
+        console.error(
+          `Warning: email was sent successfully but failed to log to Airtable for ${recipientEmail}:`,
+          logError.message
+        );
+      }
 
       successfulEmails += 1;
 
@@ -438,6 +451,35 @@ async function sendMicrosoftEmail({
 
     throw new Error(
       `Microsoft sendMail failed: ` +
+      `${response.status} ${responseText}`
+    );
+  }
+}
+
+async function logEmailToAirtable(email) {
+  const url = `${AIRTABLE_BASE_URL}/${process.env.CUSTOMER_BASE_ID}/${EMAIL_LOGS_TABLE_ID}`;
+
+  const body = {
+    fields: {
+      Email: email,
+      Type: "Credit expiry email",
+    },
+  };
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.AIRTABLE_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+
+    throw new Error(
+      `Airtable Email Logs insert failed: ` +
       `${response.status} ${responseText}`
     );
   }

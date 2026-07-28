@@ -40,6 +40,9 @@ jobs:
           M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
           M365_SENDER_UPN: ${{ secrets.M365_SENDER_UPN }}
 
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          CUSTOMER_BASE_ID: ${{ secrets.CUSTOMER_BASE_ID }}
+
           TEST_EMAIL: ${{ github.event.inputs.test_email }}
           TARGET_EXPIRATION_DATE: ${{ github.event.inputs.target_expiration_date }}
 
