@@ -1,13 +1,21 @@
-// scripts/mtek-reservations-to-bigquery.mjs
-// Weekly sync: pulls the "Reservations" MTEK report (id 341, slug
-// reservations) for the past N days and appends new rows into the existing
-// ReservationsMTEK table. Report's 50 headers map 1:1 (by position) onto
-// ReservationsMTEK's 50 columns — real typed columns (INTEGER/DATE/BOOLEAN),
-// unlike the all-STRING SalesMTEK/FirstTimersMTEK tables, so values are
-// passed through with minimal transformation (dates truncated to date-only,
-// "Class Is Public?" normalized from string to boolean).
+// scripts/spinco-reservations-to-bigquery.mjs
+// Weekly sync: pulls SPINCO's "Reservations" MTEK report (id 341, slug
+// reservations) and appends new rows into the existing
+// SPINCO.reservations_raw_2025 table. Per explicit instruction, this table
+// stays exactly as-is — every field is STRING-typed (even numbers/booleans/
+// dates), lowercase snake_case column names, and existing queries depend on
+// that shape. New rows are written to match: dates as zero-padded
+// M/D/YYYY strings (matching the documented `SAFE.PARSE_DATE('%m/%d/%Y', ...)`
+// convention already used against this table), booleans as lowercase
+// "true"/"false" text, everything else stringified as-is.
 //
-// Dedup key: Reservation ID (confirmed unique, INTEGER).
+// Each run starts from the latest class_start_date already in the table
+// (parsed — the raw column is an unpadded, sometimes-mixed-format string,
+// so a naive MAX() would be wrong) and walks forward in <=7-day chunks
+// until it catches up to yesterday. A Slack message is posted to
+// #bigquery-updates after every real insert.
+//
+// Dedup key: reservation_id (confirmed unique across the whole table).
 //
 // Defaults to a dry run — set DRY_RUN=false to actually write to BigQuery.
 
@@ -16,25 +24,25 @@ import {
   fetchMtekReport,
   pastDaysWindow,
   clampSyncWindow,
-  bqDateToString,
   addDaysUTC,
   formatDisplayDate,
 } from "./lib/mtek-report.mjs";
+import { toMDYYYY, toTime12h } from "./lib/format.mjs";
 import { sendSlackMessage } from "./lib/slack.mjs";
 import { insertInBatches } from "./lib/bigquery.mjs";
 
-const MAX_WINDOW_DAYS = 7;
+const MAX_WINDOW_DAYS = 2;
 
-const MTEK_BASE_URL = (process.env.MTEK_BASE_URL || "https://bcycle.marianatek.com").replace(/\/+$/, "");
-const MTEK_API_TOKEN = (process.env.MTEK_API_TOKEN || "").trim();
-const REPORT_ID = process.env.MTEK_RESERVATIONS_REPORT_ID || "341";
-const REPORT_SLUG = process.env.MTEK_RESERVATIONS_REPORT_SLUG || "reservations";
+const MTEK_BASE_URL = (process.env.MTEK_SPINCO_BASE_URL || "https://spinco.marianatek.com").replace(/\/+$/, "");
+const MTEK_API_TOKEN = (process.env.MTEK_SPINCO_API_TOKEN || "").trim();
+const REPORT_ID = process.env.MTEK_SPINCO_RESERVATIONS_REPORT_ID || "341";
+const REPORT_SLUG = process.env.MTEK_SPINCO_RESERVATIONS_REPORT_SLUG || "reservations";
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 const SYNC_DAYS = Number(process.env.SYNC_DAYS || "7");
 
 const BQ_PROJECT_ID = process.env.BQ_PROJECT_ID || "root-cargo-453703-k7";
-const BQ_DATASET = process.env.BQ_DATASET || "SalesZF";
-const BQ_TABLE = process.env.BQ_TABLE || "ReservationsMTEK";
+const BQ_DATASET = process.env.BQ_DATASET || "SPINCO";
+const BQ_TABLE = process.env.BQ_TABLE || "reservations_raw_2025";
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
 
@@ -51,72 +59,85 @@ const EXPECTED_HEADERS = [
   "Broker ID", "Broker Email", "Broker Name", "Spot", "Spot Type",
 ];
 
-// Exact BigQuery column names (positional match to EXPECTED_HEADERS above)
+// Positional match to EXPECTED_HEADERS above
 const BQ_COLUMNS = [
-  "Reservation ID", "Reservation Type", "Status", "Creation Date", "Updated Date",
-  "Cancelled Date", "Unconverted Guest", "Converted Guest", "Guest", "Guest Email",
-  "Credit Payment Origin", "Credit", "Package", "Membership", "Contract",
-  "Class ID", "Class Start Date", "Class Start Time", "Class Day of Week", "Class Custom Name",
-  "Class Is Public_", "Class Tags", "Class Is Free_", "Class Type", "Class Category",
-  "Class Duration _Minutes_", "Layout", "Layout Format", "Layout Capacity", "Class Capacity",
-  "Classroom", "Location", "Region", "Instructor ID_s_", "Instructor Employee ID_s_",
-  "Instructor Names", "Instructor Schedule Names", "Class Has Substitute_", "Customer ID", "Customer Email",
-  "Customer Name", "Company Name", "Payer ID", "Payer Email", "Payer Name",
-  "Broker ID", "Broker Email", "Broker Name", "Spot", "Spot Type",
+  "reservation_id", "reservation_type", "status", "creation_date", "updated_date",
+  "cancelled_date", "unconverted_guest", "converted_guest", "guest", "guest_email",
+  "credit_payment_origin", "credit", "package", "membership", "contract",
+  "class_id", "class_start_date", "class_start_time", "class_day_of_week", "class_custom_name",
+  "class_is_public", "class_tags", "class_is_free", "class_type", "class_category",
+  "class_duration_minutes", "layout", "layout_format", "layout_capacity", "class_capacity",
+  "classroom", "location", "region", "instructor_ids", "instructor_employee_ids",
+  "instructor_names", "instructor_schedule_names", "class_has_substitute", "customer_id", "customer_email",
+  "customer_name", "company_name", "payer_id", "payer_email", "payer_name",
+  "broker_id", "broker_email", "broker_name", "spot", "spot_type",
 ];
 
-const DATE_ONLY_COLUMNS = new Set(["Creation Date", "Updated Date", "Cancelled Date", "Class Start Date"]);
-const STRING_BOOL_COLUMNS = new Set(["Class Is Public_"]); // report sends "True"/"False" string, not real bool
+const DATE_COLUMNS = new Set(["creation_date", "updated_date", "cancelled_date", "class_start_date"]);
+const TIME_COLUMNS = new Set(["class_start_time"]);
+const BOOL_STRING_COLUMNS = new Set([
+  "unconverted_guest",
+  "converted_guest",
+  "guest",
+  "class_is_public",
+  "class_is_free",
+  "class_has_substitute",
+]);
 
-function passthrough(v) {
-  return v === undefined ? null : v;
+function toStr(v) {
+  if (v === null || v === undefined) return null;
+  return String(v);
 }
 
-function toDateOnly(v) {
+function toBoolString(v) {
   if (v === null || v === undefined) return null;
-  return String(v).slice(0, 10);
-}
-
-function toBool(v) {
-  if (v === null || v === undefined) return null;
-  if (typeof v === "boolean") return v;
-  return String(v).toLowerCase() === "true";
+  if (typeof v === "boolean") return String(v);
+  return String(v).toLowerCase() === "true" ? "true" : "false";
 }
 
 function mapRow(row) {
   const out = {};
   BQ_COLUMNS.forEach((bqCol, i) => {
     const raw = row[i];
-    if (DATE_ONLY_COLUMNS.has(bqCol)) {
-      out[bqCol] = toDateOnly(raw);
-    } else if (STRING_BOOL_COLUMNS.has(bqCol)) {
-      out[bqCol] = toBool(raw);
+    if (DATE_COLUMNS.has(bqCol)) {
+      out[bqCol] = toMDYYYY(raw);
+    } else if (TIME_COLUMNS.has(bqCol)) {
+      out[bqCol] = toTime12h(raw);
+    } else if (BOOL_STRING_COLUMNS.has(bqCol)) {
+      out[bqCol] = toBoolString(raw);
     } else {
-      out[bqCol] = passthrough(raw);
+      out[bqCol] = toStr(raw);
     }
   });
   return out;
 }
 
+// class_start_date in the existing table is a mix of unpadded M/D/YYYY and
+// ISO YYYY-MM-DD — parse both to find the true chronological max.
 async function getInitialSinceDate(bq) {
   const [[lastDateRow]] = await bq.query({
-    query: `SELECT MAX(\`Class Start Date\`) AS last_date
+    query: `SELECT MAX(COALESCE(
+              SAFE.PARSE_DATE('%m/%d/%Y', class_start_date),
+              SAFE.PARSE_DATE('%Y-%m-%d', class_start_date)
+            )) AS last_date
             FROM \`${BQ_PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\``,
   });
-  return bqDateToString(lastDateRow?.last_date) || pastDaysWindow(SYNC_DAYS).minDate;
+  const raw = lastDateRow?.last_date;
+  const lastDate = raw == null ? null : typeof raw === "string" ? raw : raw.value;
+  return lastDate || pastDaysWindow(SYNC_DAYS).minDate;
 }
 
 async function getExistingIds(bq) {
   const [existingRows] = await bq.query({
-    query: `SELECT DISTINCT \`Reservation ID\` AS id
+    query: `SELECT DISTINCT reservation_id AS id
             FROM \`${BQ_PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\`
-            WHERE \`Reservation ID\` IS NOT NULL`,
+            WHERE reservation_id IS NOT NULL`,
   });
   return new Set(existingRows.map((r) => String(r.id)));
 }
 
 async function main() {
-  if (!MTEK_API_TOKEN) throw new Error("Missing MTEK_API_TOKEN");
+  if (!MTEK_API_TOKEN) throw new Error("Missing MTEK_SPINCO_API_TOKEN");
 
   const bq = new BigQuery({ projectId: BQ_PROJECT_ID });
   const table = bq.dataset(BQ_DATASET).table(BQ_TABLE);
@@ -136,7 +157,7 @@ async function main() {
       : clampSyncWindow(sinceDate, MAX_WINDOW_DAYS);
 
     if (!window) {
-      console.log(`Caught up (last Class Start Date: ${sinceDate}). Nothing more to sync.`);
+      console.log(`Caught up (last class_start_date: ${sinceDate}). Nothing more to sync.`);
       break;
     }
     const { minDate, maxDate } = window;
@@ -164,7 +185,7 @@ async function main() {
     console.log(`Fetched ${report.rows.length} rows from MTEK`);
 
     const mapped = report.rows.map(mapRow);
-    const newRows = mapped.filter((r) => !existingIds.has(String(r["Reservation ID"])));
+    const newRows = mapped.filter((r) => !existingIds.has(String(r.reservation_id)));
     const skipped = mapped.length - newRows.length;
     console.log(`${newRows.length} new rows, ${skipped} skipped as already present`);
 
@@ -174,13 +195,13 @@ async function main() {
       await insertInBatches(table, newRows);
       console.log(`Inserted ${newRows.length} rows into ${BQ_TABLE}`);
       await sendSlackMessage(
-        `b.cycle - Reservations added from ${formatDisplayDate(minDate)} to ${formatDisplayDate(maxDate)}: ${newRows.length} rows`
+        `SPINCO - Reservations added from ${formatDisplayDate(minDate)} to ${formatDisplayDate(maxDate)}: ${newRows.length} rows`
       );
     } else {
       console.log("Nothing new to insert for this chunk.");
     }
 
-    for (const r of newRows) existingIds.add(String(r["Reservation ID"]));
+    for (const r of newRows) existingIds.add(String(r.reservation_id));
     totalInserted += newRows.length;
 
     if (manualOverride) break;

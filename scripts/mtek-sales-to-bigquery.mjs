@@ -30,6 +30,7 @@ import {
 } from "./lib/mtek-report.mjs";
 import { toMDYYYY, toTime12h, boolToString, nullToEmpty } from "./lib/format.mjs";
 import { sendSlackMessage } from "./lib/slack.mjs";
+import { insertInBatches } from "./lib/bigquery.mjs";
 
 const MAX_WINDOW_DAYS = 7;
 
@@ -232,7 +233,7 @@ async function main() {
     if (DRY_RUN) {
       console.log("DRY RUN — nothing written. Sample:", JSON.stringify(newRows.slice(0, 2), null, 2));
     } else if (newRows.length > 0) {
-      await table.insert(newRows);
+      await insertInBatches(table, newRows);
       console.log(`Inserted ${newRows.length} rows into ${BQ_TABLE}`);
       await sendSlackMessage(
         `b.cycle - Sales added from ${formatDisplayDate(minDate)} to ${formatDisplayDate(maxDate)}: ${newRows.length} rows`
