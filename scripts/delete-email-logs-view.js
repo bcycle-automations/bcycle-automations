@@ -1,0 +1,144 @@
+#!/usr/bin/env node
+import process from 'node:process';
+
+const {
+  AIRTABLE_TOKEN,
+  AIRTABLE_API_KEY, // optional fallback if you ever use it
+  CUSTOMER_BASE_ID,
+} = process.env;
+
+const apiKey = AIRTABLE_TOKEN || AIRTABLE_API_KEY;
+if (!apiKey) {
+  throw new Error('Missing env: AIRTABLE_TOKEN (or AIRTABLE_API_KEY as fallback)');
+}
+
+if (!CUSTOMER_BASE_ID) {
+  throw new Error('Missing env: CUSTOMER_BASE_ID');
+}
+
+const BASE_ID = CUSTOMER_BASE_ID;
+const TABLE_ID = 'tbloAdBJHSygcndbA'; // "Email Logs"
+const VIEW_ID = 'viwiSrOMxNXm5GcTJ'; // "TO DELETE (DO NOT TOUCH)"
+const AIRTABLE_BASE_URL = 'https://api.airtable.com/v0';
+
+// Safety guard – adjust if needed
+const MAX_RECORDS_TO_DELETE = 50000;
+
+async function fetchAllRecordIds() {
+  const recordIds = [];
+  let offset;
+
+  console.log(
+    `Fetching records from base=${BASE_ID}, table="Email Logs" (${TABLE_ID}), view="TO DELETE (DO NOT TOUCH)" (${VIEW_ID})...`
+  );
+
+  do {
+    const params = new URLSearchParams({
+      view: VIEW_ID,
+      pageSize: '100',
+    });
+
+    if (offset) params.set('offset', offset);
+
+    const url = `${AIRTABLE_BASE_URL}/${BASE_ID}/${TABLE_ID}?${params.toString()}`;
+
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(
+        `Error fetching records from Airtable: ${res.status} ${res.statusText} – ${text}`
+      );
+    }
+
+    const data = await res.json();
+
+    if (Array.isArray(data.records)) {
+      for (const rec of data.records) {
+        if (rec?.id) recordIds.push(rec.id);
+      }
+    }
+
+    offset = data.offset;
+  } while (offset);
+
+  console.log(`Found ${recordIds.length} record(s) in the view to delete.`);
+  return recordIds;
+}
+
+function chunk(arr, size) {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+async function deleteRecords(recordIds) {
+  if (recordIds.length === 0) {
+    console.log('No records to delete. Exiting.');
+    return;
+  }
+
+  if (recordIds.length > MAX_RECORDS_TO_DELETE) {
+    throw new Error(
+      `Refusing to delete ${recordIds.length} records (limit ${MAX_RECORDS_TO_DELETE}). Check your view configuration.`
+    );
+  }
+
+  const batches = chunk(recordIds, 10); // Airtable limit per delete call
+  console.log(`Deleting records in ${batches.length} batch(es)...`);
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const params = new URLSearchParams();
+    for (const id of batch) {
+      params.append('records[]', id);
+    }
+
+    const url = `${AIRTABLE_BASE_URL}/${BASE_ID}/${TABLE_ID}?${params.toString()}`;
+
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(
+        `Error deleting records (batch ${i + 1}/${batches.length}): ` +
+          `${res.status} ${res.statusText} – ${text}`
+      );
+    }
+
+    const data = await res.json();
+    const deletedCount = Array.isArray(data.records) ? data.records.length : 0;
+
+    console.log(
+      `Batch ${i + 1}/${batches.length} deleted ${deletedCount} record(s).`
+    );
+  }
+
+  console.log('All requested records deleted successfully.');
+}
+
+async function main() {
+  try {
+    const ids = await fetchAllRecordIds();
+    await deleteRecords(ids);
+  } catch (err) {
+    console.error('❌ Failed to clear Email Logs "TO DELETE" view:', err);
+    process.exitCode = 1;
+  }
+}
+
+await main();

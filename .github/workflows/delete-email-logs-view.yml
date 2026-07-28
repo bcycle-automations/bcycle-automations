@@ -1,0 +1,36 @@
+name: Delete Airtable "Email Logs - TO DELETE (DO NOT TOUCH)" view
+
+on:
+  schedule:
+    # 6:00 UTC = 1:00 AM EST (2:00 AM EDT)
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  delete-email-logs-view:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
+          else
+            echo "No package.json found, skipping install"
+          fi
+
+      - name: Delete Email Logs view records
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          CUSTOMER_BASE_ID: ${{ secrets.CUSTOMER_BASE_ID }}
+        run: node scripts/delete-email-logs-view.js
