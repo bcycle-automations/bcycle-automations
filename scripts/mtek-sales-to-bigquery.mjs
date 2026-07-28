@@ -33,6 +33,7 @@ import { sendSlackMessage } from "./lib/slack.mjs";
 import { insertInBatches } from "./lib/bigquery.mjs";
 
 const MAX_WINDOW_DAYS = 7;
+const SYNC_LABEL = "b.cycle - Sales";
 
 const MTEK_BASE_URL = (process.env.MTEK_BASE_URL || "https://bcycle.marianatek.com").replace(/\/+$/, "");
 const MTEK_API_TOKEN = (process.env.MTEK_API_TOKEN || "").trim();
@@ -252,7 +253,14 @@ async function main() {
   console.log(`\nDone. ${chunkCount} chunk(s), ${totalInserted} total row(s) ${DRY_RUN ? "would be " : ""}inserted.`);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("Sync failed:", err.message);
+  if (!DRY_RUN) {
+    try {
+      await sendSlackMessage(`⚠️ ${SYNC_LABEL} sync failed: ${err.message}`);
+    } catch (slackErr) {
+      console.error("Additionally failed to post failure notice to Slack:", slackErr.message);
+    }
+  }
   process.exit(1);
 });
