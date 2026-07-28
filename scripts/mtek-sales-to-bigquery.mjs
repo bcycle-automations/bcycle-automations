@@ -235,7 +235,7 @@ async function main() {
       await table.insert(newRows);
       console.log(`Inserted ${newRows.length} rows into ${BQ_TABLE}`);
       await sendSlackMessage(
-        `Sales added from ${formatDisplayDate(minDate)} to ${formatDisplayDate(maxDate)}: ${newRows.length} rows`
+        `b.cycle - Sales added from ${formatDisplayDate(minDate)} to ${formatDisplayDate(maxDate)}: ${newRows.length} rows`
       );
     } else {
       console.log("Nothing new to insert for this chunk.");
