@@ -1,0 +1,22 @@
+name: "[Prototype] Churn risk: attendance decay + credit exhaustion"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run prototype scoring
+        env:
+          MTEK_BASE_URL: https://bcycle.marianatek.com
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+        run: node scripts/churn-risk-attendance-credit-slice.mjs
