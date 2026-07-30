@@ -344,7 +344,17 @@ async function main() {
   const bq = new BigQuery({ projectId: BQ_PROJECT_ID });
   console.log(`Churn risk scoring — ${DRY_RUN ? "DRY RUN" : "LIVE"}`);
 
-  if (!DRY_RUN) await ensureScoresTable(bq);
+  let isFirstRun = false;
+  if (!DRY_RUN) {
+    await ensureScoresTable(bq);
+    const [[{ existingCount }]] = await bq.query({
+      query: `SELECT COUNT(*) AS existingCount FROM \`${BQ_PROJECT_ID}.SalesZF.churn_risk_scores\``,
+    });
+    isFirstRun = Number(existingCount) === 0;
+    if (isFirstRun) {
+      console.log("First run detected (scores table is empty) — will seed Airtable but skip the Slack alert.");
+    }
+  }
 
   const [memberRows] = await bq.query({ query: MEMBERSHIP_QUERY });
   const [creditRows] = await bq.query({ query: CREDIT_QUERY });
@@ -360,11 +370,15 @@ async function main() {
     const written = await upsertAirtable([...changedMember, ...changedCredit]);
     console.log(`Wrote ${written} records to Airtable.`);
 
-    if (written > 0) {
+    if (written > 0 && !isFirstRun) {
       await sendSlackMessage(
         `Churn risk scoring: ${written} new/escalated customers flagged today ` +
           `(${changedMember.length} membership, ${changedCredit.length} credit). ` +
           `See "Churn Risk" table.`
+      );
+    } else if (written > 0 && isFirstRun) {
+      console.log(
+        `(Slack notification skipped — first run seeded ${written} records as an initial backlog, not a daily change.)`
       );
     }
   } else {
