@@ -158,7 +158,18 @@ FROM ML.PREDICT(MODEL \`${BQ_PROJECT_ID}.SalesZF.churn_model_membership\`, (
 
 const CREDIT_QUERY = `
 ${SHARED_CTES},
-credit_pop AS (SELECT * FROM candidates WHERE category = 'credit'),
+credit_pop AS (
+  -- Further scoped beyond the shared 180-day visit window: credit
+  -- customers only make sense to flag as "at risk, still actionable" if
+  -- their most recent purchase is itself recent. Someone whose last pack
+  -- purchase was 150 days ago and never returned isn't "at risk" in an
+  -- actionable sense -- they're already gone, and belongs in a win-back
+  -- flow, not this one. Without this, most of the credit population scores
+  -- Critical by default, since most credit-pack buyers never repurchase.
+  SELECT * FROM candidates
+  WHERE category = 'credit'
+    AND last_purchase_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+),
 visits_used AS (
   SELECT cp.email, COUNT(DISTINCT a.d) AS visits_since_purchase
   FROM credit_pop cp
