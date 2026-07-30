@@ -136,8 +136,7 @@ member_features AS (
 SELECT
   email, last_visit_date, first_name, last_name, mtek_customer_id,
   gap_days, visit_count,
-  predicted_label_probs[OFFSET(0)].prob AS prob_class_0,
-  (SELECT prob FROM UNNEST(predicted_label_probs) WHERE label = '1') AS churn_prob,
+  (SELECT prob FROM UNNEST(predicted_label_probs) WHERE label = 1) AS churn_prob,
   CASE
     WHEN gap_days >= 30 THEN CONCAT('No visits in ', CAST(gap_days AS STRING), ' days')
     WHEN IFNULL(freq_ratio, 1) < 0.6 THEN 'Visit frequency declining vs. prior period'
@@ -181,7 +180,7 @@ credit_features AS (
 SELECT
   email, last_visit_date, first_name, last_name, mtek_customer_id,
   gap_days, visit_count,
-  (SELECT prob FROM UNNEST(predicted_label_probs) WHERE label = '1') AS churn_prob,
+  (SELECT prob FROM UNNEST(predicted_label_probs) WHERE label = 1) AS churn_prob,
   CASE
     WHEN expired_with_unused_credits THEN 'Credits expired unused'
     WHEN NOT credits_expired AND credits_remaining_est > 0 AND days_until_expiry_est BETWEEN 0 AND 10
