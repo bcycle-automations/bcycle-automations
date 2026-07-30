@@ -44,6 +44,12 @@ const DRY_RUN = String(process.env.DRY_RUN).toLowerCase() !== "false";
 // Off by default while the flow is still being validated -- turn on by
 // setting ENABLE_SLACK=true once you're ready for weekly pings.
 const ENABLE_SLACK = String(process.env.ENABLE_SLACK).toLowerCase() === "true";
+// Populates BigQuery (and marks everyone's previous_tier as a real
+// baseline) without touching the Airtable API at all -- for (re)seeding
+// after a model change, when the natural "first run" flood would mean
+// thousands of sequential Airtable calls. Export a CSV from
+// churn_risk_scores for manual import instead.
+const SEED_ONLY = String(process.env.SEED_ONLY).toLowerCase() === "true";
 
 // Calibrated against the backtests in the model-development conversation.
 const THRESHOLDS = {
@@ -465,6 +471,14 @@ async function main() {
     changedMember = await mergeAndDiff(bq, "membership", memberRows, THRESHOLDS.membership);
     changedCredit = await mergeAndDiff(bq, "credit", creditRows, THRESHOLDS.credit);
     console.log(`${changedMember.length} membership + ${changedCredit.length} credit customers changed tier.`);
+
+    if (SEED_ONLY) {
+      console.log(
+        `SEED_ONLY set — BigQuery is populated, Airtable was not touched. ` +
+          `Export churn_risk_scores (tier IN Critical/Watch) to CSV for manual import.`
+      );
+      return;
+    }
 
     const written = await upsertAirtable([...changedMember, ...changedCredit]);
     console.log(`Wrote ${written} records to Airtable.`);

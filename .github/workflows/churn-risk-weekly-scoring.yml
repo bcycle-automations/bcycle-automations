@@ -9,6 +9,10 @@ on:
         description: "Dry run (no writes to BigQuery or Airtable)"
         type: boolean
         default: true
+      seed_only:
+        description: "Seed BigQuery only, skip Airtable entirely (for reseeding after a model change)"
+        type: boolean
+        default: false
 
 jobs:
   score:
@@ -38,4 +42,5 @@ jobs:
           # Scheduled runs always write for real. Manual (workflow_dispatch)
           # runs default to a dry run unless the input is explicitly unchecked.
           DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
+          SEED_ONLY: ${{ github.event.inputs.seed_only }}
         run: node scripts/churn-risk-weekly-scoring.mjs
