@@ -25,6 +25,9 @@ const AIRTABLE_TOKEN = (process.env.AIRTABLE_TOKEN || "").trim();
 const AIRTABLE_BASE_ID = process.env.CHURN_RISK_AIRTABLE_BASE_ID || "appofCRTxHoIe6dXI";
 const AIRTABLE_TABLE_ID = process.env.CHURN_RISK_AIRTABLE_TABLE_ID || "tblmykQyEGNBZ1Y84";
 const DRY_RUN = String(process.env.DRY_RUN).toLowerCase() !== "false";
+// Off by default while the flow is still being validated -- turn on by
+// setting ENABLE_SLACK=true once you're ready for daily pings.
+const ENABLE_SLACK = String(process.env.ENABLE_SLACK).toLowerCase() === "true";
 
 // Calibrated against the backtest in the model-development conversation —
 // membership crosses ~80% recall / 82% precision around 0.55; credit around
@@ -370,15 +373,15 @@ async function main() {
     const written = await upsertAirtable([...changedMember, ...changedCredit]);
     console.log(`Wrote ${written} records to Airtable.`);
 
-    if (written > 0 && !isFirstRun) {
+    if (written > 0 && !isFirstRun && ENABLE_SLACK) {
       await sendSlackMessage(
         `Churn risk scoring: ${written} new/escalated customers flagged today ` +
           `(${changedMember.length} membership, ${changedCredit.length} credit). ` +
           `See "Churn Risk" table.`
       );
-    } else if (written > 0 && isFirstRun) {
+    } else if (written > 0) {
       console.log(
-        `(Slack notification skipped — first run seeded ${written} records as an initial backlog, not a daily change.)`
+        `(Slack notification skipped — ${isFirstRun ? "first run" : "ENABLE_SLACK not set"}.)`
       );
     }
   } else {
