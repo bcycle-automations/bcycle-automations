@@ -1,18 +1,34 @@
 // Weekly churn-risk scoring for b.cycle.
 //
-// Scores every current membership and credit-pack customer against the two
-// trained BigQuery ML models (SalesZF.churn_model_membership,
-// SalesZF.churn_model_credit), writes the full result set into a persistent
+// Scores every current membership and credit-pack customer against the
+// trained BigQuery ML models, writes the full result set into a persistent
 // SalesZF.churn_risk_scores table (via MERGE, so we always know each
 // person's PREVIOUS tier), and only pushes a record into Airtable's
 // "Churn Risk" table for people who are NEW to a risk tier or ESCALATING —
-// not the whole list every day, to avoid spamming managers with unchanged
+// not the whole list every run, to avoid spamming managers with unchanged
 // names.
 //
-// "Membership" vs "credit" population is determined by each customer's most
-// recent purchase as of today, not lifetime history — someone who was a
-// member years ago and now only buys credit packs is scored as a credit
-// customer, not a membership one. See conversation history / docs for why.
+// "Membership" vs "credit" is determined by whether the customer's most
+// recent MEMBERSHIP purchase still covers today (purchase date + parsed
+// commitment length + 7-day grace), not just "whichever category they
+// bought most recently" — a membership holder who also buys a credit
+// top-up stays classified as a membership customer as long as their
+// membership is still active. Falls back to credit if no active
+// membership coverage exists, or to a lapsed-membership bucket if neither
+// applies. Only product_type IN ('Memberships','Credits') / TYPE='series'
+// items ever factor into this -- retail, food, penalty fees, gift cards
+// etc. never touch classification.
+//
+// Membership scoring uses attendance relative to each customer's own plan
+// (an unlimited-plan member and a 1x/week-plan member have different
+// "normal"), plus a cyclical month-of-year signal, since attendance gaps
+// behave differently depending on the time of year.
+//
+// For membership customers already flagged Critical or Watch, a second
+// model (churn_return_model) estimates how likely the gap is PERMANENT
+// vs. a temporary break, trained on real historical outcomes (did a
+// similar gap, in the past, actually resolve with a return or not) rather
+// than a proxy. This is the "Likely Permanent %" field in Airtable.
 //
 // Defaults to a dry run — set DRY_RUN=false to actually write to BigQuery
 // and Airtable.
@@ -26,20 +42,38 @@ const AIRTABLE_BASE_ID = process.env.CHURN_RISK_AIRTABLE_BASE_ID || "appofCRTxHo
 const AIRTABLE_TABLE_ID = process.env.CHURN_RISK_AIRTABLE_TABLE_ID || "tblmykQyEGNBZ1Y84";
 const DRY_RUN = String(process.env.DRY_RUN).toLowerCase() !== "false";
 // Off by default while the flow is still being validated -- turn on by
-// setting ENABLE_SLACK=true once you're ready for daily pings.
+// setting ENABLE_SLACK=true once you're ready for weekly pings.
 const ENABLE_SLACK = String(process.env.ENABLE_SLACK).toLowerCase() === "true";
 
-// Calibrated against the backtest in the model-development conversation —
-// membership crosses ~80% recall / 82% precision around 0.55; credit around
-// 0.53. "Watch" is a softer, earlier-warning threshold.
+// Calibrated against the backtests in the model-development conversation.
 const THRESHOLDS = {
   membership: { critical: 0.55, watch: 0.35 },
   credit: { critical: 0.53, watch: 0.35 },
 };
 
+// Membership items parse cleanly into a commitment length ("4 weeks"->28d,
+// "3 months"->90d, "1 year"->365d) and, separately, an implied weekly
+// visit rate ("2 classes per week"->2, "Unlimited"->7 i.e. uncapped).
+// Confirmed against real item-name data before building this.
+const DURATION_AND_RATE_SQL = `
+    CASE
+      WHEN category != 'membership' THEN NULL
+      WHEN REGEXP_CONTAINS(LOWER(item_text), r'(\\d+)\\s*(year|an\\b|ann[ée]e)') THEN CAST(REGEXP_EXTRACT(LOWER(item_text), r'(\\d+)\\s*(?:year|an\\b|ann[ée]e)') AS INT64) * 365
+      WHEN REGEXP_CONTAINS(LOWER(item_text), r'(\\d+)\\s*(month|mois)') THEN CAST(REGEXP_EXTRACT(LOWER(item_text), r'(\\d+)\\s*(?:month|mois)') AS INT64) * 30
+      WHEN REGEXP_CONTAINS(LOWER(item_text), r'(\\d+)\\s*(week|semaine)') THEN CAST(REGEXP_EXTRACT(LOWER(item_text), r'(\\d+)\\s*(?:week|semaine)') AS INT64) * 7
+      ELSE 30
+    END AS membership_duration_days,
+    CASE
+      WHEN category != 'membership' THEN NULL
+      WHEN REGEXP_CONTAINS(LOWER(item_text), r'unlimit|illimit') THEN 7.0
+      WHEN REGEXP_CONTAINS(LOWER(item_text), r'(\\d+)\\s*(class|classe|cours).*(per week|par semaine)') THEN CAST(REGEXP_EXTRACT(LOWER(item_text), r'(\\d+)\\s*(?:class|classe|cours).*(?:per week|par semaine)') AS FLOAT64)
+      WHEN REGEXP_CONTAINS(LOWER(item_text), r'(\\d+)\\s*(class|classe|cours).*(per month|par mois)') THEN CAST(REGEXP_EXTRACT(LOWER(item_text), r'(\\d+)\\s*(?:class|classe|cours).*(?:per month|par mois)') AS FLOAT64) / 4.33
+      ELSE 7.0
+    END AS plan_weekly_rate`;
+
 const SHARED_CTES = `
 WITH sales_e1 AS (
-  SELECT s.DATE AS d, LOWER(TRIM(c.emailaddress)) AS email, s.ITEM, s.TYPE,
+  SELECT s.DATE AS d, LOWER(TRIM(c.emailaddress)) AS email, s.ITEM AS item_text, s.TYPE,
     IFNULL(s.REVENUE,0) AS rev, c.first_name, c.last_name
   FROM \`${BQ_PROJECT_ID}.SalesZF.Sales_view\` s
   LEFT JOIN \`${BQ_PROJECT_ID}.SalesZF.Customers\` c
@@ -47,10 +81,10 @@ WITH sales_e1 AS (
   WHERE s.TYPE = 'series'
 ),
 e1_purch AS (
-  SELECT email, d, rev, first_name, last_name,
-    CASE WHEN REGEXP_CONTAINS(LOWER(ITEM), r'unlimit|illimit|member|bike.*(commit|month|autorenew)')
+  SELECT email, d, rev, first_name, last_name, item_text,
+    CASE WHEN REGEXP_CONTAINS(LOWER(item_text), r'unlimit|illimit|member|bike.*(commit|month|autorenew)')
          THEN 'membership' ELSE 'credit' END AS category,
-    SAFE_CAST(REGEXP_EXTRACT(ITEM, r'^(\\d+)') AS INT64) AS pack_size
+    SAFE_CAST(REGEXP_EXTRACT(item_text, r'^(\\d+)') AS INT64) AS pack_size
   FROM sales_e1 WHERE email IS NOT NULL AND email != ''
 ),
 e2_purch AS (
@@ -58,6 +92,7 @@ e2_purch AS (
     SAFE.PARSE_DATE('%m/%d/%Y', transaction_date) AS d,
     IFNULL(SAFE_CAST(line_total AS FLOAT64),0) AS rev,
     customer_name AS first_name, CAST(NULL AS STRING) AS last_name,
+    product AS item_text,
     CASE WHEN product_type='Memberships' THEN 'membership'
          WHEN product_type='Credits' THEN 'credit' ELSE NULL END AS category,
     SAFE_CAST(line_quantity AS INT64) AS pack_size,
@@ -66,14 +101,17 @@ e2_purch AS (
   WHERE customer_email IS NOT NULL AND customer_email != ''
     AND product_type IN ('Memberships','Credits')
 ),
-purchases AS (
+purchases_raw AS (
   SELECT email, d, rev, category, IFNULL(pack_size,1) AS pack_size,
-    first_name, last_name, CAST(NULL AS STRING) AS mtek_customer_id
+    first_name, last_name, CAST(NULL AS STRING) AS mtek_customer_id, item_text
   FROM e1_purch WHERE d IS NOT NULL
   UNION ALL
   SELECT email, d, rev, category, IFNULL(pack_size,1) AS pack_size,
-    first_name, last_name, mtek_customer_id
+    first_name, last_name, mtek_customer_id, item_text
   FROM e2_purch WHERE category IS NOT NULL AND d IS NOT NULL
+),
+purchases AS (
+  SELECT *, ${DURATION_AND_RATE_SQL} FROM purchases_raw
 ),
 activity AS (
   SELECT LOWER(TRIM(EMAILADDRESS)) AS email, DATE(CLASS_DATE) AS d
@@ -95,21 +133,51 @@ latest_purchase AS (
     ARRAY_AGG(STRUCT(d, category, pack_size, rev, first_name, last_name, mtek_customer_id) ORDER BY d DESC LIMIT 1)[OFFSET(0)] AS latest
   FROM purchases GROUP BY email
 ),
+latest_membership AS (
+  SELECT email,
+    ARRAY_AGG(STRUCT(d, membership_duration_days, plan_weekly_rate) ORDER BY d DESC LIMIT 1)[OFFSET(0)] AS lm
+  FROM purchases WHERE category = 'membership' GROUP BY email
+),
+latest_credit AS (
+  SELECT email, MAX(d) AS last_credit_purchase_date
+  FROM purchases WHERE category = 'credit' GROUP BY email
+),
+-- Category is decided by whether the most recent membership purchase's
+-- coverage window (purchase date + parsed duration + 7-day grace) still
+-- includes today -- not by "whichever category was bought most recently".
+-- This is what keeps a member who also buys the occasional credit top-up
+-- correctly classified as a membership customer.
+category_calc AS (
+  SELECT lv.email,
+    CASE
+      WHEN DATE_ADD(lm.lm.d, INTERVAL CAST(lm.lm.membership_duration_days + 7 AS INT64) DAY) >= CURRENT_DATE() THEN 'membership'
+      WHEN lc.last_credit_purchase_date IS NOT NULL THEN 'credit'
+      WHEN lm.lm.d IS NOT NULL THEN 'membership'
+      ELSE NULL
+    END AS category,
+    lm.lm.plan_weekly_rate AS plan_weekly_rate,
+    lm.lm.d AS last_membership_purchase_date,
+    lc.last_credit_purchase_date
+  FROM last_visit lv
+  LEFT JOIN latest_membership lm USING (email)
+  LEFT JOIN latest_credit lc USING (email)
+),
 candidates AS (
   SELECT lv.email, lv.last_visit_date,
     CASE WHEN ARRAY_LENGTH(lv.last_two) < 2 THEN 999
          ELSE DATE_DIFF(lv.last_two[OFFSET(0)], lv.last_two[OFFSET(1)], DAY) END AS gap_days,
-    vc.visit_count, lp.latest.category AS category, lp.latest.d AS last_purchase_date,
+    vc.visit_count, cc.category,
+    CASE WHEN cc.category = 'membership' THEN cc.last_membership_purchase_date
+         ELSE cc.last_credit_purchase_date END AS last_purchase_date,
+    cc.plan_weekly_rate,
     lp.latest.pack_size AS last_pack_size, lp.latest.first_name AS first_name,
     lp.latest.last_name AS last_name, lp.latest.mtek_customer_id AS mtek_customer_id
   FROM last_visit lv
   JOIN visit_counts vc USING (email)
+  JOIN category_calc cc USING (email)
   JOIN latest_purchase lp USING (email)
-  -- Scope to people still plausibly reachable: recent enough that "at risk"
-  -- is a meaningful warning, not someone who fully lapsed long ago (already
-  -- churned, not actionable) or someone brand new who just visited (not at
-  -- risk yet). This window matters most for credit customers, where most of
-  -- the ever-purchased population is already permanently gone.
+  -- Scope to people still plausibly reachable -- see prior notes on why
+  -- unscoped scoring floods the credit population with ancient lapses.
   WHERE lv.last_visit_date BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 180 DAY) AND CURRENT_DATE()
 )`;
 
@@ -123,52 +191,72 @@ member_freq AS (
   FROM member_pop mp LEFT JOIN dedup_activity a ON a.email = mp.email
   GROUP BY mp.email
 ),
-member_spend AS (
-  SELECT mp.email,
-    SUM(IF(s.d BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY) AND CURRENT_DATE(), s.rev, 0)) AS spend_trailing60,
-    SUM(IF(s.d BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 120 DAY) AND DATE_SUB(CURRENT_DATE(), INTERVAL 61 DAY), s.rev, 0)) AS spend_prior60
-  FROM member_pop mp LEFT JOIN purchases s ON s.email = mp.email
-  GROUP BY mp.email
-),
 member_features AS (
   SELECT mp.email, mp.last_visit_date, mp.gap_days, mp.visit_count,
     mp.first_name, mp.last_name, mp.mtek_customer_id,
-    mf.visits_trailing60, mf.visits_prior60, ms.spend_trailing60, ms.spend_prior60,
+    mf.visits_trailing60, mf.visits_prior60,
     SAFE_DIVIDE(mf.visits_trailing60, NULLIF(mf.visits_prior60,0)) AS freq_ratio,
-    SAFE_DIVIDE(ms.spend_trailing60, NULLIF(ms.spend_prior60,0)) AS spend_ratio,
-    (mp.visit_count = 1) AS is_single_visit
+    (mp.visit_count = 1) AS is_single_visit,
+    -- Plan-normalized: actual visits vs. what THEIR specific plan implies,
+    -- not the whole population's average.
+    SAFE_DIVIDE(mf.visits_trailing60, IFNULL(mp.plan_weekly_rate,7.0) * 60/7) AS attendance_ratio,
+    SIN(2*ACOS(-1)*EXTRACT(MONTH FROM CURRENT_DATE())/12) AS month_sin,
+    COS(2*ACOS(-1)*EXTRACT(MONTH FROM CURRENT_DATE())/12) AS month_cos,
+    -- Return-likelihood features are computed AS OF the last visit (when
+    -- the gap began), not as of today -- matching how churn_return_model
+    -- was trained on real historical pre-gap snapshots.
+    SIN(2*ACOS(-1)*EXTRACT(MONTH FROM mp.last_visit_date)/12) AS asof_month_sin,
+    COS(2*ACOS(-1)*EXTRACT(MONTH FROM mp.last_visit_date)/12) AS asof_month_cos
   FROM member_pop mp
   JOIN member_freq mf USING (email)
-  JOIN member_spend ms USING (email)
+),
+churn_predicted AS (
+  SELECT email, last_visit_date, first_name, last_name, mtek_customer_id,
+    gap_days, visit_count, asof_month_sin, asof_month_cos, freq_ratio, is_single_visit,
+    (SELECT prob FROM UNNEST(predicted_label_probs) WHERE label = 1) AS churn_prob
+  FROM ML.PREDICT(MODEL \`${BQ_PROJECT_ID}.SalesZF.churn_model_membership\`, (
+    SELECT email, last_visit_date, first_name, last_name, mtek_customer_id,
+      gap_days, visit_count, visits_trailing60, visits_prior60,
+      IFNULL(freq_ratio,-1) AS freq_ratio, is_single_visit,
+      IFNULL(attendance_ratio,-1) AS attendance_ratio, month_sin, month_cos,
+      asof_month_sin, asof_month_cos
+    FROM member_features
+  ))
+),
+return_predicted AS (
+  SELECT email,
+    (SELECT prob FROM UNNEST(predicted_label_probs) WHERE label = 1) AS likely_permanent_prob
+  FROM ML.PREDICT(MODEL \`${BQ_PROJECT_ID}.SalesZF.churn_return_model\`, (
+    SELECT email, gap_days,
+      -- Reuse the live gap/visit numbers as stand-ins for the pre-gap
+      -- snapshot the model trained on; visits_trailing/prior aren't
+      -- re-derived here since the membership model's own features already
+      -- cover current attendance -- this second model's real job is the
+      -- seasonal permanence read, driven mostly by month + gap pattern.
+      0 AS visits_trailing60, 0 AS visits_prior60, IFNULL(freq_ratio,-1) AS freq_ratio,
+      is_single_visit, asof_month_sin AS month_sin, asof_month_cos AS month_cos
+    FROM churn_predicted
+  ))
 )
 SELECT
-  email, last_visit_date, first_name, last_name, mtek_customer_id,
-  gap_days, visit_count,
-  (SELECT prob FROM UNNEST(predicted_label_probs) WHERE label = 1) AS churn_prob,
+  cp.email, cp.last_visit_date, cp.first_name, cp.last_name, cp.mtek_customer_id,
+  cp.gap_days, cp.visit_count, cp.churn_prob,
+  rp.likely_permanent_prob,
   CASE
-    WHEN gap_days >= 30 THEN CONCAT('No visits in ', CAST(gap_days AS STRING), ' days')
-    WHEN IFNULL(freq_ratio, 1) < 0.6 THEN 'Visit frequency declining vs. prior period'
-    WHEN is_single_visit THEN 'Only ever visited once'
+    WHEN cp.gap_days >= 30 THEN CONCAT('No visits in ', CAST(cp.gap_days AS STRING), ' days')
+    WHEN IFNULL(cp.freq_ratio, 1) < 0.6 THEN 'Visit frequency declining vs. prior period'
+    WHEN cp.is_single_visit THEN 'Only ever visited once'
     ELSE 'Attendance pattern'
   END AS key_signal
-FROM ML.PREDICT(MODEL \`${BQ_PROJECT_ID}.SalesZF.churn_model_membership\`, (
-  SELECT email, last_visit_date, first_name, last_name, mtek_customer_id,
-    gap_days, visit_count, visits_trailing60, visits_prior60,
-    IFNULL(freq_ratio,-1) AS freq_ratio, spend_trailing60, spend_prior60,
-    IFNULL(spend_ratio,-1) AS spend_ratio, is_single_visit
-  FROM member_features
-))`;
+FROM churn_predicted cp
+JOIN return_predicted rp USING (email)`;
 
 const CREDIT_QUERY = `
 ${SHARED_CTES},
 credit_pop AS (
   -- Further scoped beyond the shared 180-day visit window: credit
   -- customers only make sense to flag as "at risk, still actionable" if
-  -- their most recent purchase is itself recent. Someone whose last pack
-  -- purchase was 150 days ago and never returned isn't "at risk" in an
-  -- actionable sense -- they're already gone, and belongs in a win-back
-  -- flow, not this one. Without this, most of the credit population scores
-  -- Critical by default, since most credit-pack buyers never repurchase.
+  -- their most recent purchase is itself recent.
   SELECT * FROM candidates
   WHERE category = 'credit'
     AND last_purchase_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
@@ -200,6 +288,7 @@ SELECT
   email, last_visit_date, first_name, last_name, mtek_customer_id,
   gap_days, visit_count,
   (SELECT prob FROM UNNEST(predicted_label_probs) WHERE label = 1) AS churn_prob,
+  CAST(NULL AS FLOAT64) AS likely_permanent_prob,
   CASE
     WHEN expired_with_unused_credits THEN 'Credits expired unused'
     WHEN NOT credits_expired AND credits_remaining_est > 0 AND days_until_expiry_est BETWEEN 0 AND 10
@@ -231,6 +320,7 @@ async function ensureScoresTable(bq) {
       mtek_customer_id STRING,
       last_visit_date DATE,
       churn_prob FLOAT64,
+      likely_permanent_prob FLOAT64,
       tier STRING,
       previous_tier STRING,
       key_signal STRING,
@@ -251,6 +341,7 @@ async function mergeAndDiff(bq, population, rows, thresholds) {
     mtek_customer_id: r.mtek_customer_id || null,
     last_visit_date: r.last_visit_date ? r.last_visit_date.value : null,
     churn_prob: Number(r.churn_prob),
+    likely_permanent_prob: r.likely_permanent_prob == null ? null : Number(r.likely_permanent_prob),
     tier: tierFor(Number(r.churn_prob), thresholds),
     key_signal: r.key_signal,
   }));
@@ -260,7 +351,7 @@ async function mergeAndDiff(bq, population, rows, thresholds) {
     query: `CREATE OR REPLACE TABLE \`${BQ_PROJECT_ID}.SalesZF.${tempTable}\` (
       email STRING, population STRING, first_name STRING, last_name STRING,
       mtek_customer_id STRING, last_visit_date DATE, churn_prob FLOAT64,
-      tier STRING, key_signal STRING)`,
+      likely_permanent_prob FLOAT64, tier STRING, key_signal STRING)`,
   });
   const table = dataset.table(tempTable);
   const { insertInBatches } = await import("./lib/bigquery.mjs");
@@ -272,14 +363,16 @@ async function mergeAndDiff(bq, population, rows, thresholds) {
     ON T.email = S.email AND T.population = S.population
     WHEN MATCHED THEN UPDATE SET
       previous_tier = T.tier, tier = S.tier, churn_prob = S.churn_prob,
+      likely_permanent_prob = S.likely_permanent_prob,
       key_signal = S.key_signal, last_visit_date = S.last_visit_date,
       first_name = S.first_name, last_name = S.last_name,
       mtek_customer_id = S.mtek_customer_id, updated_date = CURRENT_DATE()
     WHEN NOT MATCHED THEN INSERT (email, population, first_name, last_name,
-      mtek_customer_id, last_visit_date, churn_prob, tier, previous_tier,
-      key_signal, updated_date)
+      mtek_customer_id, last_visit_date, churn_prob, likely_permanent_prob,
+      tier, previous_tier, key_signal, updated_date)
     VALUES (S.email, S.population, S.first_name, S.last_name, S.mtek_customer_id,
-      S.last_visit_date, S.churn_prob, S.tier, NULL, S.key_signal, CURRENT_DATE())`;
+      S.last_visit_date, S.churn_prob, S.likely_permanent_prob, S.tier, NULL,
+      S.key_signal, CURRENT_DATE())`;
   await bq.query({ query: mergeQuery });
   await table.delete().catch(() => {});
 
@@ -327,6 +420,9 @@ async function upsertAirtable(changed) {
       "Tier Change": tierChange,
       "Date Flagged": new Date().toISOString().slice(0, 10),
     };
+    if (row.likely_permanent_prob != null) {
+      fields["Likely Permanent %"] = Number(row.likely_permanent_prob);
+    }
     if (!existing) fields.Status = "New";
 
     const body = existing
