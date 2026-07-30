@@ -102,7 +102,12 @@ candidates AS (
   FROM last_visit lv
   JOIN visit_counts vc USING (email)
   JOIN latest_purchase lp USING (email)
-  WHERE lv.last_visit_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 2 YEAR)
+  -- Scope to people still plausibly reachable: recent enough that "at risk"
+  -- is a meaningful warning, not someone who fully lapsed long ago (already
+  -- churned, not actionable) or someone brand new who just visited (not at
+  -- risk yet). This window matters most for credit customers, where most of
+  -- the ever-purchased population is already permanently gone.
+  WHERE lv.last_visit_date BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 180 DAY) AND CURRENT_DATE()
 )`;
 
 const MEMBERSHIP_QUERY = `
