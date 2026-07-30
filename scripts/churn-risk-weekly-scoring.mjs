@@ -1,4 +1,4 @@
-// Daily churn-risk scoring for b.cycle.
+// Weekly churn-risk scoring for b.cycle.
 //
 // Scores every current membership and credit-pack customer against the two
 // trained BigQuery ML models (SalesZF.churn_model_membership,

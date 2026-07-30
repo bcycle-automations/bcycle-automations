@@ -1,8 +1,8 @@
-name: Churn risk daily scoring
+name: Churn risk weekly scoring
 
 on:
   schedule:
-    - cron: "0 11 * * *" # 07:00 America/Toronto (fixed UTC offset — not DST-adjusted)
+    - cron: "0 9 * * 1" # Monday 05:00 America/Toronto (fixed UTC offset — not DST-adjusted, matches existing repo convention)
   workflow_dispatch:
     inputs:
       dry_run:
@@ -38,4 +38,4 @@ jobs:
           # Scheduled runs always write for real. Manual (workflow_dispatch)
           # runs default to a dry run unless the input is explicitly unchecked.
           DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
-        run: node scripts/churn-risk-daily-scoring.mjs
+        run: node scripts/churn-risk-weekly-scoring.mjs
