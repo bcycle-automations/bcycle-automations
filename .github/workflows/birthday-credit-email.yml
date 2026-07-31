@@ -1,0 +1,48 @@
+name: Birthday Credit Email
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_email:
+        description: "TEST ONLY: MTEK account + email that will receive the redirected test send (defaults to jonathan@bcyclespin.com)"
+        required: false
+        type: string
+
+      target_birthday_date:
+        description: "TEST ONLY: birthday date to search for, formatted YYYY-MM-DD (defaults to 7 days from today)"
+        required: false
+        type: string
+
+  schedule:
+    # 12:00 UTC = 8:00 a.m. EDT (7:00 a.m. EST)
+    - cron: "0 12 * * 1"
+
+jobs:
+  birthday-credit-email:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run birthday credit email automation
+        env:
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+
+          M365_CLIENT_ID: ${{ secrets.M365_CLIENT_ID }}
+          M365_CLIENT_SECRET: ${{ secrets.M365_CLIENT_SECRET }}
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_SENDER_UPN: ${{ secrets.M365_SENDER_UPN }}
+
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          CUSTOMER_BASE_ID: ${{ secrets.CUSTOMER_BASE_ID }}
+
+          TEST_EMAIL: ${{ github.event.inputs.test_email }}
+          TARGET_BIRTHDAY_DATE: ${{ github.event.inputs.target_birthday_date }}
+
+        run: node scripts/birthday-credit-email.mjs
