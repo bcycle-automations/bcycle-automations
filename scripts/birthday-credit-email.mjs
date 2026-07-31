@@ -99,12 +99,20 @@ async function main() {
   const testEmail = cleanString(process.env.TEST_EMAIL) || "jonathan@bcyclespin.com";
   const manuallySelectedDate = cleanString(process.env.TARGET_BIRTHDAY_DATE);
 
-  const targetBirthdayDate = manuallySelectedDate || getTargetBirthdayDate();
+  // TARGET_BIRTHDAY_DATE overrides to a single specific date, for testing
+  // against a known match. Otherwise, use the real 7-day window.
+  const targetBirthdayDates = manuallySelectedDate
+    ? [manuallySelectedDate]
+    : getTargetBirthdayDates();
 
   console.log("==========================================");
   console.log("Birthday credit email automation started");
   console.log(`Mode: ${LIVE_MODE ? "LIVE" : "TEST"}`);
-  console.log(`Target birthday date (month/day): ${targetBirthdayDate.slice(5)}`);
+  console.log(
+    `Target birthday window (month/day): ${targetBirthdayDates
+      .map((d) => d.slice(5))
+      .join(", ")}`
+  );
   if (!LIVE_MODE) {
     console.log(
       `TEST MODE: emails + credit grants are redirected to ${testEmail}'s account. ` +
@@ -113,9 +121,9 @@ async function main() {
   }
   console.log("==========================================");
 
-  const matches = await findBirthdayMatches(targetBirthdayDate);
+  const matches = await findBirthdayMatches(targetBirthdayDates);
 
-  console.log(`Found ${matches.length} client(s) with a birthday on ${targetBirthdayDate.slice(5)}.`);
+  console.log(`Found ${matches.length} client(s) with a birthday in the next 7 days.`);
   matches.forEach((match, index) => {
     console.log(`  ${index + 1}. ${match.email || "(no email)"} (user ${match.id})`);
   });
@@ -241,9 +249,21 @@ function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function getTargetBirthdayDate() {
+// Runs weekly (Monday cron), so "birthday in the next 7 days" has to mean a
+// 7-day window (today through today+6), not a single exact date — matching
+// only "exactly 7 days from today" would only ever catch people born on a
+// Monday, since that's the only weekday that lands exactly 7 days after a
+// Monday run. This window gives 0-6 days' notice depending on which day of
+// the week the birthday falls, with no gaps or overlaps between weekly runs.
+function getTargetBirthdayDates() {
   const todayInToronto = getDateInTimeZone(new Date(), TIME_ZONE);
-  return addCalendarDays(todayInToronto, 7);
+  const dates = [];
+
+  for (let offset = 0; offset <= 6; offset++) {
+    dates.push(addCalendarDays(todayInToronto, offset));
+  }
+
+  return dates;
 }
 
 function getDateInTimeZone(date, timeZone) {
@@ -275,34 +295,44 @@ function getMTechHeaders() {
   };
 }
 
-// Loops every birth year in range, querying the exact birth_date=YYYY-MM-DD
-// match for each, and collects every real (non-archived, has-email) match.
-async function findBirthdayMatches(targetDate) {
-  const monthDay = targetDate.slice(5); // "MM-DD"
+// For every date in the window, loops every birth year in range querying
+// the exact birth_date=YYYY-MM-DD match, and collects every real
+// (non-archived, has-email) match. Dedupes by user id in case someone
+// somehow matches more than one date in the window (shouldn't happen since
+// each date has a distinct month/day, but cheap insurance).
+async function findBirthdayMatches(targetDates) {
   const matches = [];
+  const seenUserIds = new Set();
 
-  for (let year = MIN_BIRTH_YEAR; year <= MAX_BIRTH_YEAR; year++) {
-    const birthDate = `${year}-${monthDay}`;
+  for (const targetDate of targetDates) {
+    const monthDay = targetDate.slice(5); // "MM-DD"
 
-    const users = await fetchAllPages(
-      `${MTEK_BASE_URL}/users/`,
-      { birth_date: birthDate, page_size: "100" },
-      getMTechHeaders()
-    );
+    for (let year = MIN_BIRTH_YEAR; year <= MAX_BIRTH_YEAR; year++) {
+      const birthDate = `${year}-${monthDay}`;
 
-    for (const user of users) {
-      const attrs = user.attributes || {};
+      const users = await fetchAllPages(
+        `${MTEK_BASE_URL}/users/`,
+        { birth_date: birthDate, page_size: "100" },
+        getMTechHeaders()
+      );
 
-      if (attrs.archived_at) continue;
-      if (!attrs.email) continue;
+      for (const user of users) {
+        const attrs = user.attributes || {};
 
-      matches.push({
-        id: user.id,
-        email: attrs.email,
-        firstName: attrs.first_name,
-        lastName: attrs.last_name,
-        birthDate: attrs.birth_date,
-      });
+        if (attrs.archived_at) continue;
+        if (!attrs.email) continue;
+        if (seenUserIds.has(user.id)) continue;
+
+        seenUserIds.add(user.id);
+        matches.push({
+          id: user.id,
+          email: attrs.email,
+          firstName: attrs.first_name,
+          lastName: attrs.last_name,
+          birthDate: attrs.birth_date,
+          upcomingBirthdayDate: targetDate,
+        });
+      }
     }
   }
 
