@@ -169,9 +169,13 @@ async function main() {
       });
 
       try {
+        // "Birthday email" is a pre-existing choice on the Email Logs Type
+        // field (singleSelect) — the Airtable token can't create new choice
+        // options, so test vs. live isn't distinguished here (it is in the
+        // MTEK credit_transaction `note` field and in the workflow logs).
         await logEmailToAirtable({
           email: match.email,
-          type: `Birthday credit email${LIVE_MODE ? "" : " (TEST)"}`,
+          type: "Birthday email",
         });
       } catch (logError) {
         console.error(
