@@ -27,6 +27,20 @@
 // the real customer — see recipientEmail / creditTargetUserId below. Flip
 // LIVE_MODE to true (and remove the redirect) only once Jess's final HTML
 // templates are ready and you've verified a test run end to end.
+//
+// The credit is granted via a real MTEK checkout (POST /carts/ -> POST
+// /cart_lines/ -> POST /checkouts/), not a direct POST /credit_transactions/.
+// The direct approach works but MTEK always names the resulting credit
+// "Complimentary <credit type>" (e.g. "Complimentary Passe Flex"), ignoring
+// whatever `credit_name` is sent — confirmed live. Going through checkout
+// with the real $0 product/variant produces a credit_transaction whose
+// credit_name is the actual product name ("Pass d'anniversaire" /
+// "Passe invité d'anniversaire"), since only checkout ties the transaction
+// to the product rather than just the underlying credit type. Also
+// confirmed: creating a cart for a user can silently merge in any
+// pre-existing OPEN cart they already have (found a real unrelated $31 item
+// this way during testing) — grantBirthdayCreditViaCheckout() refuses to
+// check out unless the cart total is exactly $0 after adding our line.
 
 import { fetchJsonWithRateLimit, fetchAllPages } from "./lib/mtek.mjs";
 
@@ -41,11 +55,19 @@ const TIME_ZONE = "America/Toronto";
 const MIN_BIRTH_YEAR = 1920;
 const MAX_BIRTH_YEAR = 2020;
 
-const CREDIT_EXPIRY_DAYS = 14; // matches both variants' 2-week relative expiration
-
 const UNLIMITED_MEMBERSHIP_PATTERN = /unlimited|illimit/i;
 const ACTIVE_MEMBERSHIP_STATUSES = new Set(["active", "frozen"]);
 
+// fulfillment_partner is per-studio, not universal (confirmed live):
+// VieuxPort=41364, CentreVille=41362, Rockland=41363, Westmount=41365.
+// Test mode always targets jonathan@bcyclespin.com, whose home studio is
+// Vieux-Port, so this is hardcoded for now. LIVE_MODE will need to map each
+// real customer's own location to the right partner id before going live.
+const TEST_PARTNER_ID = "41364";
+
+// child_products ids are the same underlying ids as the product_variants
+// ids (16602/16604) — just referenced under a different type name when
+// building a cart line.
 const PRODUCTS = {
   unlimited: {
     productId: "16603",
@@ -146,11 +168,13 @@ async function main() {
           (LIVE_MODE ? "" : ` — redirecting to ${recipientEmail} / MTEK user ${creditTargetUserId}`)
       );
 
-      await grantBirthdayCredit({
+      const order = await grantBirthdayCreditViaCheckout({
         userId: creditTargetUserId,
         product,
-        realCustomerEmail: match.email,
+        partnerId: TEST_PARTNER_ID,
       });
+
+      console.log(`  Granted via order ${order.attributes.number} (${order.id}).`);
 
       const emailHtml = buildEmailHtml({
         firstName: match.firstName || "there",
@@ -215,10 +239,6 @@ function validateEnvironmentVariables() {
 
 function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function truncate(value, maxLength) {
-  return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
 
 function getTargetBirthdayDate() {
@@ -325,45 +345,74 @@ async function getMembershipSegment(userId) {
   return hasUnlimited ? "unlimited" : "standard";
 }
 
-async function grantBirthdayCredit({ userId, product, realCustomerEmail }) {
-  const issuedAt = new Date();
-  const expirationDatetime = new Date(
-    issuedAt.getTime() + CREDIT_EXPIRY_DAYS * 24 * 60 * 60 * 1000
-  ).toISOString();
-
-  const body = {
-    data: {
-      type: "credit_transactions",
-      attributes: {
-        transaction_amount: 1,
-        transaction_currency: "CAD",
-        transaction_penalty_fee_type: "fee_loss_of_credit",
-        expiration_datetime: expirationDatetime,
-        credit_name: product.name,
-        origination_type: "complimentary",
-        // MTEK caps `note` at 100 characters.
-        note: truncate(
-          LIVE_MODE
-            ? "Birthday credit automation"
-            : `TEST birthday credit automation — real customer: ${realCustomerEmail}`,
-          100
-        ),
-      },
-      relationships: {
-        user: { data: { type: "users", id: String(userId) } },
-        credit: { data: { type: "credits", id: product.creditId } },
-      },
-    },
-  };
-
-  await fetchJsonWithRateLimit(`${MTEK_BASE_URL}/credit_transactions`, {
+// Grants the birthday credit via a real $0 checkout so the resulting
+// credit_transaction carries the real product name. Three steps:
+//   1. Create a cart for the user (can silently merge with any pre-existing
+//      open cart they already have).
+//   2. Add the product's variant as a cart line ($0 price).
+//   3. Refuse to proceed unless the cart total is exactly $0 (guards against
+//      the merge-in case above), then POST /checkouts/ to complete it.
+// Returns the completed order.
+async function grantBirthdayCreditViaCheckout({ userId, product, partnerId }) {
+  const cart = await fetchJsonWithRateLimit(`${MTEK_BASE_URL}/carts/`, {
     method: "POST",
-    headers: {
-      ...getMTechHeaders(),
-      "Content-Type": "application/vnd.api+json",
-    },
-    body: JSON.stringify(body),
+    headers: { ...getMTechHeaders(), "Content-Type": "application/vnd.api+json" },
+    body: JSON.stringify({
+      data: {
+        type: "carts",
+        relationships: {
+          user: { data: { type: "users", id: String(userId) } },
+          fulfillment_partner: { data: { type: "partners", id: partnerId } },
+        },
+      },
+    }),
   });
+
+  const cartId = cart.data.id;
+
+  await fetchJsonWithRateLimit(`${MTEK_BASE_URL}/cart_lines/`, {
+    method: "POST",
+    headers: { ...getMTechHeaders(), "Content-Type": "application/vnd.api+json" },
+    body: JSON.stringify({
+      data: {
+        type: "cart_lines",
+        attributes: { quantity: 1 },
+        relationships: {
+          cart: { data: { type: "carts", id: cartId } },
+          product: { data: { type: "child_products", id: product.variantId } },
+          partner: { data: { type: "partners", id: partnerId } },
+        },
+      },
+    }),
+  });
+
+  const cartCheck = await fetchJsonWithRateLimit(`${MTEK_BASE_URL}/carts/${cartId}/`, {
+    headers: getMTechHeaders(),
+  });
+
+  const cartTotal = Number(cartCheck.data.attributes.total);
+
+  if (cartTotal !== 0) {
+    throw new Error(
+      `Refusing to check out cart ${cartId}: expected a $0 total, got $${cartTotal}. ` +
+        "This usually means a pre-existing unrelated cart item merged in — check the account manually."
+    );
+  }
+
+  const order = await fetchJsonWithRateLimit(`${MTEK_BASE_URL}/checkouts/`, {
+    method: "POST",
+    headers: { ...getMTechHeaders(), "Content-Type": "application/vnd.api+json" },
+    body: JSON.stringify({
+      data: {
+        type: "checkouts",
+        relationships: {
+          cart: { data: { type: "carts", id: cartId } },
+        },
+      },
+    }),
+  });
+
+  return order.data;
 }
 
 function buildEmailHtml({ firstName, segment, product }) {
