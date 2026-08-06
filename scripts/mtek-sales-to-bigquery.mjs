@@ -1,5 +1,5 @@
 // scripts/mtek-sales-to-bigquery.mjs
-// Weekly sync: pulls the "Orders - UTC" MTEK report (id 353, slug
+// Daily sync: pulls the "Orders - UTC" MTEK report (id 353, slug
 // orders-utc) and appends new order lines into the existing SalesMTEK
 // table. Report's 35 headers map 1:1 (by position) onto SalesMTEK's 35
 // columns — no corrupted/missing columns like FirstTimersMTEK.
@@ -17,8 +17,19 @@
 // negated quantity — Transaction Date is what actually distinguishes it
 // from the original purchase).
 //
-// Defaults to a dry run — set DRY_RUN=false to actually write to BigQuery.
+// Same run also pushes Meta offline conversions: of the rows newly
+// inserted this chunk, any with product_type in Credits/Memberships/Gift
+// Cards and line_status Completed get sent as Purchase events to the
+// "b.cycle Offline Conversions" dataset. Customer email/phone/name comes
+// from a live MTEK /api/users/{id} lookup, not BigQuery — MTEK is the
+// authoritative, current-format source (phone already includes country
+// code there; the old Customers BigQuery table turned out to key off a
+// completely different ID space and is stale).
+//
+// Defaults to a dry run — set DRY_RUN=false to actually write to BigQuery
+// or send events to Meta.
 
+import { createHash } from "node:crypto";
 import { BigQuery } from "@google-cloud/bigquery";
 import {
   fetchMtekReport,
@@ -31,6 +42,7 @@ import {
 import { toMDYYYY, toTime12h, boolToString, nullToEmpty } from "./lib/format.mjs";
 import { sendSlackMessage } from "./lib/slack.mjs";
 import { insertInBatches } from "./lib/bigquery.mjs";
+import { fetchJsonWithRateLimit } from "./lib/mtek.mjs";
 
 const MAX_WINDOW_DAYS = 7;
 const SYNC_LABEL = "b.cycle - Sales";
@@ -47,6 +59,22 @@ const BQ_DATASET = process.env.BQ_DATASET || "SalesZF";
 const BQ_TABLE = process.env.BQ_TABLE || "SalesMTEK";
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
+
+const META_OFFLINE_CONVERSIONS_TOKEN = (process.env.META_OFFLINE_CONVERSIONS_TOKEN || "").trim();
+const META_OFFLINE_DATASET_ID = process.env.META_OFFLINE_DATASET_ID || "1979154219698960";
+const META_GRAPH_VERSION = "v19.0";
+const META_EVENT_BATCH_SIZE = 500;
+
+// Oli's spec: "class packs, memberships, and gift cards" — Credits covers
+// class packs/passes in MTEK's naming.
+const META_TARGET_PRODUCT_TYPES = new Set([
+  "Credits",
+  "Memberships",
+  "Email Credit Gift Cards",
+  "Email Gift Cards",
+  "Physical Credit Gift Cards",
+  "Physical Gift Cards",
+]);
 
 const EXPECTED_HEADERS = [
   "Order Number",
@@ -145,6 +173,97 @@ function dedupKey(row) {
   return `${row.order_number}|${row.product_id}|${row.variant_id}|${row.transaction_date}|${row.line_status}|${row.line_quantity}`;
 }
 
+function sha256(value) {
+  return createHash("sha256").update(String(value).trim().toLowerCase()).digest("hex");
+}
+
+// Raw report row's "Order Date (UTC)" + "Order Time (UTC)" are already UTC
+// — combine and parse directly, no timezone math needed.
+function eventTimeFromRawRow(rawRow, headerIndex) {
+  const orderDateUtc = rawRow[headerIndex["Order Date (UTC)"]];
+  const orderTimeUtc = rawRow[headerIndex["Order Time (UTC)"]] || "00:00:00";
+  const ms = Date.parse(`${orderDateUtc}T${orderTimeUtc}Z`);
+  if (Number.isNaN(ms)) throw new Error(`Could not parse event time from "${orderDateUtc} ${orderTimeUtc}"`);
+  return Math.floor(ms / 1000);
+}
+
+const mtekUserCache = new Map();
+
+// Live MTEK lookup — authoritative and current, unlike the stale BigQuery
+// Customers table (which turned out to key off a different ID space
+// entirely). Confirmed shape: GET /api/users/{id} -> { data: { attributes:
+// { email, first_name, last_name, phone_number } } }, phone already
+// includes country code.
+async function fetchMtekUser(customerId) {
+  if (mtekUserCache.has(customerId)) return mtekUserCache.get(customerId);
+
+  const url = new URL(`/api/users/${customerId}`, MTEK_BASE_URL);
+  const json = await fetchJsonWithRateLimit(url, {
+    headers: {
+      Authorization: `Bearer ${MTEK_API_TOKEN}`,
+      Accept: "application/vnd.api+json",
+    },
+  });
+  const attrs = json?.data?.attributes || null;
+  mtekUserCache.set(customerId, attrs);
+  return attrs;
+}
+
+async function buildMetaEvent(rawRow, headerIndex) {
+  const get = (name) => rawRow[headerIndex[name]];
+  const customerId = get("Customer ID");
+
+  let user = null;
+  try {
+    user = await fetchMtekUser(customerId);
+  } catch (err) {
+    console.warn(`  MTEK user lookup failed for customer ${customerId}: ${err.message}`);
+  }
+
+  const email = (user?.email || get("Customer Email") || "").trim();
+  const firstName = (user?.first_name || "").trim();
+  const lastName = (user?.last_name || "").trim();
+  const phone = (user?.phone_number || "").replace(/\D/g, "");
+
+  const userData = {};
+  if (email) userData.em = [sha256(email)];
+  if (phone) userData.ph = [sha256(phone)];
+  if (firstName) userData.fn = [sha256(firstName)];
+  if (lastName) userData.ln = [sha256(lastName)];
+
+  return {
+    event_name: "Purchase",
+    event_time: eventTimeFromRawRow(rawRow, headerIndex),
+    action_source: "physical_store",
+    user_data: userData,
+    custom_data: {
+      // Exclusive of tax, per Oli — Line Subtotal, not Line Total.
+      value: Number(get("Line Subtotal")),
+      currency: (get("Currency") || "").trim(),
+    },
+  };
+}
+
+async function sendMetaEvents(events) {
+  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${META_OFFLINE_DATASET_ID}/events`;
+  let totalReceived = 0;
+
+  for (let i = 0; i < events.length; i += META_EVENT_BATCH_SIZE) {
+    const batch = events.slice(i, i + META_EVENT_BATCH_SIZE);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: batch, access_token: META_OFFLINE_CONVERSIONS_TOKEN }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      throw new Error(`Meta API error for batch starting at ${i}: ${JSON.stringify(json)}`);
+    }
+    totalReceived += json.events_received || 0;
+  }
+  return totalReceived;
+}
+
 async function getInitialSinceDate(bq) {
   const [[lastDateRow]] = await bq.query({
     query: `SELECT MAX(SAFE.PARSE_DATE('%m/%d/%Y', transaction_date)) AS last_date
@@ -174,9 +293,13 @@ async function getExistingKeys(bq, minDate, maxDate) {
 
 async function main() {
   if (!MTEK_API_TOKEN) throw new Error("Missing MTEK_API_TOKEN");
+  if (!META_OFFLINE_CONVERSIONS_TOKEN) throw new Error("Missing META_OFFLINE_CONVERSIONS_TOKEN");
 
   const bq = new BigQuery({ projectId: BQ_PROJECT_ID });
   const table = bq.dataset(BQ_DATASET).table(BQ_TABLE);
+
+  const headerIndex = {};
+  EXPECTED_HEADERS.forEach((h, i) => (headerIndex[h] = i));
 
   const manualOverride = process.env.SYNC_MIN_DATE && process.env.SYNC_MAX_DATE;
   let sinceDate = manualOverride ? process.env.SYNC_MIN_DATE : await getInitialSinceDate(bq);
@@ -187,6 +310,7 @@ async function main() {
   const seenThisRun = new Set();
 
   let totalInserted = 0;
+  let totalMetaSent = 0;
   let chunkCount = 0;
 
   while (true) {
@@ -223,12 +347,13 @@ async function main() {
     console.log(`Fetched ${report.rows.length} rows from MTEK`);
 
     const existingKeys = await getExistingKeys(bq, minDate, maxDate);
-    const mapped = report.rows.map(mapRow);
-    const newRows = mapped.filter((r) => {
-      const key = dedupKey(r);
+    const indexed = report.rows.map((raw) => ({ raw, row: mapRow(raw) }));
+    const newIndexed = indexed.filter(({ row }) => {
+      const key = dedupKey(row);
       return !existingKeys.has(key) && !seenThisRun.has(key);
     });
-    const skipped = mapped.length - newRows.length;
+    const newRows = newIndexed.map(({ row }) => row);
+    const skipped = indexed.length - newIndexed.length;
     console.log(`${newRows.length} new rows, ${skipped} skipped as already present`);
 
     if (DRY_RUN) {
@@ -243,6 +368,31 @@ async function main() {
       console.log("Nothing new to insert for this chunk.");
     }
 
+    // Meta offline conversions: subset of this chunk's new rows that Oli's
+    // ads care about, only ever drawn from rows we just confirmed are new
+    // (never resends rows already in BigQuery from a prior run).
+    const metaQualifying = newIndexed.filter(
+      ({ row }) => META_TARGET_PRODUCT_TYPES.has(row.product_type) && row.line_status === "Completed"
+    );
+    console.log(
+      `${metaQualifying.length} of ${newRows.length} new row(s) qualify for Meta (target product types, Completed).`
+    );
+
+    if (metaQualifying.length > 0) {
+      if (DRY_RUN) {
+        const sampleEvent = await buildMetaEvent(metaQualifying[0].raw, headerIndex);
+        console.log("DRY RUN — nothing sent to Meta. Sample event:", JSON.stringify(sampleEvent, null, 2));
+      } else {
+        const events = [];
+        for (const { raw } of metaQualifying) {
+          events.push(await buildMetaEvent(raw, headerIndex));
+        }
+        const totalReceived = await sendMetaEvents(events);
+        console.log(`Sent ${events.length} event(s) to Meta, acknowledged ${totalReceived}.`);
+        totalMetaSent += events.length;
+      }
+    }
+
     for (const r of newRows) seenThisRun.add(dedupKey(r));
     totalInserted += newRows.length;
 
@@ -250,7 +400,10 @@ async function main() {
     sinceDate = addDaysUTC(maxDate, 1);
   }
 
-  console.log(`\nDone. ${chunkCount} chunk(s), ${totalInserted} total row(s) ${DRY_RUN ? "would be " : ""}inserted.`);
+  console.log(
+    `\nDone. ${chunkCount} chunk(s), ${totalInserted} total row(s) ${DRY_RUN ? "would be " : ""}inserted, ` +
+      `${totalMetaSent} event(s) ${DRY_RUN ? "would be " : ""}sent to Meta.`
+  );
 }
 
 main().catch(async (err) => {

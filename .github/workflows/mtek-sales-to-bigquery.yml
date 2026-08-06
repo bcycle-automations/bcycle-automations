@@ -2,7 +2,7 @@ name: MTEK Sales → BigQuery sync
 
 on:
   schedule:
-    - cron: "0 7 * * 1" # Monday 07:00 UTC (fixed — not DST-adjusted)
+    - cron: "0 7 * * *" # Daily 07:00 UTC (fixed — not DST-adjusted)
   workflow_dispatch:
     inputs:
       dry_run:
@@ -36,6 +36,7 @@ jobs:
           MTEK_BASE_URL: https://bcycle.marianatek.com
           MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
           SLACK_BIGQUERY_UPDATES_WEBHOOK_URL: ${{ secrets.SLACK_BIGQUERY_UPDATES_WEBHOOK_URL }}
+          META_OFFLINE_CONVERSIONS_TOKEN: ${{ secrets.META_OFFLINE_CONVERSIONS_TOKEN }}
           # Scheduled runs always write for real. Manual (workflow_dispatch)
           # runs default to a dry run unless the input is explicitly unchecked.
           DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
