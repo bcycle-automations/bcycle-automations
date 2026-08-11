@@ -2,7 +2,7 @@ name: MTEK Sales → BigQuery sync
 
 on:
   schedule:
-    - cron: "0 7 * * *" # Daily 07:00 UTC (fixed — not DST-adjusted)
+    - cron: "17 7 * * *" # Daily ~07:17 UTC (off top-of-hour to dodge GH Actions cron contention — not DST-adjusted)
   workflow_dispatch:
     inputs:
       dry_run:
