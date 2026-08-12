@@ -1,0 +1,31 @@
+name: Preview Birthday Emails
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_email:
+        description: "Email address to send both previews to (defaults to jonathan@bcyclespin.com)"
+        required: false
+        type: string
+
+jobs:
+  preview-birthday-emails:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Send preview emails
+        env:
+          M365_CLIENT_ID: ${{ secrets.M365_CLIENT_ID }}
+          M365_CLIENT_SECRET: ${{ secrets.M365_CLIENT_SECRET }}
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_SENDER_UPN: ${{ secrets.M365_SENDER_UPN }}
+          TEST_EMAIL: ${{ github.event.inputs.test_email }}
+        run: node scripts/preview-birthday-emails.mjs

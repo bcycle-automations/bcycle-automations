@@ -445,61 +445,179 @@ async function grantBirthdayCreditViaCheckout({ userId, product, partnerId }) {
   return order.data;
 }
 
-function buildEmailHtml({ firstName, segment, product }) {
-  const safeFirstName = escapeHtml(firstName);
-  const testBanner = LIVE_MODE
-    ? ""
-    : `
-      <div style="margin-bottom:24px;padding:16px;border:2px solid #000000;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;">
-        <strong>TEST EMAIL — placeholder content, pending Jess's final HTML templates.</strong><br>
-        Segment: ${escapeHtml(segment)}<br>
-        Product: ${escapeHtml(product.name)}
-      </div>
-    `;
+// Real content from Jess's "Birthday Email - Automated Messaging 2026.docx",
+// split by segment (standard/unlimited) and language (fr/en). giftHtml uses
+// literal <strong> for the two bolded phrases from that doc — safe, static
+// markup, not user input. Footer text was only given in the doc's one worked
+// HTML example (English/standard) — the other three footers are adapted from
+// that same line, not verbatim from Jess, so worth a final look before going
+// live.
+const EMAIL_CONTENT = {
+  standard: {
+    fr: {
+      headlineLines: ["C’EST TA SEMAINE", "DE FÊTE!"],
+      intro: "Sors les confettis… c’est TOI qu’on célèbre!",
+      giftHtml:
+        "Pour souligner ton anniversaire, nous avons ajouté <strong>1 cours gratuit</strong> à ton compte, à utiliser <strong>au cours des 14 prochains jours</strong>.",
+      celebrate:
+        "Il existe mille façons de célébrer un anniversaire. Nous, on pense qu’une bonne dose d’endorphines, une playlist incroyable, quelques « high-fives » et une communauté en or, c’est un excellent point de départ.",
+      closingSuffix:
+        "! On te souhaite une année remplie de bonheur, de force, et d’une foule de belles raisons de célébrer.",
+      closingPrefix: "Joyeux anniversaire, ",
+      buttonText: "RÉSERVER MON COURS D’ANNIVERSAIRE",
+      footer:
+        "Ton cours d’anniversaire est automatiquement ajouté à ton compte et expire dans 14 jours.",
+    },
+    en: {
+      headlineLines: ["IT’S YOUR", "BIRTHDAY WEEK!"],
+      intro: "Cue the confetti… It’s time to celebrate YOU.",
+      giftHtml:
+        "As our birthday gift to you, we’ve added <strong>1 complimentary class</strong> to your account <strong>valid for the next 14 days</strong>!",
+      celebrate:
+        "There are plenty of ways to celebrate a birthday. We happen to think endorphins, great playlists, high-fives, and an incredible community are a pretty great place to start ;)",
+      closingPrefix: "Happy Birthday, ",
+      closingSuffix:
+        "! We hope this year brings you strength, joy, and plenty of reasons to celebrate.",
+      buttonText: "BOOK MY BIRTHDAY CLASS!",
+      footer:
+        "Your birthday class is automatically added to your account and expires in 14 days.",
+    },
+  },
+  unlimited: {
+    fr: {
+      headlineLines: ["C’EST TA SEMAINE", "DE FÊTE!"],
+      intro: "Sors les confettis… c’est TOI qu’on célèbre!",
+      giftHtml:
+        "Pour souligner ton anniversaire, nous avons ajouté <strong>1 cours invité gratuit</strong> à ton compte, à utiliser <strong>au cours des 14 prochains jours</strong>. En tant que membre avec un Accès Illimité, tu peux l’utiliser pour inviter un(e) ami(e) avec qui le célébrer.",
+      celebrate:
+        "Il existe mille façons de célébrer un anniversaire. Nous, on pense qu’une bonne dose d’endorphines, une playlist incroyable, quelques « high-fives » et une communauté en or, c’est un excellent point de départ.",
+      closingPrefix: "Joyeux anniversaire, ",
+      closingSuffix:
+        "! On te souhaite une année remplie de bonheur, de force, et d’une foule de belles raisons de célébrer.",
+      buttonText: "RÉSERVER MON COURS D’ANNIVERSAIRE",
+      footer:
+        "Ton cours invité d’anniversaire est automatiquement ajouté à ton compte et expire dans 14 jours.",
+    },
+    en: {
+      headlineLines: ["IT’S YOUR", "BIRTHDAY WEEK!"],
+      intro: "Cue the confetti… It’s time to celebrate YOU.",
+      giftHtml:
+        "As our birthday gift to you, we’ve added <strong>1 complimentary guest class</strong> to your account, <strong>valid for the next 14 days</strong>! As an Unlimited Access Member, you can use it to bring a friend along and celebrate your birthday together.",
+      celebrate:
+        "There are plenty of ways to celebrate a birthday. We happen to think endorphins, great playlists, high-fives, and an incredible community are a pretty great place to start ;)",
+      closingPrefix: "Happy Birthday, ",
+      closingSuffix:
+        "! We hope this year brings you strength, joy, and plenty of reasons to celebrate.",
+      buttonText: "BOOK MY BIRTHDAY CLASS!",
+      footer:
+        "Your birthday guest class is automatically added to your account and expires in 14 days.",
+    },
+  },
+};
+
+const BRAND = {
+  pageBackground: "#f0f1f5",
+  cardBackground: "#f6f6ec",
+  band: "#09403f",
+  headline: "#adc5c0",
+  button: "#adc5c0",
+};
+
+const BOOKING_URL = "https://www.bcyclespin.com";
+
+// Renders one full language block (header band, body copy + button, footer
+// band) — reproduces the structure/styling of Jess's worked HTML example,
+// including the Outlook VML button fallback. Called twice per email (fr,
+// then en) to build the bilingual send.
+function renderLanguageSection(content, firstName) {
+  const paragraphHtml = [content.intro, content.giftHtml, content.celebrate]
+    .map(
+      (text) =>
+        `<tr><td dir="ltr" style="color:#000000;font-size:16px;font-family:Helvetica, Arial, sans-serif;text-align:center;padding:0 24px 16px;line-height:1.4">${text}</td></tr>`
+    )
+    .join("");
+
+  const closingHtml = `<tr><td dir="ltr" style="color:#000000;font-size:16px;font-family:Helvetica, Arial, sans-serif;text-align:center;padding:0 24px 16px;line-height:1.4">${escapeHtml(
+    content.closingPrefix
+  )}${escapeHtml(firstName)}${escapeHtml(content.closingSuffix)}</td></tr>`;
 
   return `
-<!DOCTYPE html>
+<table border="0" cellpadding="0" cellspacing="0" align="center" width="100%" style="border-collapse:separate;table-layout:fixed;background-color:${BRAND.band}">
+  <tbody><tr><td style="text-align:center;padding:20px 24px">
+    <div style="color:${BRAND.headline};font-size:38px;font-weight:900;font-family:Helvetica, Arial, sans-serif;line-height:1.2">${content.headlineLines
+      .map(escapeHtml)
+      .join("<br>")}</div>
+  </td></tr></tbody>
+</table>
+<table align="center" width="100%" border="0" cellpadding="0" cellspacing="0" role="presentation">
+  <tbody>
+    ${paragraphHtml}
+    ${closingHtml}
+    <tr><td style="padding:8px 24px 24px">
+      <table cellpadding="0" cellspacing="0" border="0" style="width:100%"><tbody><tr><td align="center">
+        <!--[if mso]>
+        <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${BOOKING_URL}" style="height:48px;width:284px;v-text-anchor:middle;" arcsize="52%" fillcolor="${BRAND.button}">
+        <v:stroke dashstyle="Solid" weight="0px" color="${BRAND.button}"/>
+        <w:anchorlock/>
+        <center style="color:#ffffff;font-family:sans-serif;font-size:16px;font-weight:700">${escapeHtml(
+          content.buttonText
+        )}</center>
+        </v:roundrect>
+        <![endif]-->
+        <!--[if !mso]><!-->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:284px;margin:0 auto;border-collapse:separate;border-spacing:0">
+          <tbody><tr><td bgcolor="${BRAND.button}" style="background-color:${BRAND.button};border-radius:25px">
+            <a href="${BOOKING_URL}" target="_blank" rel="noopener" style="color:#ffffff;text-decoration:none;display:block;padding:13px 8px;text-align:center;font-family:Helvetica, Arial, sans-serif;font-size:16px;font-weight:700;line-height:22px">${escapeHtml(
+              content.buttonText
+            )}</a>
+          </td></tr></tbody>
+        </table>
+        <!--<![endif]-->
+      </td></tr></tbody></table>
+    </td></tr>
+  </tbody>
+</table>
+<table border="0" cellpadding="0" cellspacing="0" align="center" width="100%" style="border-collapse:separate;table-layout:fixed;background-color:${BRAND.band}">
+  <tbody><tr><td style="padding:20px;text-align:center">
+    <span style="color:#ffffff;font-size:11px;font-family:Helvetica, Arial, sans-serif;line-height:14px">${escapeHtml(
+      content.footer
+    )}</span>
+  </td></tr></tbody>
+</table>`;
+}
+
+export function buildEmailHtml({ firstName, segment }) {
+  const content = EMAIL_CONTENT[segment];
+  const displayName = firstName || "there";
+
+  const testBanner = LIVE_MODE
+    ? ""
+    : `<tr><td style="padding:12px 24px;background-color:#ffffff;border-bottom:2px solid #000000;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#000000;text-align:center">TEST EMAIL — segment: ${escapeHtml(
+        segment
+      )}</td></tr>`;
+
+  return `<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Joyeux anniversaire / Happy Birthday</title>
 </head>
-<body style="margin:0;padding:0;background-color:#ffffff;">
-  <div style="max-width:680px;margin:0 auto;padding:32px 24px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.5;color:#000000;">
-
-    ${testBanner}
-
-    <p>Bonjour ${safeFirstName},</p>
-
-    <p>
-      Joyeux anniversaire de la part de toute l'équipe b.cycle! Pour souligner
-      l'occasion, on t'offre ton cours gratuit : <strong>${escapeHtml(product.name)}</strong>.
-      Ce crédit est valide pendant 2 semaines à partir de sa date d'émission.
-    </p>
-
-    <p>Au plaisir de célébrer avec toi bientôt en studio!</p>
-
-    <p>L'équipe b.cycle</p>
-
-    <p style="margin:28px 0;">–</p>
-
-    <p>Hi ${safeFirstName},</p>
-
-    <p>
-      Happy birthday from the whole b.cycle team! To celebrate, we're giving
-      you a free class: <strong>${escapeHtml(product.name)}</strong>. This
-      credit is valid for 2 weeks from its issue date.
-    </p>
-
-    <p>We look forward to celebrating with you in studio soon!</p>
-
-    <p>The b.cycle Team</p>
-
-  </div>
+<body style="width:100%;-webkit-text-size-adjust:100%;background-color:${BRAND.pageBackground};margin:0;padding:0">
+<table width="100%" border="0" cellpadding="0" cellspacing="0" bgcolor="${BRAND.pageBackground}" style="background-color:${BRAND.pageBackground}">
+<tbody><tr><td>
+<table align="center" width="600" border="0" cellpadding="0" cellspacing="0" role="presentation" style="max-width:600px;margin:0 auto;background-color:${BRAND.cardBackground};width:600px">
+<tbody>
+${testBanner}
+<tr><td>${renderLanguageSection(content.fr, displayName)}</td></tr>
+<tr><td style="height:24px;font-size:0;line-height:0" aria-hidden="true">&nbsp;</td></tr>
+<tr><td>${renderLanguageSection(content.en, displayName)}</td></tr>
+</tbody>
+</table>
+</td></tr></tbody>
+</table>
 </body>
-</html>
-  `;
+</html>`;
 }
 
 function escapeHtml(value) {
@@ -511,7 +629,7 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-async function getMicrosoftAccessToken() {
+export async function getMicrosoftAccessToken() {
   const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(
     process.env.M365_TENANT_ID
   )}/oauth2/v2.0/token`;
@@ -553,7 +671,7 @@ async function getMicrosoftAccessToken() {
   return body.access_token;
 }
 
-async function sendMicrosoftEmail({ accessToken, recipientEmail, subject, html }) {
+export async function sendMicrosoftEmail({ accessToken, recipientEmail, subject, html }) {
   const sender = process.env.M365_SENDER_UPN;
   const url = `${GRAPH_BASE_URL}/users/${encodeURIComponent(sender)}/sendMail`;
 
@@ -606,8 +724,14 @@ async function logEmailToAirtable({ email, type }) {
   }
 }
 
-main().catch((error) => {
-  console.error("Automation failed:");
-  console.error(error);
-  process.exitCode = 1;
-});
+// Only auto-run when executed directly (`node scripts/birthday-credit-email.mjs`),
+// not when imported — lets scripts/preview-birthday-emails.mjs reuse
+// buildEmailHtml/getMicrosoftAccessToken/sendMicrosoftEmail without
+// triggering the real birthday-matching + credit-granting flow.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error("Automation failed:");
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
