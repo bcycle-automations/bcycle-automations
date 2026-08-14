@@ -1,0 +1,52 @@
+name: b.cycle MTEK Monthly Data Audit
+
+on:
+  schedule:
+    - cron: "41 11 2 * *" # 2nd of each month, ~11:41 UTC (off top-of-hour to dodge GH Actions cron contention; well after the daily 07:17 UTC sales sync so its streaming buffer has drained before this job's DML runs)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no BigQuery writes, no Slack message)"
+        type: boolean
+        default: true
+      audit_month:
+        description: "Month to audit as YYYY-MM (blank = previous calendar month)"
+        type: string
+        default: ""
+      tables:
+        description: "Comma-separated tables to audit: sales,firstTimers,reservations (blank = all)"
+        type: string
+        default: ""
+
+jobs:
+  monthly-audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_BQ_SERVICE_ACCOUNT_KEY }}
+
+      - name: Run monthly data audit
+        env:
+          MTEK_BASE_URL: https://bcycle.marianatek.com
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          SLACK_BIGQUERY_UPDATES_WEBHOOK_URL: ${{ secrets.SLACK_BIGQUERY_UPDATES_WEBHOOK_URL }}
+          # Scheduled runs always write for real. Manual (workflow_dispatch)
+          # runs default to a dry run unless the input is explicitly unchecked.
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
+          AUDIT_MONTH: ${{ github.event.inputs.audit_month }}
+          AUDIT_TABLES: ${{ github.event.inputs.tables }}
+        run: node scripts/bcycle-mtek-monthly-data-audit.mjs

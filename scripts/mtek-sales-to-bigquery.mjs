@@ -39,24 +39,26 @@ import {
   addDaysUTC,
   formatDisplayDate,
 } from "./lib/mtek-report.mjs";
-import { toMDYYYY, toTime12h, boolToString, nullToEmpty } from "./lib/format.mjs";
 import { sendSlackMessage } from "./lib/slack.mjs";
 import { insertInBatches } from "./lib/bigquery.mjs";
 import { fetchJsonWithRateLimit } from "./lib/mtek.mjs";
+import { TABLES } from "./lib/bcycle-mtek-tables.mjs";
+
+const SALES = TABLES.sales;
 
 const MAX_WINDOW_DAYS = 7;
 const SYNC_LABEL = "b.cycle - Sales";
 
 const MTEK_BASE_URL = (process.env.MTEK_BASE_URL || "https://bcycle.marianatek.com").replace(/\/+$/, "");
 const MTEK_API_TOKEN = (process.env.MTEK_API_TOKEN || "").trim();
-const REPORT_ID = process.env.MTEK_SALES_REPORT_ID || "353";
-const REPORT_SLUG = process.env.MTEK_SALES_REPORT_SLUG || "orders-utc";
+const REPORT_ID = SALES.reportId;
+const REPORT_SLUG = SALES.reportSlug;
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 const SYNC_DAYS = Number(process.env.SYNC_DAYS || "7");
 
 const BQ_PROJECT_ID = process.env.BQ_PROJECT_ID || "root-cargo-453703-k7";
 const BQ_DATASET = process.env.BQ_DATASET || "SalesZF";
-const BQ_TABLE = process.env.BQ_TABLE || "SalesMTEK";
+const BQ_TABLE = SALES.bqTable;
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
 
@@ -76,102 +78,11 @@ const META_TARGET_PRODUCT_TYPES = new Set([
   "Physical Gift Cards",
 ]);
 
-const EXPECTED_HEADERS = [
-  "Order Number",
-  "Order Status",
-  "Order Date (UTC)",
-  "Order Time (UTC)",
-  "Order Device",
-  "Processed by System?",
-  "Customer ID",
-  "Customer Email",
-  "Customer Name",
-  "Company Name",
-  "Broker ID",
-  "Broker Email",
-  "Broker Name",
-  "Product",
-  "Product ID",
-  "Variant ID",
-  "Product Barcode",
-  "Product SKU",
-  "Product Color",
-  "Product Size",
-  "Product Type",
-  "Vendor",
-  "Sub Category",
-  "Line Status",
-  "Transaction Date",
-  "Currency",
-  "Line Quantity",
-  "Line Subtotal",
-  "Original Price",
-  "Line Tax",
-  "Line Total",
-  "Order Payment Method(s)",
-  "Purchase Location",
-  "Fulfillment Location",
-  "Fulfillment Region",
-];
-
-// Positional map: report column index -> [bqColumnName, transformFn]
-const identity = nullToEmpty;
-const COLUMN_MAP = [
-  ["order_number", identity],
-  ["order_status", identity],
-  ["order_date_utc", toMDYYYY],
-  ["order_time_utc", toTime12h],
-  ["order_device", identity],
-  ["processed_by_system", boolToString],
-  ["customer_id", identity],
-  ["customer_email", identity],
-  ["customer_name", identity],
-  ["company_name", identity],
-  ["broker_id", identity],
-  ["broker_email", identity],
-  ["broker_name", identity],
-  ["product", identity],
-  ["product_id", identity],
-  ["variant_id", identity],
-  ["product_barcode", identity],
-  ["product_sku", identity],
-  ["product_color", identity],
-  ["product_size", identity],
-  ["product_type", identity],
-  ["vendor", identity],
-  ["sub_category", identity],
-  ["line_status", identity],
-  ["transaction_date", toMDYYYY],
-  ["currency", identity],
-  ["line_quantity", identity],
-  ["line_subtotal", identity],
-  ["original_price", identity],
-  ["line_tax", identity],
-  ["line_total", identity],
-  ["order_payment_methods", identity],
-  ["purchase_location", identity],
-  ["fulfillment_location", identity],
-  ["fulfillment_region", identity],
-];
-
-function mapRow(row) {
-  const out = {};
-  COLUMN_MAP.forEach(([bqCol, transform], i) => {
-    out[bqCol] = transform(row[i]);
-  });
-  return out;
-}
-
-// transaction_date, line_status, and line_quantity are all part of the key
-// because refunds create a second line with the same order_number/
-// product_id/variant_id — sometimes on a later transaction_date, sometimes
-// the exact same day as the original purchase — distinguished only by
-// line_status ("Completed" vs "Refunded") and the sign of line_quantity.
-// Without all of these, a refund can look like "already present" (matching
-// its own original purchase line) and get silently dropped.
-function dedupKey(row) {
-  return `${row.order_number}|${row.product_id}|${row.variant_id}|${row.transaction_date}|${row.line_status}|${row.line_quantity}`;
-}
+// Report headers, column mapping, and dedup key now live in
+// ./lib/bcycle-mtek-tables.mjs (shared with the monthly data audit script).
+const EXPECTED_HEADERS = SALES.expectedHeaders;
+const mapRow = SALES.mapRow;
+const dedupKey = SALES.dedupKey;
 
 function sha256(value) {
   return createHash("sha256").update(String(value).trim().toLowerCase()).digest("hex");
@@ -332,10 +243,7 @@ async function main() {
       reportId: REPORT_ID,
       slug: REPORT_SLUG,
       pageSize: PAGE_SIZE,
-      dateParams: {
-        min_transaction_date: minDate,
-        max_transaction_date: maxDate,
-      },
+      dateParams: SALES.dateParams(minDate, maxDate),
     });
 
     const headersMatch = JSON.stringify(report.headers) === JSON.stringify(EXPECTED_HEADERS);
