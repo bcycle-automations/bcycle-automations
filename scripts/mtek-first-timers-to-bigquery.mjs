@@ -25,75 +25,32 @@ import {
   addDaysUTC,
   formatDisplayDate,
 } from "./lib/mtek-report.mjs";
-import { toMDYYYY, toTime12h, boolToString, nullToEmpty } from "./lib/format.mjs";
 import { sendSlackMessage } from "./lib/slack.mjs";
 import { insertInBatches } from "./lib/bigquery.mjs";
+import { TABLES } from "./lib/bcycle-mtek-tables.mjs";
+
+const FIRST_TIMERS = TABLES.firstTimers;
 
 const MAX_WINDOW_DAYS = 7;
 const SYNC_LABEL = "b.cycle - First Timers";
 
 const MTEK_BASE_URL = (process.env.MTEK_BASE_URL || "https://bcycle.marianatek.com").replace(/\/+$/, "");
 const MTEK_API_TOKEN = (process.env.MTEK_API_TOKEN || "").trim();
-const REPORT_ID = process.env.MTEK_FIRST_TIMERS_REPORT_ID || "317";
-const REPORT_SLUG = process.env.MTEK_FIRST_TIMERS_REPORT_SLUG || "first-timers";
+const REPORT_ID = FIRST_TIMERS.reportId;
+const REPORT_SLUG = FIRST_TIMERS.reportSlug;
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 const SYNC_DAYS = Number(process.env.SYNC_DAYS || "7");
 
 const BQ_PROJECT_ID = process.env.BQ_PROJECT_ID || "root-cargo-453703-k7";
 const BQ_DATASET = process.env.BQ_DATASET || "SalesZF";
-const BQ_TABLE = process.env.BQ_TABLE || "FirstTimersMTEK";
+const BQ_TABLE = FIRST_TIMERS.bqTable;
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
 
-const EXPECTED_HEADERS = [
-  "Customer",
-  "Customer ID",
-  "Customer Email",
-  "Customer Phone Number",
-  "Join Date",
-  "First Class Date",
-  "Class Start Time",
-  "Class Location",
-  "Class Type",
-  "Class Category",
-  "Instructor Name",
-  "Guest Reservation?",
-  "Pay With Type",
-];
-
-function mapRow(row) {
-  const [
-    customer,
-    customerId,
-    email,
-    phone,
-    joinDate,
-    firstClassDate,
-    classStartTime,
-    location,
-    classType,
-    classCategory,
-    instructor,
-    guestReservation,
-    payWithType,
-  ] = row;
-
-  return {
-    string_field_0: nullToEmpty(customer),
-    string_field_1: nullToEmpty(customerId),
-    string_field_2: nullToEmpty(email),
-    string_field_3: nullToEmpty(phone),
-    string_field_4: toMDYYYY(joinDate),
-    string_field_5: toMDYYYY(firstClassDate),
-    string_field_6: toTime12h(classStartTime),
-    string_field_7: nullToEmpty(location),
-    string_field_8: nullToEmpty(classType),
-    string_field_9: nullToEmpty(classCategory),
-    string_field_10: nullToEmpty(instructor),
-    string_field_11: boolToString(guestReservation),
-    string_field_12: nullToEmpty(payWithType),
-  };
-}
+// Report headers and column mapping now live in ./lib/bcycle-mtek-tables.mjs
+// (shared with the monthly data audit script).
+const EXPECTED_HEADERS = FIRST_TIMERS.expectedHeaders;
+const mapRow = FIRST_TIMERS.mapRow;
 
 async function getInitialSinceDate(bq) {
   const [[lastDateRow]] = await bq.query({
@@ -149,10 +106,7 @@ async function main() {
       reportId: REPORT_ID,
       slug: REPORT_SLUG,
       pageSize: PAGE_SIZE,
-      dateParams: {
-        min_first_class_date_day: minDate,
-        max_first_class_date_day: maxDate,
-      },
+      dateParams: FIRST_TIMERS.dateParams(minDate, maxDate),
     });
 
     const headersMatch = JSON.stringify(report.headers) === JSON.stringify(EXPECTED_HEADERS);

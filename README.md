@@ -69,6 +69,92 @@ otherwise see.
   — but don't assume "no Slack message today" means nothing happened; check
   Actions run history if that ever seems off.
 
+## b.cycle MTEK Monthly Data Audit
+
+Workflow file: `.github/workflows/bcycle-mtek-monthly-data-audit.yml`
+Script: `scripts/bcycle-mtek-monthly-data-audit.mjs`
+Shared config: `scripts/lib/bcycle-mtek-tables.mjs`, `scripts/lib/bcycle-mtek-sql-dates.mjs`
+
+### What it does
+Runs on the 2nd of each month (`41 11 2 * *` UTC), auditing the full previous
+calendar month across all three b.cycle MTEK tables (`SalesMTEK`,
+`FirstTimersMTEK`, `ReservationsMTEK`) for three things:
+
+1. **Missing calendar dates** — every date in the month should have at least
+   one row. Any gap is auto-backfilled from the same MTEK reports the daily/
+   weekly sync scripts use, deduped against what's already in BigQuery. A
+   date the MTEK report itself returns zero rows for is reported as
+   "confirmed empty in MTEK," not an alarm — that's a normal, expected state
+   for First Timers especially.
+2. **Bad date-string formatting** — `SalesMTEK.order_date_utc`/
+   `transaction_date` and `FirstTimersMTEK.string_field_4`/`string_field_5`
+   are historically all-STRING date columns that were once found in three
+   inconsistent formats (see gotcha below). Any row in the audited month not
+   in strict `MM/DD/YYYY` gets normalized in place. `ReservationsMTEK` is
+   skipped here — its date columns are real typed `DATE`, not strings.
+3. **Duplicate rows** — exact full-row duplicates within the audited month
+   (byte-identical except possibly the date-string variant that caused them)
+   get removed via a scoped staging-table + transaction, never a whole-table
+   rewrite. Rows that share a table's normal dedup key but differ in other
+   columns are reported only, never auto-deleted — that's a real upstream
+   problem that needs a human.
+
+One consolidated Slack message covering all three tables is posted to
+`#bigquery-updates` at the end of every real (non-dry-run) run, whether the
+month was clean or something needed fixing.
+
+In a clean month — the expected steady state — this job issues **only
+`SELECT`s**: no snapshot, no staging table, no writes at all.
+
+### Required secrets
+Same as the sales sync: `MTEK_API_TOKEN`, `GCP_BQ_SERVICE_ACCOUNT_KEY`,
+`SLACK_BIGQUERY_UPDATES_WEBHOOK_URL`. No new secrets.
+
+### Manual runs / testing
+`workflow_dispatch` accepts `dry_run` (default checked), `audit_month`
+(`YYYY-MM`, blank = previous month — rejects a month that isn't fully in the
+past, so it can't be pointed at an in-progress month), and `tables`
+(comma-separated subset of `sales,firstTimers,reservations`, blank = all
+three). Locally: `DRY_RUN=true AUDIT_MONTH=2026-07 node
+scripts/bcycle-mtek-monthly-data-audit.mjs` with
+`SLACK_BIGQUERY_UPDATES_WEBHOOK_URL` unset prints the exact Slack message
+text to the console without posting anywhere.
+
+### Known gotchas
+- **The bug this job guards against, for the record.** We found historical
+  rows in the two STRING date columns above in three formats: `MM/DD/YYYY`
+  (good), `M/D/YYYY` (unpadded), and `MM/ D/YYYY` (a literal space instead of
+  a zero for single-digit days). The space-padded variant silently breaks a
+  naive `SAFE.PARSE_DATE('%m/%d/%Y', col)` — the rows don't error, they just
+  vanish from any date-filtered query, which once looked exactly like a
+  9-day "missing sales" gap that never actually happened. Every date
+  comparison in this audit script goes through the tolerant regex-based
+  parser in `lib/bcycle-mtek-sql-dates.mjs` instead — **never** add a raw
+  `SAFE.PARSE_DATE('%m/%d/%Y', col)` against these two tables' date columns
+  anywhere in this repo without going through that helper, or the exact same
+  false alarm (or worse, a re-inserted duplicate on the write path) happens
+  again.
+- **No permanent backup table per run, by design.** Unlike a one-off manual
+  fix, this job doesn't snapshot a table before mutating it every month —
+  that's 12 orphaned `_backup_...` tables a year nobody prunes. Recovery
+  instead relies on BigQuery's 7-day time-travel window, which the scoped
+  DML approach here preserves (a whole-table `CREATE OR REPLACE` would reset
+  it — deliberately avoided for exactly this reason). To restore a table to
+  its state before a given run:
+  ```sql
+  CREATE OR REPLACE TABLE `root-cargo-453703-k7.SalesZF.<Table>_restore` AS
+  SELECT * FROM `root-cargo-453703-k7.SalesZF.<Table>`
+  FOR SYSTEM_TIME AS OF TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
+  ```
+  adjusting the interval to before the run in question, only usable within 7
+  days of that run.
+- **A missing monthly Slack message looks identical to "nothing to report."**
+  Same caveat as the daily sales sync's GitHub Actions cron gotcha below — a
+  monthly cron only gets 12 chances a year to be silently skipped. If a
+  month goes by with no audit message in `#bigquery-updates`, check the
+  Actions run history for this workflow before assuming everything was
+  clean.
+
 ## b.cycle PAYROLL Classes GitHub Action
 
 Workflow file: `.github/workflows/bcycle-payroll-classes-action.yml`
