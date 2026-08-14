@@ -30,144 +30,31 @@ import {
 } from "./lib/mtek-report.mjs";
 import { sendSlackMessage } from "./lib/slack.mjs";
 import { insertInBatches } from "./lib/bigquery.mjs";
+import { TABLES } from "./lib/spinco-mtek-tables.mjs";
+
+const SALES = TABLES.sales;
 
 const MAX_WINDOW_DAYS = 2;
 const SYNC_LABEL = "SPINCO - Sales";
 
 const MTEK_BASE_URL = (process.env.MTEK_SPINCO_BASE_URL || "https://spinco.marianatek.com").replace(/\/+$/, "");
 const MTEK_API_TOKEN = (process.env.MTEK_SPINCO_API_TOKEN || "").trim();
-const REPORT_ID = process.env.MTEK_SPINCO_SALES_REPORT_ID || "383";
-const REPORT_SLUG = process.env.MTEK_SPINCO_SALES_REPORT_SLUG || "orders-utc";
+const REPORT_ID = SALES.reportId;
+const REPORT_SLUG = SALES.reportSlug;
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 const SYNC_DAYS = Number(process.env.SYNC_DAYS || "7");
 
 const BQ_PROJECT_ID = process.env.BQ_PROJECT_ID || "root-cargo-453703-k7";
 const BQ_DATASET = process.env.BQ_DATASET || "SPINCO";
-const BQ_TABLE = process.env.BQ_TABLE || "Sales";
+const BQ_TABLE = SALES.bqTable;
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
 
-const EXPECTED_HEADERS = [
-  "Order Number",
-  "Order Status",
-  "Order Date (UTC)",
-  "Order Time (UTC)",
-  "Order Device",
-  "Processed by System?",
-  "Customer ID",
-  "Customer Email",
-  "Customer Name",
-  "Company Name",
-  "Broker ID",
-  "Broker Email",
-  "Broker Name",
-  "Product",
-  "Product ID",
-  "Variant ID",
-  "Product Barcode",
-  "Product SKU",
-  "Product Color",
-  "Product Size",
-  "Product Type",
-  "Vendor",
-  "Sub Category",
-  "Line Status",
-  "Transaction Date",
-  "Currency",
-  "Line Quantity",
-  "Line Subtotal",
-  "Original Price",
-  "Line Tax",
-  "Line Total",
-  "Order Payment Method(s)",
-  "Purchase Location",
-  "Fulfillment Location",
-  "Fulfillment Region",
-];
-
-const BQ_COLUMNS = [
-  "Order Number",
-  "Order Status",
-  "Order Date _UTC_",
-  "Order Time _UTC_",
-  "Order Device",
-  "Processed by System_",
-  "Customer ID",
-  "Customer Email",
-  "Customer Name",
-  "Company Name",
-  "Broker ID",
-  "Broker Email",
-  "Broker Name",
-  "Product",
-  "Product ID",
-  "Variant ID",
-  "Product Barcode",
-  "Product SKU",
-  "Product Color",
-  "Product Size",
-  "Product Type",
-  "Vendor",
-  "Sub Category",
-  "Line Status",
-  "Transaction Date",
-  "Currency",
-  "Line Quantity",
-  "Line Subtotal",
-  "Original Price",
-  "Line Tax",
-  "Line Total",
-  "Order Payment Method_s_",
-  "Purchase Location",
-  "Fulfillment Location",
-  "Fulfillment Region",
-];
-
-const DATE_ONLY_COLUMNS = new Set(["Order Date _UTC_", "Transaction Date"]);
-const FLOAT_COLUMNS = new Set(["Product Barcode", "Line Subtotal", "Original Price", "Line Tax", "Line Total"]);
-const INT_COLUMNS = new Set(["Customer ID", "Broker ID", "Product ID", "Variant ID", "Line Quantity"]);
-
-function passthrough(v) {
-  return v === undefined ? null : v;
-}
-
-function toDateOnly(v) {
-  if (v === null || v === undefined) return null;
-  return String(v).slice(0, 10);
-}
-
-function toFloat(v) {
-  if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
-  return Number.isNaN(n) ? null : n;
-}
-
-function toInt(v) {
-  if (v === null || v === undefined || v === "") return null;
-  const n = parseInt(v, 10);
-  return Number.isNaN(n) ? null : n;
-}
-
-function mapRow(row) {
-  const out = {};
-  BQ_COLUMNS.forEach((bqCol, i) => {
-    const raw = row[i];
-    if (DATE_ONLY_COLUMNS.has(bqCol)) {
-      out[bqCol] = toDateOnly(raw);
-    } else if (FLOAT_COLUMNS.has(bqCol)) {
-      out[bqCol] = toFloat(raw);
-    } else if (INT_COLUMNS.has(bqCol)) {
-      out[bqCol] = toInt(raw);
-    } else {
-      out[bqCol] = passthrough(raw);
-    }
-  });
-  return out;
-}
-
-function dedupKey(row) {
-  return `${row["Order Number"]}|${row["Product ID"]}|${row["Variant ID"]}|${row["Transaction Date"]}|${row["Line Status"]}|${row["Line Quantity"]}`;
-}
+// Report headers, column mapping, and dedup key now live in
+// ./lib/spinco-mtek-tables.mjs (shared with the monthly data audit script).
+const EXPECTED_HEADERS = SALES.expectedHeaders;
+const mapRow = SALES.mapRow;
+const dedupKey = SALES.dedupKey;
 
 async function getInitialSinceDate(bq) {
   const [[lastDateRow]] = await bq.query({
@@ -228,10 +115,7 @@ async function main() {
       reportId: REPORT_ID,
       slug: REPORT_SLUG,
       pageSize: PAGE_SIZE,
-      dateParams: {
-        min_transaction_date: minDate,
-        max_transaction_date: maxDate,
-      },
+      dateParams: SALES.dateParams(minDate, maxDate),
     });
 
     const headersMatch = JSON.stringify(report.headers) === JSON.stringify(EXPECTED_HEADERS);

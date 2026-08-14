@@ -22,84 +22,32 @@ import {
   addDaysUTC,
   formatDisplayDate,
 } from "./lib/mtek-report.mjs";
-import { toTime12h } from "./lib/format.mjs";
 import { sendSlackMessage } from "./lib/slack.mjs";
 import { insertInBatches } from "./lib/bigquery.mjs";
+import { TABLES } from "./lib/spinco-mtek-tables.mjs";
+
+const FIRST_TIMERS = TABLES.firstTimers;
 
 const MAX_WINDOW_DAYS = 2;
 const SYNC_LABEL = "SPINCO - First Timers";
 
 const MTEK_BASE_URL = (process.env.MTEK_SPINCO_BASE_URL || "https://spinco.marianatek.com").replace(/\/+$/, "");
 const MTEK_API_TOKEN = (process.env.MTEK_SPINCO_API_TOKEN || "").trim();
-const REPORT_ID = process.env.MTEK_SPINCO_FIRST_TIMERS_REPORT_ID || "317";
-const REPORT_SLUG = process.env.MTEK_SPINCO_FIRST_TIMERS_REPORT_SLUG || "first-timers";
+const REPORT_ID = FIRST_TIMERS.reportId;
+const REPORT_SLUG = FIRST_TIMERS.reportSlug;
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 const SYNC_DAYS = Number(process.env.SYNC_DAYS || "7");
 
 const BQ_PROJECT_ID = process.env.BQ_PROJECT_ID || "root-cargo-453703-k7";
 const BQ_DATASET = process.env.BQ_DATASET || "SPINCO";
-const BQ_TABLE = process.env.BQ_TABLE || "First Timers";
+const BQ_TABLE = FIRST_TIMERS.bqTable;
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
 
-const EXPECTED_HEADERS = [
-  "Customer",
-  "Customer ID",
-  "Customer Email",
-  "Customer Phone Number",
-  "Join Date",
-  "First Class Date",
-  "Class Start Time",
-  "Class Location",
-  "Class Type",
-  "Class Category",
-  "Instructor Name",
-  "Guest Reservation?",
-  "Pay With Type",
-];
-
-function toDateOnly(v) {
-  if (v === null || v === undefined) return null;
-  return String(v).slice(0, 10);
-}
-
-function passthrough(v) {
-  return v === undefined ? null : v;
-}
-
-function mapRow(row) {
-  const [
-    customer,
-    customerId,
-    email,
-    phone,
-    joinDate,
-    firstClassDate,
-    classStartTime,
-    location,
-    classType,
-    classCategory,
-    instructor,
-    guestReservation,
-    payWithType,
-  ] = row;
-
-  return {
-    Customer: passthrough(customer),
-    "Customer ID": passthrough(customerId),
-    "Customer Email": passthrough(email),
-    "Customer Phone Number": passthrough(phone),
-    "Join Date": toDateOnly(joinDate),
-    "First Class Date": toDateOnly(firstClassDate),
-    "Class Start Time": toTime12h(classStartTime),
-    "Class Location": passthrough(location),
-    "Class Type": passthrough(classType),
-    "Class Category": passthrough(classCategory),
-    "Instructor Name": passthrough(instructor),
-    "Guest Reservation_": passthrough(guestReservation),
-    "Pay With Type": passthrough(payWithType),
-  };
-}
+// Report headers and column mapping now live in ./lib/spinco-mtek-tables.mjs
+// (shared with the monthly data audit script).
+const EXPECTED_HEADERS = FIRST_TIMERS.expectedHeaders;
+const mapRow = FIRST_TIMERS.mapRow;
 
 async function getInitialSinceDate(bq) {
   const [[lastDateRow]] = await bq.query({
@@ -152,10 +100,7 @@ async function main() {
       reportId: REPORT_ID,
       slug: REPORT_SLUG,
       pageSize: PAGE_SIZE,
-      dateParams: {
-        min_first_class_date_day: minDate,
-        max_first_class_date_day: maxDate,
-      },
+      dateParams: FIRST_TIMERS.dateParams(minDate, maxDate),
     });
 
     const headersMatch = JSON.stringify(report.headers) === JSON.stringify(EXPECTED_HEADERS);

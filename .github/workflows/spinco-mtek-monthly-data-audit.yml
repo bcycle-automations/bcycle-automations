@@ -1,0 +1,52 @@
+name: SPINCO MTEK Monthly Data Audit
+
+on:
+  schedule:
+    - cron: "13 12 2 * *" # 2nd of each month, ~12:13 UTC (distinct minute/hour from the b.cycle audit to dodge GH Actions cron contention if both land the same day; comfortably clear of SPINCO's own weekly Monday 07:00 UTC syncs in case the 2nd falls on a Monday)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no BigQuery writes, no Slack message)"
+        type: boolean
+        default: true
+      audit_month:
+        description: "Month to audit as YYYY-MM (blank = previous calendar month)"
+        type: string
+        default: ""
+      tables:
+        description: "Comma-separated tables to audit: sales,firstTimers,reservations (blank = all)"
+        type: string
+        default: ""
+
+jobs:
+  monthly-audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_BQ_SERVICE_ACCOUNT_KEY }}
+
+      - name: Run monthly data audit
+        env:
+          MTEK_SPINCO_BASE_URL: https://spinco.marianatek.com
+          MTEK_SPINCO_API_TOKEN: ${{ secrets.MTEK_SPINCO_API_TOKEN }}
+          SLACK_BIGQUERY_UPDATES_WEBHOOK_URL: ${{ secrets.SLACK_BIGQUERY_UPDATES_WEBHOOK_URL }}
+          # Scheduled runs always write for real. Manual (workflow_dispatch)
+          # runs default to a dry run unless the input is explicitly unchecked.
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
+          AUDIT_MONTH: ${{ github.event.inputs.audit_month }}
+          AUDIT_TABLES: ${{ github.event.inputs.tables }}
+        run: node scripts/spinco-mtek-monthly-data-audit.mjs
