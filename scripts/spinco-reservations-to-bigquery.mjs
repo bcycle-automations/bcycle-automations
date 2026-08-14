@@ -27,91 +27,32 @@ import {
   addDaysUTC,
   formatDisplayDate,
 } from "./lib/mtek-report.mjs";
-import { toMDYYYY, toTime12h } from "./lib/format.mjs";
 import { sendSlackMessage } from "./lib/slack.mjs";
 import { insertInBatches } from "./lib/bigquery.mjs";
+import { TABLES } from "./lib/spinco-mtek-tables.mjs";
+
+const RESERVATIONS = TABLES.reservations;
 
 const MAX_WINDOW_DAYS = 2;
 const SYNC_LABEL = "SPINCO - Reservations";
 
 const MTEK_BASE_URL = (process.env.MTEK_SPINCO_BASE_URL || "https://spinco.marianatek.com").replace(/\/+$/, "");
 const MTEK_API_TOKEN = (process.env.MTEK_SPINCO_API_TOKEN || "").trim();
-const REPORT_ID = process.env.MTEK_SPINCO_RESERVATIONS_REPORT_ID || "341";
-const REPORT_SLUG = process.env.MTEK_SPINCO_RESERVATIONS_REPORT_SLUG || "reservations";
+const REPORT_ID = RESERVATIONS.reportId;
+const REPORT_SLUG = RESERVATIONS.reportSlug;
 const PAGE_SIZE = Number(process.env.MTEK_REPORT_PAGE_SIZE || "500");
 const SYNC_DAYS = Number(process.env.SYNC_DAYS || "7");
 
 const BQ_PROJECT_ID = process.env.BQ_PROJECT_ID || "root-cargo-453703-k7";
 const BQ_DATASET = process.env.BQ_DATASET || "SPINCO";
-const BQ_TABLE = process.env.BQ_TABLE || "reservations_raw_2025";
+const BQ_TABLE = RESERVATIONS.bqTable;
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
 
-const EXPECTED_HEADERS = [
-  "Reservation ID", "Reservation Type", "Status", "Creation Date", "Updated Date",
-  "Cancelled Date", "Unconverted Guest", "Converted Guest", "Guest", "Guest Email",
-  "Credit Payment Origin", "Credit", "Package", "Membership", "Contract",
-  "Class ID", "Class Start Date", "Class Start Time", "Class Day of Week", "Class Custom Name",
-  "Class Is Public?", "Class Tags", "Class Is Free?", "Class Type", "Class Category",
-  "Class Duration (Minutes)", "Layout", "Layout Format", "Layout Capacity", "Class Capacity",
-  "Classroom", "Location", "Region", "Instructor ID(s)", "Instructor Employee ID(s)",
-  "Instructor Names", "Instructor Schedule Names", "Class Has Substitute?", "Customer ID", "Customer Email",
-  "Customer Name", "Company Name", "Payer ID", "Payer Email", "Payer Name",
-  "Broker ID", "Broker Email", "Broker Name", "Spot", "Spot Type",
-];
-
-// Positional match to EXPECTED_HEADERS above
-const BQ_COLUMNS = [
-  "reservation_id", "reservation_type", "status", "creation_date", "updated_date",
-  "cancelled_date", "unconverted_guest", "converted_guest", "guest", "guest_email",
-  "credit_payment_origin", "credit", "package", "membership", "contract",
-  "class_id", "class_start_date", "class_start_time", "class_day_of_week", "class_custom_name",
-  "class_is_public", "class_tags", "class_is_free", "class_type", "class_category",
-  "class_duration_minutes", "layout", "layout_format", "layout_capacity", "class_capacity",
-  "classroom", "location", "region", "instructor_ids", "instructor_employee_ids",
-  "instructor_names", "instructor_schedule_names", "class_has_substitute", "customer_id", "customer_email",
-  "customer_name", "company_name", "payer_id", "payer_email", "payer_name",
-  "broker_id", "broker_email", "broker_name", "spot", "spot_type",
-];
-
-const DATE_COLUMNS = new Set(["creation_date", "updated_date", "cancelled_date", "class_start_date"]);
-const TIME_COLUMNS = new Set(["class_start_time"]);
-const BOOL_STRING_COLUMNS = new Set([
-  "unconverted_guest",
-  "converted_guest",
-  "guest",
-  "class_is_public",
-  "class_is_free",
-  "class_has_substitute",
-]);
-
-function toStr(v) {
-  if (v === null || v === undefined) return null;
-  return String(v);
-}
-
-function toBoolString(v) {
-  if (v === null || v === undefined) return null;
-  if (typeof v === "boolean") return String(v);
-  return String(v).toLowerCase() === "true" ? "true" : "false";
-}
-
-function mapRow(row) {
-  const out = {};
-  BQ_COLUMNS.forEach((bqCol, i) => {
-    const raw = row[i];
-    if (DATE_COLUMNS.has(bqCol)) {
-      out[bqCol] = toMDYYYY(raw);
-    } else if (TIME_COLUMNS.has(bqCol)) {
-      out[bqCol] = toTime12h(raw);
-    } else if (BOOL_STRING_COLUMNS.has(bqCol)) {
-      out[bqCol] = toBoolString(raw);
-    } else {
-      out[bqCol] = toStr(raw);
-    }
-  });
-  return out;
-}
+// Report headers and column mapping now live in ./lib/spinco-mtek-tables.mjs
+// (shared with the monthly data audit script).
+const EXPECTED_HEADERS = RESERVATIONS.expectedHeaders;
+const mapRow = RESERVATIONS.mapRow;
 
 // class_start_date in the existing table is a mix of unpadded M/D/YYYY and
 // ISO YYYY-MM-DD — parse both to find the true chronological max.
@@ -171,10 +112,7 @@ async function main() {
       reportId: REPORT_ID,
       slug: REPORT_SLUG,
       pageSize: PAGE_SIZE,
-      dateParams: {
-        min_start_date_day: minDate,
-        max_start_date_day: maxDate,
-      },
+      dateParams: RESERVATIONS.dateParams(minDate, maxDate),
     });
 
     const headersMatch = JSON.stringify(report.headers) === JSON.stringify(EXPECTED_HEADERS);

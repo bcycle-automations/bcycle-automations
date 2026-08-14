@@ -155,6 +155,81 @@ text to the console without posting anywhere.
   Actions run history for this workflow before assuming everything was
   clean.
 
+## SPINCO MTEK Monthly Data Audit
+
+Workflow file: `.github/workflows/spinco-mtek-monthly-data-audit.yml`
+Script: `scripts/spinco-mtek-monthly-data-audit.mjs`
+Shared config: `scripts/lib/spinco-mtek-tables.mjs`, `scripts/lib/spinco-mtek-sql-dates.mjs`
+
+### What it does
+Runs on the 2nd of each month (`13 12 2 * *` UTC — a different minute/hour
+than the b.cycle audit below, to dodge GH Actions cron contention and stay
+clear of SPINCO's own weekly Monday 07:00 UTC syncs), auditing the full
+previous calendar month across all three SPINCO MTEK tables (`Sales`,
+`` `First Timers` ``, `reservations_raw_2025`, dataset `SPINCO`) for missing
+calendar dates, bad date-string formatting, and duplicate rows — same shape
+as the b.cycle audit above, but **the underlying data problem is different
+in kind, not just company name**:
+
+- **`Sales`** and **`First Timers`** already have real typed `DATE` columns —
+  no string-format risk at all. Only the missing-dates and duplicate-row
+  checks apply to them.
+- **`reservations_raw_2025`** (~4.18M rows) is fully STRING-typed, including
+  its four date columns (`class_start_date`, `creation_date`, `updated_date`,
+  `cancelled_date`). Confirmed live against production: these are a genuine
+  mix of **two different date systems** — ISO `YYYY-MM-DD` (the historical
+  majority) and US `M/D/YYYY` (padded and unpadded) — correlating with *when*
+  the data was imported, not the class date itself. The two most recent
+  months are effectively all zero-padded `MM/DD/YYYY`, matching this table's
+  own sync script (`toMDYYYY()`), so `MM/DD/YYYY` is the canonical target
+  format. The sync script's `getInitialSinceDate` query already defensively
+  parses both formats — this audit's tolerant parser
+  (`lib/spinco-mtek-sql-dates.mjs`'s `tolerantDateAny`/`normalizeAnyToMdy`)
+  mirrors that exact shape so the two never disagree.
+
+**Important scoping note:** format-fixing, like every other check in this
+job, is scoped to the single previous calendar month being audited. This is
+**not** a one-time cleanup of `reservations_raw_2025`'s multi-million-row
+historical backlog spanning 2024–2026 in mixed formats — that backlog is
+deliberately out of scope for this recurring job. A single run only ever
+touches the one month it's auditing; the ISO-format history further back
+will simply never be visited by this job (by design, not an oversight).
+
+One consolidated Slack message covering all three tables is posted to
+`#bigquery-updates` (the same channel the b.cycle audit and both companies'
+other BigQuery sync jobs already post to — the message title says "SPINCO"
+explicitly to disambiguate) at the end of every real (non-dry-run) run.
+
+In a clean month — the expected steady state — this job issues **only
+`SELECT`s**: no snapshot, no staging table, no writes at all.
+
+### Required secrets
+`MTEK_SPINCO_API_TOKEN`, `GCP_BQ_SERVICE_ACCOUNT_KEY`,
+`SLACK_BIGQUERY_UPDATES_WEBHOOK_URL` (all existing, shared with the other
+SPINCO/b.cycle jobs). No new secrets.
+
+### Manual runs / testing
+Same `workflow_dispatch` inputs as the b.cycle audit: `dry_run` (default
+checked), `audit_month` (`YYYY-MM`, blank = previous month — rejects a month
+that isn't fully in the past), `tables` (comma-separated subset of
+`sales,firstTimers,reservations`, blank = all three).
+
+### Known gotchas
+- **Don't add a naive `SAFE.PARSE_DATE('%m/%d/%Y', col)` or
+  `SAFE.PARSE_DATE('%Y-%m-%d', col)` against `reservations_raw_2025`'s date
+  columns anywhere in this repo without going through
+  `lib/spinco-mtek-sql-dates.mjs`'s `tolerantDateAny`.** A single-format
+  parse silently drops whichever format it doesn't recognize — on this
+  table, that's roughly half the historical rows, not an edge case.
+- **`Sales`' dedup key has ~132 pre-existing collisions in the full baseline
+  data** (documented in `spinco-sales-to-bigquery.mjs`'s header comment) even
+  under the full composite key. If the audit's report-only key-collision
+  check ever surfaces some of these for a given month, that's expected
+  pre-existing noise, not a new bug — don't chase it as if it were new.
+- Same time-travel recovery approach and "missing monthly Slack message
+  looks identical to nothing to report" caveat as the b.cycle audit above —
+  see its gotchas section for the restore snippet and the reasoning.
+
 ## b.cycle PAYROLL Classes GitHub Action
 
 Workflow file: `.github/workflows/bcycle-payroll-classes-action.yml`
