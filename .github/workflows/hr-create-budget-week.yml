@@ -1,0 +1,28 @@
+name: HR Create Budget week
+run-name: HR Create Budget week
+
+on:
+  schedule:
+    # Sundays 08:00 UTC = 4am America/Toronto (EDT), 3am (EST).
+    - cron: '0 8 * * 0'
+  workflow_dispatch:
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Create Budget week
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
+          AIRTABLE_BUDGET_WEEKS_TABLE_ID: tblt2pfs356rDVDIa
+          PAYROLL_TIME_ZONE: America/Toronto
+        run: node scripts/hr-create-budget-week.mjs

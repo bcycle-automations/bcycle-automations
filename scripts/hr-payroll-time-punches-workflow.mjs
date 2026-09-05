@@ -298,10 +298,18 @@ async function run() {
       const end = attributes.end_datetime ? localParts(attributes.end_datetime) : null;
       if (!end) openShiftCount += 1;
 
+      // MTEK reports the worked duration in seconds; trust it over the
+      // Time In/Out text, which loses seconds and can't span midnight.
+      const durationSeconds = Number(attributes.duration);
+      const totalHours = Number.isFinite(durationSeconds)
+        ? Math.round((durationSeconds / 3600) * 100) / 100
+        : null;
+
       punchRecordsToCreate.push({
         Date: start.date,
         'Time In': start.time,
         'Time Out': end ? end.time : '',
+        'Total Hours': totalHours,
         'Location ID': String(relationshipId(shift, 'location') ?? ''),
         'Employee Name': employeeNameFromShift(shift, included),
         'Rate Type': shiftTypeNameFromShift(shift, included),
@@ -326,30 +334,41 @@ async function run() {
       if (name && !employeeMap.has(name)) employeeMap.set(name, rec.id);
     }
 
-    const rateRecords = await fetchAllRecords(CONFIG.airtable.ratesTableId, ['Name']);
+    const rateRecords = await fetchAllRecords(CONFIG.airtable.ratesTableId, ['Name', 'Rate']);
     const rateMap = new Map();
     for (const rec of rateRecords) {
       const name = normalise(getField(rec, 'Name'));
-      if (name && !rateMap.has(name)) rateMap.set(name, rec.id);
+      if (name && !rateMap.has(name)) {
+        rateMap.set(name, { id: rec.id, rate: Number(getField(rec, 'Rate')) || 0 });
+      }
     }
 
     const updates = [];
     let employeeNotFound = 0;
     let rateNotFound = 0;
+    let totalHours = 0;
+    let totalWages = 0;
 
     for (const punch of createdPunches) {
       const employeeName = getField(punch, 'Employee Name');
       const rateType = getField(punch, 'Rate Type');
+      const hours = Number(getField(punch, 'Total Hours')) || 0;
       const fields = {};
+
+      totalHours += hours;
 
       const employeeId = employeeMap.get(normalise(employeeName));
       if (employeeId) fields.Employee = [employeeId];
       else employeeNotFound += 1;
 
       // Rates records are named "<Employee name> <Shift Type>".
-      const rateId = rateMap.get(normalise(`${employeeName} ${rateType}`));
-      if (rateId) fields.Rate = [rateId];
-      else rateNotFound += 1;
+      const rate = rateMap.get(normalise(`${employeeName} ${rateType}`));
+      if (rate) {
+        fields.Rate = [rate.id];
+        totalWages += hours * rate.rate;
+      } else {
+        rateNotFound += 1;
+      }
 
       if (Object.keys(fields).length) updates.push({ id: punch.id, fields });
     }
@@ -361,6 +380,8 @@ async function run() {
       `# of Employees not found: ${employeeNotFound}`,
       `# of Rates not found: ${rateNotFound}`,
       `# of Punches with no clock-out: ${openShiftCount}`,
+      `Total hours: ${totalHours.toFixed(2)}`,
+      `Total wages: $${totalWages.toFixed(2)}`,
     ].join(' | ');
 
     await updateRunRecord({
