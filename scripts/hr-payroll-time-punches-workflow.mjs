@@ -261,10 +261,48 @@ function paddedBound(dateString, days) {
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+/**
+ * MTEK IDs already on this run record's punches. A second Fetch then skips
+ * them instead of creating a duplicate set.
+ */
+async function fetchExistingMtekIds(punchRecordIds) {
+  const existing = new Set();
+
+  for (let i = 0; i < punchRecordIds.length; i += 50) {
+    const chunk = punchRecordIds.slice(i, i + 50);
+    const params = new URLSearchParams({
+      filterByFormula: `OR(${chunk.map((id) => `RECORD_ID()='${id}'`).join(',')})`,
+      pageSize: '50',
+    });
+    params.append('fields[]', 'MTEK ID');
+
+    const page = await airtableRequest({
+      tableId: CONFIG.airtable.punchesTableId,
+      query: params.toString(),
+    });
+
+    for (const record of page.records || []) {
+      const mtekId = String(getField(record, 'MTEK ID') || '').trim();
+      if (mtekId) existing.add(mtekId);
+    }
+  }
+
+  return existing;
+}
+
 async function run() {
   requireConfig();
 
-  await updateRunRecord({ 'Time punch Status': 'Started' });
+  // Downstream statuses are cleared so a re-run can't show a previous run's
+  // COMPLETE while it is still working.
+  let phaseField = 'Time punch Status';
+  await updateRunRecord({
+    'Time punch Status': 'Started',
+    'Time in/out Status': 'Started',
+    'Employee Status': null,
+    'Rate type Status': null,
+    Notes: '',
+  });
 
   try {
     const runRecord = await fetchRunRecord();
@@ -298,14 +336,23 @@ async function run() {
       include: 'employee.user,shift_type',
     });
 
+    const existingMtekIds = await fetchExistingMtekIds(getField(runRecord, 'Time Punch for payroll') || []);
+
     const punchRecordsToCreate = [];
     let openShiftCount = 0;
+    let duplicatesSkipped = 0;
 
     for (const shift of shifts) {
       const attributes = shift?.attributes || {};
       const start = localParts(attributes.start_datetime);
       if (!start) continue;
       if (start.date < startDate || start.date > endDate) continue;
+
+      const mtekId = String(shift?.id ?? '').trim();
+      if (mtekId && existingMtekIds.has(mtekId)) {
+        duplicatesSkipped += 1;
+        continue;
+      }
 
       const end = attributes.end_datetime ? localParts(attributes.end_datetime) : null;
       if (!end) openShiftCount += 1;
@@ -316,6 +363,7 @@ async function run() {
         Date: start.date,
         'Time In': start.time,
         'Time Out': end ? end.time : '',
+        'MTEK ID': mtekId,
         'Location ID': String(relationshipId(shift, 'location') ?? ''),
         'Employee Name': employeeNameFromShift(shift, included),
         'Rate Type': shiftTypeNameFromShift(shift, included),
@@ -327,6 +375,7 @@ async function run() {
       ? await createPunchRecords(punchRecordsToCreate)
       : [];
 
+    phaseField = 'Employee Status';
     await updateRunRecord({
       'Time punch Status': 'COMPLETE - Time punches found',
       'Time in/out Status': 'COMPLETE - Time in/out found',
@@ -340,6 +389,21 @@ async function run() {
       if (name && !employeeMap.has(name)) employeeMap.set(name, rec.id);
     }
 
+    let employeeNotFound = 0;
+    const employeeUpdates = [];
+    for (const punch of createdPunches) {
+      const employeeId = employeeMap.get(normalise(getField(punch, 'Employee Name')));
+      if (employeeId) employeeUpdates.push({ id: punch.id, fields: { Employee: [employeeId] } });
+      else employeeNotFound += 1;
+    }
+    await patchPunchRecords(employeeUpdates);
+
+    phaseField = 'Rate type Status';
+    await updateRunRecord({
+      'Employee Status': employeeNotFound ? 'PROBLEM' : 'COMPLETE - Employees assigned',
+      'Rate type Status': 'Started',
+    });
+
     const rateRecords = await fetchAllRecords(CONFIG.airtable.ratesTableId, ['Name', 'Rate']);
     const rateMap = new Map();
     for (const rec of rateRecords) {
@@ -349,40 +413,30 @@ async function run() {
       }
     }
 
-    const updates = [];
-    let employeeNotFound = 0;
     let rateNotFound = 0;
     let totalHours = 0;
     let totalWages = 0;
+    const rateUpdates = [];
 
     for (const punch of createdPunches) {
-      const employeeName = getField(punch, 'Employee Name');
-      const rateType = getField(punch, 'Rate Type');
       const hours = hoursBetween(getField(punch, 'Time In'), getField(punch, 'Time Out'));
-      const fields = {};
-
       totalHours += hours;
 
-      const employeeId = employeeMap.get(normalise(employeeName));
-      if (employeeId) fields.Employee = [employeeId];
-      else employeeNotFound += 1;
-
       // Rates records are named "<Employee name> <Shift Type>".
-      const rate = rateMap.get(normalise(`${employeeName} ${rateType}`));
+      const key = normalise(`${getField(punch, 'Employee Name')} ${getField(punch, 'Rate Type')}`);
+      const rate = rateMap.get(key);
       if (rate) {
-        fields.Rate = [rate.id];
+        rateUpdates.push({ id: punch.id, fields: { Rate: [rate.id] } });
         totalWages += hours * rate.rate;
       } else {
         rateNotFound += 1;
       }
-
-      if (Object.keys(fields).length) updates.push({ id: punch.id, fields });
     }
-
-    await patchPunchRecords(updates);
+    await patchPunchRecords(rateUpdates);
 
     const note = [
       `# of Time punches found: ${createdPunches.length}`,
+      `# of Duplicates skipped: ${duplicatesSkipped}`,
       `# of Employees not found: ${employeeNotFound}`,
       `# of Rates not found: ${rateNotFound}`,
       `# of Punches with no clock-out: ${openShiftCount}`,
@@ -391,16 +445,17 @@ async function run() {
     ].join(' | ');
 
     await updateRunRecord({
-      'Employee Status': 'COMPLETE - Employees assigned',
-      'Rate type Status': 'COMPLETE - Rates assigned',
+      'Rate type Status': rateNotFound ? 'PROBLEM' : 'COMPLETE - Rates assigned',
       Notes: note,
     });
 
     console.log(`HR Payroll Time Punches completed for ${CONFIG.recordId}. ${note}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // Mark whichever phase was in flight, so a mid-run failure doesn't leave
+    // an earlier phase reading COMPLETE next to an unexplained PROBLEM.
     await updateRunRecord({
-      'Time punch Status': 'PROBLEM',
+      [phaseField]: 'PROBLEM',
       Notes: message.slice(0, 100000),
     });
     throw error;
