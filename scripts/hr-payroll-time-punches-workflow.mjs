@@ -158,6 +158,18 @@ function localParts(input) {
   };
 }
 
+/** Mirrors the Total Hours formula: HH:MM difference, wrapping past midnight. */
+function hoursBetween(timeIn, timeOut) {
+  if (!timeIn || !timeOut) return 0;
+
+  const toMinutes = (value) => {
+    const [hours, minutes] = String(value).split(':');
+    return (Number(hours) || 0) * 60 + (Number(minutes) || 0);
+  };
+
+  return ((((toMinutes(timeOut) - toMinutes(timeIn)) % 1440) + 1440) % 1440) / 60;
+}
+
 async function mtekRequest(path, params = {}) {
   const url = new URL(path, CONFIG.mtek.baseUrl);
   Object.entries(params).forEach(([key, value]) => {
@@ -298,18 +310,12 @@ async function run() {
       const end = attributes.end_datetime ? localParts(attributes.end_datetime) : null;
       if (!end) openShiftCount += 1;
 
-      // MTEK reports the worked duration in seconds; trust it over the
-      // Time In/Out text, which loses seconds and can't span midnight.
-      const durationSeconds = Number(attributes.duration);
-      const totalHours = Number.isFinite(durationSeconds)
-        ? Math.round((durationSeconds / 3600) * 100) / 100
-        : null;
-
+      // Total Hours is a formula over Time In/Out, so it is deliberately not
+      // written here — that keeps a hand-corrected punch recalculating.
       punchRecordsToCreate.push({
         Date: start.date,
         'Time In': start.time,
         'Time Out': end ? end.time : '',
-        'Total Hours': totalHours,
         'Location ID': String(relationshipId(shift, 'location') ?? ''),
         'Employee Name': employeeNameFromShift(shift, included),
         'Rate Type': shiftTypeNameFromShift(shift, included),
@@ -352,7 +358,7 @@ async function run() {
     for (const punch of createdPunches) {
       const employeeName = getField(punch, 'Employee Name');
       const rateType = getField(punch, 'Rate Type');
-      const hours = Number(getField(punch, 'Total Hours')) || 0;
+      const hours = hoursBetween(getField(punch, 'Time In'), getField(punch, 'Time Out'));
       const fields = {};
 
       totalHours += hours;
