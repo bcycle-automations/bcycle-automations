@@ -292,7 +292,39 @@ supplies both the date window (via its linked Budget week) and the studio.
   the Rates table exactly, which is what makes the rate match work: Rates rows
   are named `"<Employee name> <Shift Type>"`.
 
-### Known data issue
-`b.home` and `Vieux-port` in the HR Studios table share MTEK Location ID
-`48719`, so a fetch for either returns the same punches. Creating a Budget week
-- Studio row for both in the same week would double-count them.
+### How a run gets triggered
+`Budget week - Studio` has a `Fetch time punches` formula field holding a
+clickable URL (`<Make webhook>?recordId=` + `RECORD_ID()`). Clicking it is a
+plain browser GET, and GitHub's dispatch API needs an authenticated POST, so
+the Make scenario **HR Fetch time punches** (id `6166754`, webhook
+`2777677`) bridges the two: it takes `recordId` off the query string and POSTs
+`workflow_dispatch` to this workflow, then responds in the browser tab.
+
+### Derived fields on Time Punches
+- `Total Hours` — written by the script from MTEK's reported shift `duration`
+- `First name` / `Last name` / `Desjardins ID` — lookups via the Employee link
+- `Hourly rate` — lookup of `Rate` via the Rate link
+- `Wages` — `Total Hours * Hourly rate`
+
+## HR Create Budget week
+
+Workflow file: `.github/workflows/hr-create-budget-week.yml`
+Script: `scripts/hr-create-budget-week.mjs`
+
+Runs Sundays at 08:00 UTC (4am America/Toronto) and creates the upcoming
+`Budget week`: Start Date = the coming Sunday, End Date = Start + 6, so weeks
+run Sunday-Saturday and never overlap. It no-ops if that week already exists,
+so re-running by hand is safe.
+
+The equivalent automation in the HR - Instructors base ("Run Weekly classes.")
+asks an AI step for the dates. This one does the arithmetic in code instead —
+deliberately, since a wrong date silently produces a wrong payroll week. Only
+HR works this way; the instructors base was left alone.
+
+### Known data issues
+- `b.home` and `Vieux-port` in the HR Studios table share MTEK Location ID
+  `48719`, so a fetch for either returns the same punches. Creating a Budget
+  week - Studio row for both in the same week would double-count them.
+- Many `EE` rows in the Rates table have a `Rate` of `$0.00`. Those punches
+  match a rate record correctly but contribute nothing to Wages, so they look
+  like unpaid hours rather than an unmatched-rate error.
