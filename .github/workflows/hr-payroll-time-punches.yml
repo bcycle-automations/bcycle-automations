@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       record_id:
-        description: Airtable "Budget week - Studio" record ID from tblbyFY6TlRi4BxOe (example: recXXXX)
+        description: 'Airtable "Budget week - Studio" record ID from tblbyFY6TlRi4BxOe (example: recXXXX)'
         required: true
         type: string
   repository_dispatch:
