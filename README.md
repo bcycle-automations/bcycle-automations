@@ -301,10 +301,21 @@ the Make scenario **HR Fetch time punches** (id `6166754`, webhook
 `workflow_dispatch` to this workflow, then responds in the browser tab.
 
 ### Derived fields on Time Punches
-- `Total Hours` — written by the script from MTEK's reported shift `duration`
+- `Total Hours` — a **formula** over the `Time In`/`Time Out` text, so a punch
+  corrected by hand recalculates. The script deliberately does not write it.
+  `MOD(... + 1440, 1440)` keeps a shift crossing midnight positive.
 - `First name` / `Last name` / `Desjardins ID` — lookups via the Employee link
 - `Hourly rate` — lookup of `Rate` via the Rate link
 - `Wages` — `Total Hours * Hourly rate`
+
+Deriving hours from `HH:MM` rather than MTEK's raw `duration` was checked
+against the whole Rockland 2026-08-23..29 week: all 46 punches matched to the
+cent (152.00 hours). MTEK appears to round a shift to the quarter hour once it
+closes, so the two agree in practice; only an in-progress shift carries
+sub-minute seconds that the text would drop.
+
+The script recomputes the same `HH:MM` arithmetic in memory for its run notes,
+so the reported totals always agree with the column.
 
 ## HR Create Budget week
 
