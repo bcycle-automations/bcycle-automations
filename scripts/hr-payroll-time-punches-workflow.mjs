@@ -1,0 +1,386 @@
+#!/usr/bin/env node
+
+/**
+ * HR Payroll Time Punches
+ * MarianaTek time_clock_shifts -> Airtable "Time Punches" sync.
+ *
+ * Runs against the HR base (NOT HR - Instructors). Driven by one
+ * "Budget week - Studio" record, which supplies the date window and the studio.
+ */
+
+const CONFIG = {
+  airtable: {
+    baseId: process.env.AIRTABLE_BASE_ID || 'appiwfeujJzUZPPBx',
+    runsTableId: process.env.AIRTABLE_RUNS_TABLE_ID || 'tblbyFY6TlRi4BxOe',
+    punchesTableId: process.env.AIRTABLE_PUNCHES_TABLE_ID || 'tblVxt2W7NanQmJFR',
+    employeesTableId: process.env.AIRTABLE_EMPLOYEES_TABLE_ID || 'tbl0FzJ2s4Mk5jWIi',
+    ratesTableId: process.env.AIRTABLE_RATES_TABLE_ID || 'tblufK9k5Tg5uCd74',
+    studiosTableId: process.env.AIRTABLE_STUDIOS_TABLE_ID || 'tblAXy4xm0kJMkWeQ',
+    token: process.env.AIRTABLE_TOKEN,
+  },
+  mtek: {
+    baseUrl: process.env.MTEK_BASE_URL || 'https://bcycle.marianatek.com',
+    punchesPath: process.env.MTEK_PUNCHES_PATH || '/api/time_clock_shifts',
+    token: process.env.MTEK_API_TOKEN,
+  },
+  timeZone: process.env.PAYROLL_TIME_ZONE || 'America/Toronto',
+  recordId: process.env.AIRTABLE_RECORD_ID,
+};
+
+function requireConfig() {
+  const missing = [];
+  if (!CONFIG.airtable.token) missing.push('AIRTABLE_TOKEN');
+  if (!CONFIG.mtek.token) missing.push('MTEK_API_TOKEN');
+  if (!CONFIG.recordId) missing.push('AIRTABLE_RECORD_ID');
+
+  if (missing.length) {
+    throw new Error(`Missing required environment variable(s): ${missing.join(', ')}`);
+  }
+}
+
+function airtableUrl(tableId, recordId = '', query = '') {
+  const base = `https://api.airtable.com/v0/${CONFIG.airtable.baseId}/${tableId}`;
+  const withRecord = recordId ? `${base}/${recordId}` : base;
+  return query ? `${withRecord}?${query}` : withRecord;
+}
+
+async function airtableRequest({ method = 'GET', tableId, recordId = '', body, query = '' }) {
+  const response = await fetch(airtableUrl(tableId, recordId, query), {
+    method,
+    headers: {
+      Authorization: `Bearer ${CONFIG.airtable.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Airtable ${method} failed (${response.status}): ${text}`);
+  }
+
+  return response.json();
+}
+
+async function updateRunRecord(fields) {
+  return airtableRequest({
+    method: 'PATCH',
+    tableId: CONFIG.airtable.runsTableId,
+    recordId: CONFIG.recordId,
+    body: { fields },
+  });
+}
+
+async function fetchRunRecord() {
+  return airtableRequest({
+    method: 'GET',
+    tableId: CONFIG.airtable.runsTableId,
+    recordId: CONFIG.recordId,
+  });
+}
+
+async function fetchAllRecords(tableId, fields = []) {
+  const collected = [];
+  let offset = '';
+
+  do {
+    const params = new URLSearchParams();
+    fields.forEach((field) => params.append('fields[]', field));
+    if (offset) params.set('offset', offset);
+
+    const page = await airtableRequest({
+      method: 'GET',
+      tableId,
+      query: params.toString(),
+    });
+
+    collected.push(...(page.records || []));
+    offset = page.offset || '';
+  } while (offset);
+
+  return collected;
+}
+
+async function createPunchRecords(records) {
+  const created = [];
+  for (let i = 0; i < records.length; i += 10) {
+    const batch = records.slice(i, i + 10);
+    const response = await airtableRequest({
+      method: 'POST',
+      tableId: CONFIG.airtable.punchesTableId,
+      body: { records: batch.map((fields) => ({ fields })) },
+    });
+    created.push(...response.records);
+  }
+  return created;
+}
+
+async function patchPunchRecords(updates) {
+  for (let i = 0; i < updates.length; i += 10) {
+    const batch = updates.slice(i, i + 10);
+    await airtableRequest({
+      method: 'PATCH',
+      tableId: CONFIG.airtable.punchesTableId,
+      body: { records: batch },
+    });
+  }
+}
+
+function getField(record, fieldName) {
+  return record?.fields?.[fieldName];
+}
+
+/** Lookup fields come back as arrays; take the first value. */
+function firstValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function localParts(input) {
+  const date = new Date(input);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: CONFIG.timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  // en-CA renders midnight as "24"; normalise it back to "00".
+  const hour = map.hour === '24' ? '00' : map.hour;
+  return {
+    date: `${map.year}-${map.month}-${map.day}`,
+    time: `${hour}:${map.minute}`,
+  };
+}
+
+async function mtekRequest(path, params = {}) {
+  const url = new URL(path, CONFIG.mtek.baseUrl);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      url.searchParams.set(key, String(value));
+    }
+  });
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      Authorization: `Bearer ${CONFIG.mtek.token}`,
+      Accept: 'application/vnd.api+json',
+    },
+  });
+
+  const rawBody = await response.text();
+  if (!response.ok) {
+    throw new Error(`MTEK request failed (${response.status}) ${url}: ${rawBody}`);
+  }
+
+  try {
+    return rawBody ? JSON.parse(rawBody) : {};
+  } catch (error) {
+    throw new Error(
+      `MTEK response was not valid JSON (${url}): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * Collects every page plus the sideloaded `included` records, keyed by type+id
+ * so employee/user/shift_type names can be resolved without an extra call each.
+ */
+async function fetchPaginatedMtek(path, params = {}) {
+  const allResults = [];
+  const included = new Map();
+  let currentPage = 1;
+  let totalPages = 1;
+
+  while (currentPage <= totalPages) {
+    const page = await mtekRequest(path, { ...params, page: currentPage, page_size: 100 });
+
+    allResults.push(...(Array.isArray(page?.data) ? page.data : []));
+    for (const item of Array.isArray(page?.included) ? page.included : []) {
+      included.set(`${item.type}:${item.id}`, item);
+    }
+
+    const parsedPages = Number(page?.meta?.pagination?.pages);
+    totalPages = Number.isFinite(parsedPages) && parsedPages > 0 ? parsedPages : currentPage;
+    currentPage += 1;
+  }
+
+  return { results: allResults, included };
+}
+
+function relationshipId(shift, name) {
+  return shift?.relationships?.[name]?.data?.id ?? null;
+}
+
+function employeeNameFromShift(shift, included) {
+  const employeeId = relationshipId(shift, 'employee');
+  if (!employeeId) return '';
+
+  const employee = included.get(`employees:${employeeId}`);
+  const userId = employee?.relationships?.user?.data?.id;
+  if (!userId) return '';
+
+  const user = included.get(`users:${userId}`);
+  const attributes = user?.attributes || {};
+  if (attributes.full_name) return attributes.full_name;
+
+  return [attributes.first_name, attributes.last_name].filter(Boolean).join(' ');
+}
+
+function shiftTypeNameFromShift(shift, included) {
+  const shiftTypeId = relationshipId(shift, 'shift_type');
+  if (!shiftTypeId) return '';
+  return included.get(`shift_types:${shiftTypeId}`)?.attributes?.name || '';
+}
+
+function normalise(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+/** Shifts the local date by `days` and returns a UTC instant safely past the boundary. */
+function paddedBound(dateString, days) {
+  const date = new Date(`${dateString}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+async function run() {
+  requireConfig();
+
+  await updateRunRecord({ 'Time punch Status': 'Started' });
+
+  try {
+    const runRecord = await fetchRunRecord();
+    const startDate = firstValue(getField(runRecord, 'Start Date'));
+    const endDate = firstValue(getField(runRecord, 'End Date'));
+    const studioLinks = getField(runRecord, 'Studio') || [];
+
+    if (!startDate || !endDate) {
+      throw new Error('Start Date and/or End Date are missing — is this record linked to a Budget week?');
+    }
+    if (!studioLinks.length) {
+      throw new Error('Studio is empty on this Budget week - Studio record.');
+    }
+
+    const studioRecord = await airtableRequest({
+      method: 'GET',
+      tableId: CONFIG.airtable.studiosTableId,
+      recordId: studioLinks[0],
+    });
+    const locationId = String(getField(studioRecord, 'MTEK Location ID') || '').trim();
+    if (!locationId) {
+      throw new Error(`Studio "${getField(studioRecord, 'Studio name') || studioLinks[0]}" has no MTEK Location ID.`);
+    }
+
+    // MTEK's min/max_start_datetime bounds are applied loosely, so the window is
+    // padded by a day on each side and the exact range is enforced locally below.
+    const { results: shifts, included } = await fetchPaginatedMtek(CONFIG.mtek.punchesPath, {
+      location: locationId,
+      min_start_datetime: paddedBound(startDate, -1),
+      max_start_datetime: paddedBound(endDate, 2),
+      include: 'employee.user,shift_type',
+    });
+
+    const punchRecordsToCreate = [];
+    let openShiftCount = 0;
+
+    for (const shift of shifts) {
+      const attributes = shift?.attributes || {};
+      const start = localParts(attributes.start_datetime);
+      if (!start) continue;
+      if (start.date < startDate || start.date > endDate) continue;
+
+      const end = attributes.end_datetime ? localParts(attributes.end_datetime) : null;
+      if (!end) openShiftCount += 1;
+
+      punchRecordsToCreate.push({
+        Date: start.date,
+        'Time In': start.time,
+        'Time Out': end ? end.time : '',
+        'Location ID': String(relationshipId(shift, 'location') ?? ''),
+        'Employee Name': employeeNameFromShift(shift, included),
+        'Rate Type': shiftTypeNameFromShift(shift, included),
+        'Budget week - Studio': [CONFIG.recordId],
+      });
+    }
+
+    const createdPunches = punchRecordsToCreate.length
+      ? await createPunchRecords(punchRecordsToCreate)
+      : [];
+
+    await updateRunRecord({
+      'Time punch Status': 'COMPLETE - Time punches found',
+      'Time in/out Status': 'COMPLETE - Time in/out found',
+      'Employee Status': 'Started',
+    });
+
+    const employeeRecords = await fetchAllRecords(CONFIG.airtable.employeesTableId, ['Name']);
+    const employeeMap = new Map();
+    for (const rec of employeeRecords) {
+      const name = normalise(getField(rec, 'Name'));
+      if (name && !employeeMap.has(name)) employeeMap.set(name, rec.id);
+    }
+
+    const rateRecords = await fetchAllRecords(CONFIG.airtable.ratesTableId, ['Name']);
+    const rateMap = new Map();
+    for (const rec of rateRecords) {
+      const name = normalise(getField(rec, 'Name'));
+      if (name && !rateMap.has(name)) rateMap.set(name, rec.id);
+    }
+
+    const updates = [];
+    let employeeNotFound = 0;
+    let rateNotFound = 0;
+
+    for (const punch of createdPunches) {
+      const employeeName = getField(punch, 'Employee Name');
+      const rateType = getField(punch, 'Rate Type');
+      const fields = {};
+
+      const employeeId = employeeMap.get(normalise(employeeName));
+      if (employeeId) fields.Employee = [employeeId];
+      else employeeNotFound += 1;
+
+      // Rates records are named "<Employee name> <Shift Type>".
+      const rateId = rateMap.get(normalise(`${employeeName} ${rateType}`));
+      if (rateId) fields.Rate = [rateId];
+      else rateNotFound += 1;
+
+      if (Object.keys(fields).length) updates.push({ id: punch.id, fields });
+    }
+
+    await patchPunchRecords(updates);
+
+    const note = [
+      `# of Time punches found: ${createdPunches.length}`,
+      `# of Employees not found: ${employeeNotFound}`,
+      `# of Rates not found: ${rateNotFound}`,
+      `# of Punches with no clock-out: ${openShiftCount}`,
+    ].join(' | ');
+
+    await updateRunRecord({
+      'Employee Status': 'COMPLETE - Employees assigned',
+      'Rate type Status': 'COMPLETE - Rates assigned',
+      Notes: note,
+    });
+
+    console.log(`HR Payroll Time Punches completed for ${CONFIG.recordId}. ${note}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateRunRecord({
+      'Time punch Status': 'PROBLEM',
+      Notes: message.slice(0, 100000),
+    });
+    throw error;
+  }
+}
+
+run().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
