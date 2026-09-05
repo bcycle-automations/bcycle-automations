@@ -248,3 +248,51 @@ Workflow file: `.github/workflows/bcycle-payroll-classes-action.yml`
 
 ### Script
 - `scripts/bcycle-payroll-classes-workflow.mjs`
+
+## HR Payroll Time Punches
+
+Workflow file: `.github/workflows/hr-payroll-time-punches.yml`
+Script: `scripts/hr-payroll-time-punches-workflow.mjs`
+
+Staff (not instructor) payroll. Same shape as b.cycle PAYROLL Classes above,
+but it runs against the **HR** base (`appiwfeujJzUZPPBx`) — *not* HR -
+Instructors — and pulls time clock punches instead of classes.
+
+### Triggers
+- `workflow_dispatch` with required input `record_id`
+- `repository_dispatch` with event type `airtable-hr-payroll-time-punches` and
+  payload field `record_id`
+
+`record_id` is a **Budget week - Studio** record (`tblbyFY6TlRi4BxOe`), which
+supplies both the date window (via its linked Budget week) and the studio.
+
+### Required secrets
+- `AIRTABLE_TOKEN`
+- `MTEK_API_TOKEN`
+
+### Airtable tables (HR base)
+- `Budget week` (`tblt2pfs356rDVDIa`) — Start Date / End Date, one row per week
+- `Budget week - Studio` (`tblbyFY6TlRi4BxOe`) — the run record, one per studio
+  per week, with the four status fields and Notes
+- `Time Punches` (`tblVxt2W7NanQmJFR`) — one row per punch, linked to Employees
+  and Rates
+
+### MTEK gotchas
+- The endpoint is `/api/time_clock_shifts` (JSON:API, same pagination shape as
+  `class_sessions`).
+- **Only `min_start_datetime`/`max_start_datetime` actually filter.** Passing
+  `min_date`/`max_date`/`start_date`/`end_date` is silently ignored and returns
+  the *entire* unfiltered history — verified live. Those bounds are also applied
+  loosely at the edges, so the script pads the query window by a day either side
+  and enforces the real range against `America/Toronto` local dates itself.
+- A punch carries employee and shift type as bare relationship IDs only. Names
+  come from `include=employee.user,shift_type`: the employee's name lives on the
+  nested `user` (`full_name`), not on `employees`.
+- `shift_types[].name` (e.g. `MC/SC`, `EE`) matches the `Shift Type` options on
+  the Rates table exactly, which is what makes the rate match work: Rates rows
+  are named `"<Employee name> <Shift Type>"`.
+
+### Known data issue
+`b.home` and `Vieux-port` in the HR Studios table share MTEK Location ID
+`48719`, so a fetch for either returns the same punches. Creating a Budget week
+- Studio row for both in the same week would double-count them.
