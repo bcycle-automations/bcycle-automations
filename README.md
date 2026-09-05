@@ -301,6 +301,7 @@ the Make scenario **HR Fetch time punches** (id `6166754`, webhook
 `workflow_dispatch` to this workflow, then responds in the browser tab.
 
 ### Derived fields on Time Punches
+- `MTEK ID` — MarianaTek's shift id, the dedupe key (see below)
 - `Total Hours` — a **formula** over the `Time In`/`Time Out` text, so a punch
   corrected by hand recalculates. The script deliberately does not write it.
   `MOD(... + 1440, 1440)` keeps a shift crossing midnight positive.
@@ -331,6 +332,24 @@ The equivalent automation in the HR - Instructors base ("Run Weekly classes.")
 asks an AI step for the dates. This one does the arithmetic in code instead —
 deliberately, since a wrong date silently produces a wrong payroll week. Only
 HR works this way; the instructors base was left alone.
+
+### Re-running a fetch
+Each punch stores MTEK's shift id in `MTEK ID`. A run reads back the ids already
+linked to the Budget week - Studio record and skips them, so clicking **Fetch
+time punches** twice creates nothing and reports the skip count in Notes.
+
+Punches whose times later change *in MTEK* are deliberately left alone rather
+than overwritten, since Total Hours is meant to stay hand-correctable.
+
+### Run status sequence
+`Time punch Status` and `Time in/out Status` both go `Started` at the top of a
+run and both reach COMPLETE once the punches are in. `Employee Status` goes
+`Started` at that point, then COMPLETE — or **PROBLEM** if any employee went
+unmatched. `Rate type Status` then goes `Started`, and COMPLETE or PROBLEM the
+same way; an unmatched rate silently pays someone nothing, so it is treated as
+a failure rather than a note. Employee/Rate statuses are cleared at the start
+so a re-run cannot display the previous run's COMPLETE, and a mid-run crash
+marks whichever phase was actually in flight.
 
 ### Known data issues
 - `b.home` and `Vieux-port` in the HR Studios table share MTEK Location ID
