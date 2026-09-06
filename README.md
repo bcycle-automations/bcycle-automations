@@ -296,9 +296,17 @@ supplies both the date window (via its linked Budget week) and the studio.
 `Budget week - Studio` has a `Fetch time punches` formula field holding a
 clickable URL (`<Make webhook>?recordId=` + `RECORD_ID()`). Clicking it is a
 plain browser GET, and GitHub's dispatch API needs an authenticated POST, so
-the Make scenario **HR Fetch time punches** (id `6166754`, webhook
-`2777677`) bridges the two: it takes `recordId` off the query string and POSTs
-`workflow_dispatch` to this workflow, then responds in the browser tab.
+the Make scenario **HR Fetch time punches** (id `6166754`, webhook `2777677`)
+bridges the two: it reads `recordId` off the query string and sends a
+`repository_dispatch` of type `airtable-hr-payroll-time-punches`, then responds
+in the browser tab.
+
+It authenticates with the **`GITHUB BEARER` keychain key** (Make key `86508`)
+via `http:MakeRequest`, so no token is stored in the blueprint. That is the same
+key and module the existing `e3un - Get new profiles yesterday` scenario uses —
+copy that one if this ever needs rebuilding. Note Make **Keys** are a separate
+store from Make **Connections**; the GitHub entries under Connections point at
+`gitmcp.io` and Copilot and cannot authorize a dispatch.
 
 ### Derived fields on Time Punches
 - `MTEK ID` — MarianaTek's shift id, the dedupe key (see below)
