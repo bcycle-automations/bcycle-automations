@@ -2,6 +2,13 @@
 // Shared async MTEK "table report" fetcher: kicks off a report job, polls
 // job_status, and fetches the S3 result the instant it's ready (the
 // presigned link expires within minutes of the job completing).
+//
+// MTEK's own job queue is the slow part and its latency varies a lot by
+// report size and time of day (the SPINCO reservations report is the
+// heaviest — ~3.7k rows/day). The poll ceiling is therefore generous:
+// waiting longer costs nothing, because the presigned link's expiry clock
+// starts at job *completion* and we fetch immediately after. A single
+// retry (with a fresh job) covers the case where MTEK drops or stalls one.
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -16,15 +23,15 @@ async function fetchJson(url, options = {}) {
   return res.json();
 }
 
-export async function fetchMtekReport({
+async function runReportJob({
   baseUrl,
   token,
   reportId,
   slug,
-  pageSize = 500,
-  dateParams = {},
-  pollIntervalMs = 2000,
-  pollTimeoutMs = 60000,
+  pageSize,
+  dateParams,
+  pollIntervalMs,
+  pollTimeoutMs,
 }) {
   const authHeaders = {
     Authorization: `Bearer ${token}`,
@@ -71,6 +78,33 @@ export async function fetchMtekReport({
     throw new Error(`Unexpected report shape: ${JSON.stringify(Object.keys(report))}`);
   }
   return report;
+}
+
+export async function fetchMtekReport({
+  baseUrl,
+  token,
+  reportId,
+  slug,
+  pageSize = 500,
+  dateParams = {},
+  pollIntervalMs = 2000,
+  pollTimeoutMs = Number(process.env.MTEK_POLL_TIMEOUT_MS || "300000"),
+  retries = 1,
+  retryDelayMs = 15000,
+}) {
+  const opts = { baseUrl, token, reportId, slug, pageSize, dateParams, pollIntervalMs, pollTimeoutMs };
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await runReportJob(opts);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === retries) break;
+      console.warn(`MTEK report attempt ${attempt + 1}/${retries + 1} failed (${err.message}) — retrying in ${retryDelayMs}ms`);
+      await sleep(retryDelayMs);
+    }
+  }
+  throw lastErr;
 }
 
 export function isoDate(d) {
