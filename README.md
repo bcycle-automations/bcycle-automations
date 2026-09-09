@@ -308,6 +308,21 @@ copy that one if this ever needs rebuilding. Note Make **Keys** are a separate
 store from Make **Connections**; the GitHub entries under Connections point at
 `gitmcp.io` and Copilot and cannot authorize a dispatch.
 
+### Employee matching
+Employees are matched from the **"Active Employees - ALL" view**
+(`viws8tSbvXfujLnwG`), not the whole table, via the `view` query parameter.
+
+This is a correctness fix, not just a narrowing. The table holds **836** rows
+including former staff, and **74 names are duplicated** across it. The lookup is
+first-match-wins, so matching against everything resolved **14 people to a stale
+Inactive/Offboarding record** rather than their current one — Marine Gasbarro,
+Cecilia Haykal, Julia Salucci, Eliane Mpunga and Randy Yoo among them.
+
+Two things this does not solve: four names are duplicated *within* the active
+view (`Laura Castaner Bohigas`, `Kavini Rabel`, `Erika Espinosa`,
+`Chanda Holmes`) and are still resolved first-match-wins; and anyone outside the
+view no longer matches at all, which surfaces as `Employee Status: PROBLEM`.
+
 ### Derived fields on Time Punches
 - `MTEK ID` — MarianaTek's shift id, the dedupe key (see below)
 - `Total Hours` — a **formula** over the `Time In`/`Time Out` text, so a punch
@@ -350,6 +365,11 @@ Punches whose times later change *in MTEK* are deliberately left alone rather
 than overwritten, since Total Hours is meant to stay hand-correctable.
 
 ### Run status sequence
+`Overall Status` is set to `Started` as the run's very first write, before the
+try block — the same shape as `OVERALL Status` in the instructors payroll
+script. It only reaches `COMPLETE` when nothing went unmatched; an unmatched
+employee or rate lands it on `PROBLEM`, as does any thrown error.
+
 `Time punch Status` and `Time in/out Status` both go `Started` at the top of a
 run and both reach COMPLETE once the punches are in. `Employee Status` goes
 `Started` at that point, then COMPLETE — or **PROBLEM** if any employee went
