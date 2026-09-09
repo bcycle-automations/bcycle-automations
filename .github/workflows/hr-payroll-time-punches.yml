@@ -45,6 +45,7 @@ jobs:
           AIRTABLE_RUNS_TABLE_ID: tblbyFY6TlRi4BxOe
           AIRTABLE_PUNCHES_TABLE_ID: tblVxt2W7NanQmJFR
           AIRTABLE_EMPLOYEES_TABLE_ID: tbl0FzJ2s4Mk5jWIi
+          AIRTABLE_EMPLOYEES_VIEW_ID: viws8tSbvXfujLnwG
           AIRTABLE_RATES_TABLE_ID: tblufK9k5Tg5uCd74
           AIRTABLE_STUDIOS_TABLE_ID: tblAXy4xm0kJMkWeQ
           MTEK_BASE_URL: https://bcycle.marianatek.com

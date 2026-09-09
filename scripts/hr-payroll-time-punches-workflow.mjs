@@ -14,6 +14,10 @@ const CONFIG = {
     runsTableId: process.env.AIRTABLE_RUNS_TABLE_ID || 'tblbyFY6TlRi4BxOe',
     punchesTableId: process.env.AIRTABLE_PUNCHES_TABLE_ID || 'tblVxt2W7NanQmJFR',
     employeesTableId: process.env.AIRTABLE_EMPLOYEES_TABLE_ID || 'tbl0FzJ2s4Mk5jWIi',
+    // "Active Employees - ALL". The full table holds 836 rows including former
+    // staff, and 74 names are duplicated across it, so matching against everything
+    // silently linked 14 people to a stale record instead of their current one.
+    employeesViewId: process.env.AIRTABLE_EMPLOYEES_VIEW_ID || 'viws8tSbvXfujLnwG',
     ratesTableId: process.env.AIRTABLE_RATES_TABLE_ID || 'tblufK9k5Tg5uCd74',
     studiosTableId: process.env.AIRTABLE_STUDIOS_TABLE_ID || 'tblAXy4xm0kJMkWeQ',
     token: process.env.AIRTABLE_TOKEN,
@@ -79,13 +83,14 @@ async function fetchRunRecord() {
   });
 }
 
-async function fetchAllRecords(tableId, fields = []) {
+async function fetchAllRecords(tableId, fields = [], viewId = '') {
   const collected = [];
   let offset = '';
 
   do {
     const params = new URLSearchParams();
     fields.forEach((field) => params.append('fields[]', field));
+    if (viewId) params.set('view', viewId);
     if (offset) params.set('offset', offset);
 
     const page = await airtableRequest({
@@ -297,6 +302,7 @@ async function run() {
   // COMPLETE while it is still working.
   let phaseField = 'Time punch Status';
   await updateRunRecord({
+    'Overall Status': 'Started',
     'Time punch Status': 'Started',
     'Time in/out Status': 'Started',
     'Employee Status': null,
@@ -382,7 +388,11 @@ async function run() {
       'Employee Status': 'Started',
     });
 
-    const employeeRecords = await fetchAllRecords(CONFIG.airtable.employeesTableId, ['Name']);
+    const employeeRecords = await fetchAllRecords(
+      CONFIG.airtable.employeesTableId,
+      ['Name'],
+      CONFIG.airtable.employeesViewId,
+    );
     const employeeMap = new Map();
     for (const rec of employeeRecords) {
       const name = normalise(getField(rec, 'Name'));
@@ -446,6 +456,9 @@ async function run() {
 
     await updateRunRecord({
       'Rate type Status': rateNotFound ? 'PROBLEM' : 'COMPLETE - Rates assigned',
+      // COMPLETE only when nothing went unmatched — an unmatched employee or rate
+      // means the run finished but the payroll numbers are not trustworthy yet.
+      'Overall Status': employeeNotFound || rateNotFound ? 'PROBLEM' : 'COMPLETE',
       Notes: note,
     });
 
@@ -455,6 +468,7 @@ async function run() {
     // Mark whichever phase was in flight, so a mid-run failure doesn't leave
     // an earlier phase reading COMPLETE next to an unexplained PROBLEM.
     await updateRunRecord({
+      'Overall Status': 'PROBLEM',
       [phaseField]: 'PROBLEM',
       Notes: message.slice(0, 100000),
     });
