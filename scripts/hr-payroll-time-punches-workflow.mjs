@@ -163,6 +163,43 @@ function localParts(input) {
   };
 }
 
+const NOTES_MAX = 100000;
+const NOTE_ENTRY_MAX = 5000;
+
+/** "2026-09-09 12:05 EDT" — real zone abbreviation, so winter reads EST. */
+function localStamp() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: CONFIG.timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZoneName: 'short',
+  }).formatToParts(new Date());
+
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const hour = map.hour === '24' ? '00' : map.hour;
+  return `${map.year}-${map.month}-${map.day} ${hour}:${map.minute} ${map.timeZoneName}`;
+}
+
+/**
+ * Notes is an append-only log: newest run on top, older runs kept below.
+ * Re-reads the field first so a re-run adds to whatever is actually there.
+ */
+async function appendNote(entry) {
+  let existing = '';
+  try {
+    existing = String(getField(await fetchRunRecord(), 'Notes') || '');
+  } catch {
+    // Losing the previous notes must not mask the error we are trying to report.
+  }
+
+  const stamped = `[${localStamp()}] ${String(entry).slice(0, NOTE_ENTRY_MAX)}`;
+  return (existing ? `${stamped}\n\n${existing}` : stamped).slice(0, NOTES_MAX);
+}
+
 /** Mirrors the Total Hours formula: HH:MM difference, wrapping past midnight. */
 function hoursBetween(timeIn, timeOut) {
   if (!timeIn || !timeOut) return 0;
@@ -307,7 +344,6 @@ async function run() {
     'Time in/out Status': 'Started',
     'Employee Status': null,
     'Rate type Status': null,
-    Notes: '',
   });
 
   try {
@@ -459,7 +495,7 @@ async function run() {
       // COMPLETE only when nothing went unmatched — an unmatched employee or rate
       // means the run finished but the payroll numbers are not trustworthy yet.
       'Overall Status': employeeNotFound || rateNotFound ? 'PROBLEM' : 'COMPLETE',
-      Notes: note,
+      Notes: await appendNote(note),
     });
 
     console.log(`HR Payroll Time Punches completed for ${CONFIG.recordId}. ${note}`);
@@ -470,7 +506,7 @@ async function run() {
     await updateRunRecord({
       'Overall Status': 'PROBLEM',
       [phaseField]: 'PROBLEM',
-      Notes: message.slice(0, 100000),
+      Notes: await appendNote(message),
     });
     throw error;
   }
