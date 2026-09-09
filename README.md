@@ -364,6 +364,22 @@ time punches** twice creates nothing and reports the skip count in Notes.
 Punches whose times later change *in MTEK* are deliberately left alone rather
 than overwritten, since Total Hours is meant to stay hand-correctable.
 
+### Notes is an append-only log
+Each run prepends a timestamped entry and keeps everything below it, so a
+Budget week - Studio row reads as a history rather than only the last result:
+
+```
+[2026-09-09 14:17 EDT] # of Time punches found: 0 | # of Duplicates skipped: 46 | ...
+
+[2026-09-09 14:16 EDT] # of Time punches found: 0 | # of Duplicates skipped: 46 | ...
+```
+
+The stamp carries the real zone abbreviation, so it reads `EDT` in summer and
+`EST` in winter rather than being hardcoded. The field is re-read immediately
+before writing, so the append is against whatever is actually there. A single
+entry is capped at 5,000 characters and the whole field at 100,000, oldest
+entries falling off the bottom — so a huge error message cannot wipe the history.
+
 ### Run status sequence
 `Overall Status` is set to `Started` as the run's very first write, before the
 try block — the same shape as `OVERALL Status` in the instructors payroll
