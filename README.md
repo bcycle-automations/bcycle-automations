@@ -400,6 +400,13 @@ accepted the three complete ones and threw on all six faulty ones) and against
 real multi-page MTEK data with no false alarm. `HR_PUNCHES_SKIP_RUN=1` skips the
 sync so `fetchPaginatedMtek` can be imported and exercised on its own.
 
+### Pay period assignment
+Every new punch is linked to the **Payroll period** covering its date. All of a
+run's punches are resolved against the Payroll period table *before anything is
+written*: a date no period covers, or one covered by two overlapping periods,
+fails the run and imports nothing. Fix the Payroll period table (or run HR Create
+Payroll period) and re-fetch.
+
 ### Notes is an append-only log
 Each run prepends a timestamped entry and keeps everything below it, so a
 Budget week - Studio row reads as a history rather than only the last result:
@@ -452,3 +459,34 @@ marks whichever phase was actually in flight.
   into a later week in MTEK is imported again there and paid twice; the old
   week's Date Range Check may flag it. A global check was considered and
   deliberately not added.
+
+## HR Create Payroll period
+
+Workflow file: `.github/workflows/hr-create-payroll-period.yml`
+Script: `scripts/hr-create-payroll-period.mjs`
+
+Keeps the **Payroll period** table (HR base, `tbl9qw4kqw0BY0DyJ`) filled ahead of
+time. Periods are 14 days, Sunday to Saturday, so a Budget week never straddles
+two of them.
+
+**The table is the reference.** Each new period steps 14 days from the *latest*
+period already there; the first one was seeded by hand (`2026-08-23 -> 2026-09-05`).
+If the table is ever emptied, the job fails rather than guess a start date.
+
+**Cadence.** GitHub cron can't express "every other Sunday", so the job runs every
+Sunday (08:10 UTC, 4:10am Toronto) and creates any period starting within the next
+two weeks. On the Sunday a period begins that is exactly the one two weeks out; on
+the off-Sunday there is nothing to do; after a skipped run it catches up.
+
+**Also links stray punches.** It links any Time Punch that has no period to the one
+covering its date — this is what backfilled punches imported before the table
+existed. It fails loudly if a punch's date has no period or more than one.
+
+**Name is text, not a formula.** Airtable's API can't create a formula primary
+field, so the job writes `Start -> End` into `Name` itself. If `Name` is ever
+converted to a formula in the UI, remove that write from the script or every run
+will fail trying to write a computed field.
+
+Both scripts use Airtable **field IDs**, not names, so renaming a column can't
+break them.
+
