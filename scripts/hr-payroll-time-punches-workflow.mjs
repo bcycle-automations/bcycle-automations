@@ -304,11 +304,13 @@ function paddedBound(dateString, days) {
 }
 
 /**
- * MTEK IDs already on this run record's punches. A second Fetch then skips
- * them instead of creating a duplicate set.
+ * Punches already linked to this run record. Keyed by MTEK ID for reconciling
+ * against MTEK; the full list also covers any punch added by hand (no MTEK ID),
+ * so week totals and the open-punch count include those too.
  */
-async function fetchExistingMtekIds(punchRecordIds) {
-  const existing = new Set();
+async function fetchExistingPunches(punchRecordIds) {
+  const byMtekId = new Map();
+  const all = [];
 
   for (let i = 0; i < punchRecordIds.length; i += 50) {
     const chunk = punchRecordIds.slice(i, i + 50);
@@ -316,7 +318,9 @@ async function fetchExistingMtekIds(punchRecordIds) {
       filterByFormula: `OR(${chunk.map((id) => `RECORD_ID()='${id}'`).join(',')})`,
       pageSize: '50',
     });
-    params.append('fields[]', 'MTEK ID');
+    ['MTEK ID', 'Date', 'Time In', 'Time Out', 'Employee Name', 'Hourly rate'].forEach((field) =>
+      params.append('fields[]', field),
+    );
 
     const page = await airtableRequest({
       tableId: CONFIG.airtable.punchesTableId,
@@ -324,12 +328,21 @@ async function fetchExistingMtekIds(punchRecordIds) {
     });
 
     for (const record of page.records || []) {
-      const mtekId = String(getField(record, 'MTEK ID') || '').trim();
-      if (mtekId) existing.add(mtekId);
+      const punch = {
+        id: record.id,
+        mtekId: String(getField(record, 'MTEK ID') || '').trim(),
+        date: String(getField(record, 'Date') || ''),
+        timeIn: String(getField(record, 'Time In') || ''),
+        timeOut: String(getField(record, 'Time Out') || ''),
+        employeeName: String(getField(record, 'Employee Name') || ''),
+        hourlyRate: Number(firstValue(getField(record, 'Hourly rate'))) || 0,
+      };
+      all.push(punch);
+      if (punch.mtekId) byMtekId.set(punch.mtekId, punch);
     }
   }
 
-  return existing;
+  return { byMtekId, all };
 }
 
 async function run() {
@@ -378,49 +391,108 @@ async function run() {
       include: 'employee.user,shift_type',
     });
 
-    const existingMtekIds = await fetchExistingMtekIds(getField(runRecord, 'Time Punch for payroll') || []);
-
-    const punchRecordsToCreate = [];
-    let openShiftCount = 0;
-    let duplicatesSkipped = 0;
-
+    // Everything MTEK holds for this studio and week, in local time.
+    const mtekPunches = [];
     for (const shift of shifts) {
       const attributes = shift?.attributes || {};
       const start = localParts(attributes.start_datetime);
       if (!start) continue;
       if (start.date < startDate || start.date > endDate) continue;
 
-      const mtekId = String(shift?.id ?? '').trim();
-      if (mtekId && existingMtekIds.has(mtekId)) {
-        duplicatesSkipped += 1;
+      const end = attributes.end_datetime ? localParts(attributes.end_datetime) : null;
+      mtekPunches.push({
+        mtekId: String(shift?.id ?? '').trim(),
+        date: start.date,
+        timeIn: start.time,
+        timeOut: end ? end.time : '',
+        locationId: String(relationshipId(shift, 'location') ?? ''),
+        employeeName: employeeNameFromShift(shift, included),
+        rateType: shiftTypeNameFromShift(shift, included),
+      });
+    }
+
+    // Everyone works every day, so an empty studio-week is always a mistake —
+    // usually the wrong studio (a SPINCO location returns nothing from b.cycle's
+    // MTEK) or the wrong dates. Fail loudly rather than report COMPLETE on nothing.
+    if (!mtekPunches.length) {
+      const studioName = getField(studioRecord, 'Studio name') || studioLinks[0];
+      throw new Error(
+        `No time punches found in MTEK for ${studioName} (location ${locationId}) between ${startDate} and ${endDate}. Check the studio and the week.`,
+      );
+    }
+
+    const { byMtekId: existing, all: existingPunches } = await fetchExistingPunches(
+      getField(runRecord, 'Time Punch for payroll') || [],
+    );
+
+    const punchRecordsToCreate = [];
+    const clockOutFills = [];
+    const differs = [];
+    const seenMtekIds = new Set();
+    let duplicatesSkipped = 0;
+
+    for (const punch of mtekPunches) {
+      seenMtekIds.add(punch.mtekId);
+      const current = punch.mtekId ? existing.get(punch.mtekId) : undefined;
+
+      if (!current) {
+        // Total Hours is a formula over Time In/Out, so it is deliberately not
+        // written here — that keeps a hand-corrected punch recalculating.
+        punchRecordsToCreate.push({
+          Date: punch.date,
+          'Time In': punch.timeIn,
+          'Time Out': punch.timeOut,
+          'MTEK ID': punch.mtekId,
+          'Location ID': punch.locationId,
+          'Employee Name': punch.employeeName,
+          'Rate Type': punch.rateType,
+          'Budget week - Studio': [CONFIG.recordId],
+        });
         continue;
       }
 
-      const end = attributes.end_datetime ? localParts(attributes.end_datetime) : null;
-      if (!end) openShiftCount += 1;
+      duplicatesSkipped += 1;
 
-      // Total Hours is a formula over Time In/Out, so it is deliberately not
-      // written here — that keeps a hand-corrected punch recalculating.
-      punchRecordsToCreate.push({
-        Date: start.date,
-        'Time In': start.time,
-        'Time Out': end ? end.time : '',
-        'MTEK ID': mtekId,
-        'Location ID': String(relationshipId(shift, 'location') ?? ''),
-        'Employee Name': employeeNameFromShift(shift, included),
-        'Rate Type': shiftTypeNameFromShift(shift, included),
-        'Budget week - Studio': [CONFIG.recordId],
-      });
+      // Still open at the last fetch, closed in MTEK since. Written only into a
+      // blank Time Out, so a hand correction is never overwritten.
+      if (!current.timeOut && punch.timeOut) {
+        clockOutFills.push({ id: current.id, fields: { 'Time Out': punch.timeOut } });
+        current.timeOut = punch.timeOut;
+      }
+
+      // Any other disagreement is reported, not overwritten: it may be an MTEK
+      // edit made after the fetch, or a deliberate correction made in Airtable.
+      if (
+        current.date !== punch.date ||
+        current.timeIn !== punch.timeIn ||
+        current.timeOut !== punch.timeOut
+      ) {
+        differs.push(
+          `${punch.employeeName || current.employeeName} ${punch.date}: ` +
+            `Airtable ${current.date} ${current.timeIn}-${current.timeOut || '?'} / ` +
+            `MTEK ${punch.date} ${punch.timeIn}-${punch.timeOut || '?'}`,
+        );
+      }
     }
+
+    const noLongerInMtek = existingPunches
+      .filter((punch) => punch.mtekId && !seenMtekIds.has(punch.mtekId))
+      .map((punch) => `${punch.employeeName} ${punch.date} ${punch.timeIn}: not in MTEK any more`);
 
     const createdPunches = punchRecordsToCreate.length
       ? await createPunchRecords(punchRecordsToCreate)
       : [];
+    await patchPunchRecords(clockOutFills);
+
+    // Open = no clock-out once this run is done, across every punch on the row.
+    const openCount =
+      createdPunches.filter((punch) => !getField(punch, 'Time Out')).length +
+      existingPunches.filter((punch) => !punch.timeOut).length;
 
     phaseField = 'Employee Status';
     await updateRunRecord({
       'Time punch Status': 'COMPLETE - Time punches found',
-      'Time in/out Status': 'COMPLETE - Time in/out found',
+      'Time in/out Status': openCount ? 'PROBLEM' : 'COMPLETE - Time in/out found',
       'Employee Status': 'Started',
     });
 
@@ -480,21 +552,46 @@ async function run() {
     }
     await patchPunchRecords(rateUpdates);
 
-    const note = [
-      `# of Time punches found: ${createdPunches.length}`,
+    // Totals cover the whole row, not just this run's new punches — a re-fetch
+    // that fills a clock-out changes the week's hours without creating anything.
+    for (const punch of existingPunches) {
+      const hours = hoursBetween(punch.timeIn, punch.timeOut);
+      totalHours += hours;
+      totalWages += hours * punch.hourlyRate;
+    }
+
+    const listed = (label, lines) => {
+      if (!lines.length) return [];
+      const shown = lines.slice(0, 25).map((line) => `- ${line}`);
+      if (lines.length > 25) shown.push(`- ...and ${lines.length - 25} more`);
+      return [`${label}:`, ...shown];
+    };
+
+    const summary = [
+      `# of Time punches in MTEK: ${mtekPunches.length}`,
+      `# of New punches: ${createdPunches.length}`,
       `# of Duplicates skipped: ${duplicatesSkipped}`,
+      `# of Clock-outs filled: ${clockOutFills.length}`,
+      `# of Punches with no clock-out: ${openCount}`,
+      `# of Differs from MTEK: ${differs.length}`,
+      `# of No longer in MTEK: ${noLongerInMtek.length}`,
       `# of Employees not found: ${employeeNotFound}`,
       `# of Rates not found: ${rateNotFound}`,
-      `# of Punches with no clock-out: ${openShiftCount}`,
-      `Total hours: ${totalHours.toFixed(2)}`,
-      `Total wages: $${totalWages.toFixed(2)}`,
+      `Week total hours: ${totalHours.toFixed(2)}`,
+      `Week total wages: $${totalWages.toFixed(2)}`,
     ].join(' | ');
+
+    const note = [
+      summary,
+      ...listed('Differs from MTEK (Airtable kept, not overwritten)', differs),
+      ...listed('No longer in MTEK', noLongerInMtek),
+    ].join('\n');
 
     await updateRunRecord({
       'Rate type Status': rateNotFound ? 'PROBLEM' : 'COMPLETE - Rates assigned',
-      // COMPLETE only when nothing went unmatched — an unmatched employee or rate
-      // means the run finished but the payroll numbers are not trustworthy yet.
-      'Overall Status': employeeNotFound || rateNotFound ? 'PROBLEM' : 'COMPLETE',
+      // COMPLETE only when nothing needs a human: an unmatched employee or rate,
+      // or a punch with no clock-out, means the payroll numbers aren't final.
+      'Overall Status': employeeNotFound || rateNotFound || openCount ? 'PROBLEM' : 'COMPLETE',
       Notes: await appendNote(note),
     });
 
