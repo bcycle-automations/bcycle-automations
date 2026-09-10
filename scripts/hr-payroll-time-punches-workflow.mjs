@@ -242,29 +242,63 @@ async function mtekRequest(path, params = {}) {
 }
 
 /**
- * Collects every page plus the sideloaded `included` records, keyed by type+id
- * so employee/user/shift_type names can be resolved without an extra call each.
+ * Collects every page plus the sideloaded `included` records (keyed by type+id so
+ * names resolve without an extra call each), and proves the result is complete.
+ * Anything short of that throws rather than under-counting payroll: a page with
+ * no data or paging info, MTEK's total changing between pages (records shifted
+ * mid-fetch), or fewer unique punches than MTEK reports. Counting unique IDs also
+ * catches a skipped record hidden behind a duplicated one. `request` is
+ * injectable so this can be exercised without MTEK.
  */
-async function fetchPaginatedMtek(path, params = {}) {
-  const allResults = [];
+async function fetchPaginatedMtek(path, params = {}, request = mtekRequest) {
+  const byId = new Map();
   const included = new Map();
+  let reportedCount = null;
   let currentPage = 1;
   let totalPages = 1;
 
   while (currentPage <= totalPages) {
-    const page = await mtekRequest(path, { ...params, page: currentPage, page_size: 100 });
+    const page = await request(path, { ...params, page: currentPage, page_size: 100 });
+    const pages = Number(page?.meta?.pagination?.pages);
+    const count = Number(page?.meta?.pagination?.count);
 
-    allResults.push(...(Array.isArray(page?.data) ? page.data : []));
-    for (const item of Array.isArray(page?.included) ? page.included : []) {
+    if (
+      !Array.isArray(page?.data) ||
+      !Number.isInteger(pages) ||
+      pages < 0 ||
+      !Number.isInteger(count) ||
+      count < 0
+    ) {
+      throw new Error(
+        `MTEK page ${currentPage} came back without its data or paging info, so the fetch can't be confirmed complete. Nothing was imported — re-run the fetch.`,
+      );
+    }
+
+    if (reportedCount === null) {
+      reportedCount = count;
+    } else if (count !== reportedCount) {
+      throw new Error(
+        `MTEK's total changed during the fetch (${reportedCount} -> ${count}), so records may have shifted between pages. Nothing was imported — re-run the fetch.`,
+      );
+    }
+
+    // A record can land on two pages if data shifts mid-fetch; keep it once.
+    for (const item of page.data) byId.set(String(item.id), item);
+    for (const item of Array.isArray(page.included) ? page.included : []) {
       included.set(`${item.type}:${item.id}`, item);
     }
 
-    const parsedPages = Number(page?.meta?.pagination?.pages);
-    totalPages = Number.isFinite(parsedPages) && parsedPages > 0 ? parsedPages : currentPage;
+    totalPages = pages;
     currentPage += 1;
   }
 
-  return { results: allResults, included };
+  if (byId.size !== reportedCount) {
+    throw new Error(
+      `MTEK reported ${reportedCount} time punches but ${byId.size} were received. Nothing was imported — re-run the fetch.`,
+    );
+  }
+
+  return { results: [...byId.values()], included };
 }
 
 function relationshipId(shift, name) {
@@ -396,7 +430,11 @@ async function run() {
     for (const shift of shifts) {
       const attributes = shift?.attributes || {};
       const start = localParts(attributes.start_datetime);
-      if (!start) continue;
+      if (!start) {
+        throw new Error(
+          `MTEK time punch ${shift?.id ?? '(no id)'} has no readable start time, so it can't be placed in a week. Nothing was imported — fix it in MTEK and re-run the fetch.`,
+        );
+      }
       if (start.date < startDate || start.date > endDate) continue;
 
       const end = attributes.end_datetime ? localParts(attributes.end_datetime) : null;
@@ -609,7 +647,13 @@ async function run() {
   }
 }
 
-run().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+// Runs whenever this file is executed. HR_PUNCHES_SKIP_RUN=1 lets the fetch be
+// imported and exercised on its own without syncing anything.
+if (process.env.HR_PUNCHES_SKIP_RUN !== '1') {
+  run().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
+
+export { fetchPaginatedMtek };
