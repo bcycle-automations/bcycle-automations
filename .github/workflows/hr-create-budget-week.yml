@@ -19,10 +19,12 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Create Budget week
+      - name: Create Budget week and assign pay periods
         env:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
           AIRTABLE_BUDGET_WEEKS_TABLE_ID: tblt2pfs356rDVDIa
+          AIRTABLE_PAYROLL_PERIODS_TABLE_ID: tbl9qw4kqw0BY0DyJ
+          AIRTABLE_PUNCHES_TABLE_ID: tblVxt2W7NanQmJFR
           PAYROLL_TIME_ZONE: America/Toronto
         run: node scripts/hr-create-budget-week.mjs
