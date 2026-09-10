@@ -378,6 +378,28 @@ so an empty studio-week is always a mistake — usually a SPINCO studio (this
 script only queries b.cycle's MTEK, where a SPINCO location returns 0) or the
 wrong dates.
 
+### The fetch proves it is complete
+The fetch doesn't assume it got everything — it checks, and fails before writing
+anything if it can't prove it:
+
+- Every MTEK page must carry its data and paging info. A malformed page stops the
+  run instead of being taken as the last page.
+- MTEK's reported total must be identical on every page. A change means records
+  shifted between pages while it was fetching.
+- The number of **unique** punches received must equal MTEK's reported total.
+  Counting unique IDs also catches a skipped record hidden behind a duplicated
+  one, where the raw total would look right.
+- A punch that appears on two pages is kept once.
+- A punch whose start time can't be read fails the run rather than being skipped.
+
+So either every punch MTEK reports for that studio and window arrives, or the run
+ends on `PROBLEM` with the reason in Notes. Re-running is the recovery.
+
+Tested by feeding the real fetch function nine synthetic page sequences (it
+accepted the three complete ones and threw on all six faulty ones) and against
+real multi-page MTEK data with no false alarm. `HR_PUNCHES_SKIP_RUN=1` skips the
+sync so `fetchPaginatedMtek` can be imported and exercised on its own.
+
 ### Notes is an append-only log
 Each run prepends a timestamped entry and keeps everything below it, so a
 Budget week - Studio row reads as a history rather than only the last result:
@@ -426,3 +448,7 @@ marks whichever phase was actually in flight.
 - Many `EE` rows in the Rates table have a `Rate` of `$0.00`. Those punches
   match a rate record correctly but contribute nothing to Wages, so they look
   like unpaid hours rather than an unmatched-rate error.
+- Dedupe is scoped to one Budget week - Studio row. A shift whose date is moved
+  into a later week in MTEK is imported again there and paid twice; the old
+  week's Date Range Check may flag it. A global check was considered and
+  deliberately not added.
