@@ -338,21 +338,6 @@ sub-minute seconds that the text would drop.
 The script recomputes the same `HH:MM` arithmetic in memory for its run notes,
 so the reported totals always agree with the column.
 
-## HR Create Budget week
-
-Workflow file: `.github/workflows/hr-create-budget-week.yml`
-Script: `scripts/hr-create-budget-week.mjs`
-
-Runs Sundays at 08:00 UTC (4am America/Toronto) and creates the upcoming
-`Budget week`: Start Date = the coming Sunday, End Date = Start + 6, so weeks
-run Sunday-Saturday and never overlap. It no-ops if that week already exists,
-so re-running by hand is safe.
-
-The equivalent automation in the HR - Instructors base ("Run Weekly classes.")
-asks an AI step for the dates. This one does the arithmetic in code instead —
-deliberately, since a wrong date silently produces a wrong payroll week. Only
-HR works this way; the instructors base was left alone.
-
 ### Re-running a fetch
 Each punch stores MTEK's shift id in `MTEK ID`. A run reads back the ids already
 linked to the Budget week - Studio record and skips them, so clicking **Fetch
@@ -460,33 +445,45 @@ marks whichever phase was actually in flight.
   week's Date Range Check may flag it. A global check was considered and
   deliberately not added.
 
-## HR Create Payroll period
+## HR Create Budget week
 
-Workflow file: `.github/workflows/hr-create-payroll-period.yml`
-Script: `scripts/hr-create-payroll-period.mjs`
+Workflow file: `.github/workflows/hr-create-budget-week.yml`
+Script: `scripts/hr-create-budget-week.mjs`
 
-Keeps the **Payroll period** table (HR base, `tbl9qw4kqw0BY0DyJ`) filled ahead of
-time. Periods are 14 days, Sunday to Saturday, so a Budget week never straddles
-two of them.
+Runs Sundays at 08:00 UTC (4am America/Toronto). Each run:
 
-**The table is the reference.** Each new period steps 14 days from the *latest*
-period already there; the first one was seeded by hand (`2026-08-23 -> 2026-09-05`).
-If the table is ever emptied, the job fails rather than guess a start date.
+1. **Creates the upcoming Budget week** — Start = the coming Sunday, End = Start + 6,
+   so weeks run Sunday-Saturday and never overlap. No-op if it already exists.
+2. **Assigns every Budget week to its Payroll period** — the week just created and
+   any made by hand — and records `Week of pay period` (1 or 2). Both are re-checked
+   on every run, so a hand-edited link is put back on the period its dates belong to.
+3. **Creates a Payroll period only when a week needs one.** Periods are 14 days,
+   Sunday-Saturday, stepped from the latest period in the table (seeded by hand:
+   `2026-08-23 -> 2026-09-05`). So a period appears one week before it starts,
+   together with its first Budget week — never speculatively ahead. A week more than
+   three periods past the latest one fails as a probable typo instead of filling the
+   gap.
+4. **Links any time punch with no pay period** to the existing period covering its
+   date. It never creates a period for a punch.
 
-**Cadence.** GitHub cron can't express "every other Sunday", so the job runs every
-Sunday (08:10 UTC, 4:10am Toronto) and creates any period starting within the next
-two weeks. On the Sunday a period begins that is exactly the one two weeks out; on
-the off-Sunday there is nothing to do; after a skipped run it catches up.
+Anything it can't place fails the run with a list of what and why, and GitHub sends
+its usual failed-workflow notification. Weeks and punches dated before the first
+period are ignored.
 
-**Also links stray punches.** It links any Time Punch that has no period to the one
-covering its date — this is what backfilled punches imported before the table
-existed. It fails loudly if a punch's date has no period or more than one.
+Payroll period `Name` is a formula in Airtable, so the job writes only the dates.
 
-**Name is text, not a formula.** Airtable's API can't create a formula primary
-field, so the job writes `Start -> End` into `Name` itself. If `Name` is ever
-converted to a formula in the UI, remove that write from the script or every run
-will fail trying to write a computed field.
+This job absorbed the short-lived standalone "HR Create Payroll period" job, so a
+period and the weeks inside it are created at the same moment and can't drift apart.
 
-Both scripts use Airtable **field IDs**, not names, so renaming a column can't
-break them.
+The date arithmetic is done in code rather than by the AI step used by "Run Weekly
+classes." in HR - Instructors — deliberately, since a wrong date silently produces a
+wrong payroll week. Only HR works this way; the instructors base was left alone.
 
+### Budget week fields
+- `Payroll period`, `Week of pay period` — set by the job.
+- `Studios completed` — unique names of that week's studios whose Budget week -
+  Studio row has Overall Status COMPLETE: a rollup of the row's `Completed studio`
+  formula. (Airtable's API can't create filtered rollups, so the formula does the
+  filtering.)
+- `WEEK 1` / `WEEK 2` — that same list, shown only in the column matching the week's
+  place in its pay period.

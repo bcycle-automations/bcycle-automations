@@ -558,7 +558,7 @@ async function run() {
         if (uncovered.size) problems.push(`no Payroll period covers ${[...uncovered].sort().join(', ')}`);
         if (ambiguous.size) problems.push(`more than one Payroll period covers ${[...ambiguous].sort().join(', ')}`);
         throw new Error(
-          `Can't give every punch a pay period: ${problems.join('; ')}. Fix the Payroll period table (or run HR Create Payroll period) and re-run the fetch. Nothing was imported.`,
+          `Can't give every punch a pay period: ${problems.join('; ')}. Fix the Payroll period table (or run HR Create Budget week) and re-run the fetch. Nothing was imported.`,
         );
       }
     }
