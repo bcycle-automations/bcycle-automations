@@ -455,8 +455,8 @@ Runs Sundays at 08:00 UTC (4am America/Toronto). Each run:
 1. **Creates the upcoming Budget week** — Start = the coming Sunday, End = Start + 6,
    so weeks run Sunday-Saturday and never overlap. No-op if it already exists.
 2. **Assigns every Budget week to its Payroll period** — the week just created and
-   any made by hand — and records `Week of pay period` (1 or 2). Both are re-checked
-   on every run, so a hand-edited link is put back on the period its dates belong to.
+   any made by hand. The link is re-checked on every run, so a hand-edited link
+   is put back on the period its dates belong to.
 3. **Creates a Payroll period only when a week needs one.** Periods are 14 days,
    Sunday-Saturday, stepped from the latest period in the table (seeded by hand:
    `2026-08-23 -> 2026-09-05`). So a period appears one week before it starts,
@@ -480,7 +480,10 @@ classes." in HR - Instructors — deliberately, since a wrong date silently prod
 wrong payroll week. Only HR works this way; the instructors base was left alone.
 
 ### Budget week fields
-- `Payroll period`, `Week of pay period` — set by the job.
+- `Payroll period` — set by the job.
+- `Week of pay period` — formula: 1 if the week starts in the first 7 days of its
+  pay period, 2 in the second 7. It reads `Pay period start`, a rollup of the linked
+  period's Start Date, so it follows the link with no help from the job.
 - `Studios completed` — unique names of that week's studios whose Budget week -
   Studio row has Overall Status COMPLETE: a rollup of the row's `Completed studio`
   formula. (Airtable's API can't create filtered rollups, so the formula does the

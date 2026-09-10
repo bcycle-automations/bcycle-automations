@@ -28,7 +28,6 @@ const FIELD = {
   weekStart: 'fldkF8NgX28kgbuAl',
   weekEnd: 'fldxp99UioLif2Foy',
   weekPeriod: 'fld73OutMIP1NYSOe',
-  weekNumber: 'fldf9En87sIO8JfIO',
   periodStart: 'fldMjpx7WN4tgNrNs',
   periodEnd: 'fldCy4qUWOWq6SZdk',
   punchDate: 'fldwxo5JqKNOf4KvY',
@@ -44,10 +43,6 @@ function addDays(isoDate, days) {
   const date = new Date(`${isoDate}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
-}
-
-function daysBetween(from, to) {
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
 }
 
 function budgetWeekDates(now = new Date()) {
@@ -75,11 +70,6 @@ function periodsNeededFor(date, latestStart) {
     periods.push({ start, end: addDays(start, PERIOD_DAYS - 1) });
   }
   return periods;
-}
-
-/** 1 or 2: which week of its pay period a week starting on `weekStart` is. */
-function weekOfPeriod(weekStart, periodStart) {
-  return Math.floor(daysBetween(periodStart, weekStart) / 7) + 1;
 }
 
 async function airtableRequest({ method = 'GET', tableId, body, query = '' }) {
@@ -138,13 +128,12 @@ async function run() {
   const latestStart = periods.map((p) => p.start).sort().at(-1);
 
   // 1. The coming Budget week.
-  const weeks = (await fetchAll(CONFIG.budgetWeeksTableId, [FIELD.weekStart, FIELD.weekEnd, FIELD.weekPeriod, FIELD.weekNumber]))
+  const weeks = (await fetchAll(CONFIG.budgetWeeksTableId, [FIELD.weekStart, FIELD.weekEnd, FIELD.weekPeriod]))
     .map((r) => ({
       id: r.id,
       start: r.fields?.[FIELD.weekStart],
       end: r.fields?.[FIELD.weekEnd],
       periodIds: r.fields?.[FIELD.weekPeriod] || [],
-      number: r.fields?.[FIELD.weekNumber] ?? null,
     }))
     .filter((w) => w.start && w.end);
 
@@ -154,7 +143,7 @@ async function run() {
     const [record] = await writeInBatches('POST', CONFIG.budgetWeeksTableId, [
       { fields: { [FIELD.weekStart]: startDate, [FIELD.weekEnd]: endDate } },
     ]);
-    weeks.push({ id: record.id, start: startDate, end: endDate, periodIds: [], number: null });
+    weeks.push({ id: record.id, start: startDate, end: endDate, periodIds: [] });
     createdWeek = true;
   }
 
@@ -188,10 +177,10 @@ async function run() {
       continue;
     }
     const [period] = matches;
-    const number = weekOfPeriod(week.start, period.start);
     // Re-checked every run, so a week relinked by hand is put back on its real period.
-    if (week.periodIds.length !== 1 || week.periodIds[0] !== period.id || week.number !== number) {
-      weekUpdates.push({ id: week.id, fields: { [FIELD.weekPeriod]: [period.id], [FIELD.weekNumber]: number } });
+    // Week of pay period is an Airtable formula off this link, so it follows along.
+    if (week.periodIds.length !== 1 || week.periodIds[0] !== period.id) {
+      weekUpdates.push({ id: week.id, fields: { [FIELD.weekPeriod]: [period.id] } });
     }
   }
   await writeInBatches('PATCH', CONFIG.budgetWeeksTableId, weekUpdates);
@@ -231,4 +220,4 @@ if (process.env.HR_BUDGET_WEEK_SKIP_RUN !== '1') {
   });
 }
 
-export { budgetWeekDates, periodsNeededFor, weekOfPeriod };
+export { budgetWeekDates, periodsNeededFor };
