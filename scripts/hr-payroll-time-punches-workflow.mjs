@@ -20,6 +20,11 @@ const CONFIG = {
     employeesViewId: process.env.AIRTABLE_EMPLOYEES_VIEW_ID || 'viws8tSbvXfujLnwG',
     ratesTableId: process.env.AIRTABLE_RATES_TABLE_ID || 'tblufK9k5Tg5uCd74',
     studiosTableId: process.env.AIRTABLE_STUDIOS_TABLE_ID || 'tblAXy4xm0kJMkWeQ',
+    payrollPeriodsTableId: process.env.AIRTABLE_PAYROLL_PERIODS_TABLE_ID || 'tbl9qw4kqw0BY0DyJ',
+    // Field IDs, so a renamed column can't break pay-period assignment.
+    periodStartFieldId: 'fldMjpx7WN4tgNrNs',
+    periodEndFieldId: 'fldCy4qUWOWq6SZdk',
+    punchPeriodFieldId: 'fld4XJAYoen5lCaaM',
     token: process.env.AIRTABLE_TOKEN,
   },
   mtek: {
@@ -337,6 +342,26 @@ function paddedBound(dateString, days) {
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+async function fetchPayrollPeriods() {
+  const { payrollPeriodsTableId, periodStartFieldId, periodEndFieldId } = CONFIG.airtable;
+  const periods = [];
+  let offset = '';
+  do {
+    const params = new URLSearchParams({ returnFieldsByFieldId: 'true' });
+    params.append('fields[]', periodStartFieldId);
+    params.append('fields[]', periodEndFieldId);
+    if (offset) params.set('offset', offset);
+    const page = await airtableRequest({ tableId: payrollPeriodsTableId, query: params.toString() });
+    for (const record of page.records || []) {
+      const start = record.fields?.[periodStartFieldId];
+      const end = record.fields?.[periodEndFieldId];
+      if (start && end) periods.push({ id: record.id, start, end });
+    }
+    offset = page.offset || '';
+  } while (offset);
+  return periods;
+}
+
 /**
  * Punches already linked to this run record. Keyed by MTEK ID for reconciling
  * against MTEK; the full list also covers any punch added by hand (no MTEK ID),
@@ -516,6 +541,27 @@ async function run() {
     const noLongerInMtek = existingPunches
       .filter((punch) => punch.mtekId && !seenMtekIds.has(punch.mtekId))
       .map((punch) => `${punch.employeeName} ${punch.date} ${punch.timeIn}: not in MTEK any more`);
+
+    // Every punch belongs to exactly one Payroll period. Resolve them all before
+    // writing anything, so a missing or overlapping period fails the run cleanly.
+    if (punchRecordsToCreate.length) {
+      const periods = await fetchPayrollPeriods();
+      const uncovered = new Set();
+      const ambiguous = new Set();
+      for (const fields of punchRecordsToCreate) {
+        const matches = periods.filter((period) => period.start <= fields.Date && fields.Date <= period.end);
+        if (matches.length === 1) fields[CONFIG.airtable.punchPeriodFieldId] = [matches[0].id];
+        else (matches.length ? ambiguous : uncovered).add(fields.Date);
+      }
+      if (uncovered.size || ambiguous.size) {
+        const problems = [];
+        if (uncovered.size) problems.push(`no Payroll period covers ${[...uncovered].sort().join(', ')}`);
+        if (ambiguous.size) problems.push(`more than one Payroll period covers ${[...ambiguous].sort().join(', ')}`);
+        throw new Error(
+          `Can't give every punch a pay period: ${problems.join('; ')}. Fix the Payroll period table (or run HR Create Payroll period) and re-run the fetch. Nothing was imported.`,
+        );
+      }
+    }
 
     const createdPunches = punchRecordsToCreate.length
       ? await createPunchRecords(punchRecordsToCreate)

@@ -48,6 +48,7 @@ jobs:
           AIRTABLE_EMPLOYEES_VIEW_ID: viws8tSbvXfujLnwG
           AIRTABLE_RATES_TABLE_ID: tblufK9k5Tg5uCd74
           AIRTABLE_STUDIOS_TABLE_ID: tblAXy4xm0kJMkWeQ
+          AIRTABLE_PAYROLL_PERIODS_TABLE_ID: tbl9qw4kqw0BY0DyJ
           MTEK_BASE_URL: https://bcycle.marianatek.com
           MTEK_PUNCHES_PATH: /api/time_clock_shifts
           PAYROLL_TIME_ZONE: America/Toronto
