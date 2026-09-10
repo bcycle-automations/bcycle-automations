@@ -315,12 +315,9 @@ Employees are matched from the **"Active Employees - ALL" view**
 This is a correctness fix, not just a narrowing. The table holds **836** rows
 including former staff, and **74 names are duplicated** across it. The lookup is
 first-match-wins, so matching against everything resolved **14 people to a stale
-Inactive/Offboarding record** rather than their current one — Marine Gasbarro,
-Cecilia Haykal, Julia Salucci, Eliane Mpunga and Randy Yoo among them.
+Inactive/Offboarding record** rather than their current one.
 
-Two things this does not solve: four names are duplicated *within* the active
-view (`Laura Castaner Bohigas`, `Kavini Rabel`, `Erika Espinosa`,
-`Chanda Holmes`) and are still resolved first-match-wins; and anyone outside the
+Two things this does not solve: four names are duplicated *within* the active view and are still resolved first-match-wins; and anyone outside the
 view no longer matches at all, which surfaces as `Employee Status: PROBLEM`.
 
 ### Derived fields on Time Punches
@@ -361,18 +358,42 @@ Each punch stores MTEK's shift id in `MTEK ID`. A run reads back the ids already
 linked to the Budget week - Studio record and skips them, so clicking **Fetch
 time punches** twice creates nothing and reports the skip count in Notes.
 
-Punches whose times later change *in MTEK* are deliberately left alone rather
-than overwritten, since Total Hours is meant to stay hand-correctable.
+A re-fetch also reconciles what is already on the row against MTEK, and never
+overwrites a value someone may have corrected by hand:
+
+- **Clock-out filled.** A punch imported while still open has a blank Time Out.
+  Once MTEK has the clock-out, a re-fetch writes it in — but only into a blank
+  field, so a hand correction is never touched. Without this, dedupe would skip
+  the punch forever and its hours would stay at 0.
+- **Differs from MTEK.** Any other disagreement (date, time in, time out) is
+  listed in Notes and left alone. It may be an MTEK edit made after the fetch,
+  or a deliberate correction in Airtable — the script can't tell which.
+- **No longer in MTEK.** A punch on the row whose MTEK ID MTEK no longer returns
+  is listed in Notes and left alone.
+
+### An empty fetch fails
+If MTEK returns no punches for the studio and week, the run throws and lands on
+`PROBLEM` rather than reporting `COMPLETE` on nothing. Everyone works every day,
+so an empty studio-week is always a mistake — usually a SPINCO studio (this
+script only queries b.cycle's MTEK, where a SPINCO location returns 0) or the
+wrong dates.
 
 ### Notes is an append-only log
 Each run prepends a timestamped entry and keeps everything below it, so a
 Budget week - Studio row reads as a history rather than only the last result:
 
 ```
-[2026-09-09 14:17 EDT] # of Time punches found: 0 | # of Duplicates skipped: 46 | ...
+[2026-09-10 09:50 EDT] # of Time punches in MTEK: 7 | # of New punches: 1 | # of Duplicates skipped: 6 | # of Clock-outs filled: 1 | # of Punches with no clock-out: 1 | # of Differs from MTEK: 1 | # of No longer in MTEK: 1 | ... | Week total hours: 26.50 | ...
+Differs from MTEK (Airtable kept, not overwritten):
+- <employee> 2026-08-24: Airtable 2026-08-24 07:00-10:30 / MTEK 2026-08-24 06:30-10:30
+No longer in MTEK:
+- <employee> 2026-08-24 15:00: not in MTEK any more
 
-[2026-09-09 14:16 EDT] # of Time punches found: 0 | # of Duplicates skipped: 46 | ...
+[2026-09-10 09:48 EDT] # of Time punches in MTEK: 7 | # of New punches: 7 | ...
 ```
+
+Week totals cover every punch on the row, not only those a run created — filling
+a clock-out changes the week's hours without creating anything.
 
 The stamp carries the real zone abbreviation, so it reads `EDT` in summer and
 `EST` in winter rather than being hardcoded. The field is re-read immediately
@@ -383,11 +404,14 @@ entries falling off the bottom — so a huge error message cannot wipe the histo
 ### Run status sequence
 `Overall Status` is set to `Started` as the run's very first write, before the
 try block — the same shape as `OVERALL Status` in the instructors payroll
-script. It only reaches `COMPLETE` when nothing went unmatched; an unmatched
-employee or rate lands it on `PROBLEM`, as does any thrown error.
+script. It only reaches `COMPLETE` when nothing needs a human: an unmatched
+employee or rate, or any punch still without a clock-out, lands it on
+`PROBLEM`, as does any thrown error.
 
 `Time punch Status` and `Time in/out Status` both go `Started` at the top of a
-run and both reach COMPLETE once the punches are in. `Employee Status` goes
+run and are set together once the punches are in: `Time punch Status` to
+COMPLETE, and `Time in/out Status` to COMPLETE — or **PROBLEM** while any punch
+on the row still has no clock-out. `Employee Status` goes
 `Started` at that point, then COMPLETE — or **PROBLEM** if any employee went
 unmatched. `Rate type Status` then goes `Started`, and COMPLETE or PROBLEM the
 same way; an unmatched rate silently pays someone nothing, so it is treated as

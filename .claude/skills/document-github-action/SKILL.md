@@ -56,6 +56,12 @@ Never put into `docs/`, the README, or a commit: webhook URLs (e.g. `hook.*.make
 API tokens, PATs, or anything else that is a credential *by possession*. A Make webhook URL
 is an unauthenticated trigger endpoint — treat it as a secret.
 
+**Also never put personal or pay data there**: no employee names, and no
+individual *or* aggregate pay figures (hourly rates, weekly wage totals). Describe
+verification in counts and hours, and say "reconciled to a single rate" rather
+than naming who or how much. This was learned the hard way — a named employee's
+pay rate was once committed to a doc here.
+
 Refer to such things by **ID instead of value**: "Make scenario 6166754, webhook 2777677,
 authenticating with keychain key 86508". Say where to retrieve the real value.
 
