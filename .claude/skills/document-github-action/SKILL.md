@@ -156,8 +156,13 @@ body paragraph count looks right. That is sufficient; do not chase the PDF rende
      "https://raw.githubusercontent.com/bcycle-automations/bcycle-automations/main/docs/<FILE>.docx"
    ```
 5. Create the Airtable record with the writable fields from §1.
-6. Attach the doc by URL — Airtable fetches it and copies it into its own storage, so it
-   survives the repo later going private:
+6. Attach the doc by a **commit-pinned** URL, never `main`:
+   `https://raw.githubusercontent.com/bcycle-automations/bcycle-automations/<full-sha>/docs/<FILE>.docx`,
+   with the SHA from `git log -1 --format=%H -- docs/<FILE>.docx`. GitHub's raw CDN
+   caches `main` for a few minutes, and re-attaching the same `main` URL silently
+   ingested the *previous* version once — the size gave it away. Content at a commit
+   can never change. Airtable fetches the file and copies it into its own storage, so
+   it survives the repo later going private:
    ```json
    {"fldJbUTpaI2tfKnW9": [{"url": "https://raw.githubusercontent.com/.../docs/<FILE>.docx",
                            "filename": "<FILE>.docx"}]}
@@ -165,7 +170,8 @@ body paragraph count looks right. That is sufficient; do not chase the PDF rende
    This only works because the repo is public. If it ever goes private, generate the file and
    hand it to the user to attach manually — there is no `upload_attachment` tool on the
    b.cycle Airtable connector (only on the Personal-Consulting and Waterpleasures ones).
-7. Read the record back and confirm the attachment ingested (its `url` should now be an
+7. Read the record back and confirm the attachment's `size` equals the committed
+   file's byte count (`wc -c`) — a mismatch means a stale copy was ingested. Also confirm the attachment ingested (its `url` should now be an
    `airtableusercontent.com` link) and that `Description` shows `state: loading`.
 8. Send the `.docx` files to the user with SendUserFile.
 
