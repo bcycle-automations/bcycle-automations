@@ -249,6 +249,24 @@ Workflow file: `.github/workflows/bcycle-payroll-classes-action.yml`
 ### Script
 - `scripts/bcycle-payroll-classes-workflow.mjs`
 
+### Pay period assignment
+Every class is linked (`Payroll Period`, `fldR0cD3vR4RE4pKY` on Classes (for
+Payroll)) to the HR - Instructors **Payroll Period** table
+(`tblGYpEKsV63NzRCT`) — an Airtable sync of the HR base's Payroll period table,
+where HR Create Budget week creates the periods. The period is picked by the
+class's local (`America/Toronto`) date and resolved for all classes *before*
+anything is written: a date no period covers, or two periods cover, fails the
+run with nothing imported (usually the sync hasn't caught up — check it, then
+re-run). Classes dated before the first period (2026-08-23) are left without
+one. `BCYCLE_PAYROLL_CLASSES_SKIP_RUN=1` lets `assignPayrollPeriods` be
+imported and tested on its own. The 509 classes already imported for
+2026-08-23 → 2026-09-05 were backfilled once by hand.
+
+Note: `.github/workflows/bcycle-payroll-classes.yml` is an older copy of this
+workflow whose YAML doesn't parse (an unquoted colon in its input description),
+so it has never run — every push records a failed run for it. The live one is
+`bcycle-payroll-classes-action.yml`.
+
 ## HR Payroll Time Punches
 
 Workflow file: `.github/workflows/hr-payroll-time-punches.yml`
