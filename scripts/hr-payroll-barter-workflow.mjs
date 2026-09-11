@@ -19,6 +19,9 @@ const CONFIG = {
     // "Active Employees - ALL" — the full table holds former staff and duplicated
     // names, which is how the time punch sync once matched people to stale records.
     employeesViewId: process.env.AIRTABLE_EMPLOYEES_VIEW_ID || 'viws8tSbvXfujLnwG',
+    // Tried only when no employee matches. Instructors has no active-only view,
+    // so Inactive rows are dropped in code instead.
+    instructorsTableId: process.env.AIRTABLE_INSTRUCTORS_TABLE_ID || 'tblGfu4QRovWm7oX0',
     token: process.env.AIRTABLE_TOKEN,
   },
   mtek: {
@@ -45,6 +48,7 @@ const BARTER = {
   orderNumber: 'fldKGp4HhI9g0GQu5',
   period: 'fldMD49SlLilK1W6L',
   employee: 'fldHWpwvRibP5K5WM',
+  instructor: 'flds5L3E5cYeFAZit',
   customerId: 'fldS2ZTdXrfViRE1W',
   customerName: 'fldO6le34us3tBiOM',
   customerEmail: 'fldZhK7GGmSDdN4Uy',
@@ -58,6 +62,12 @@ const EMPLOYEE = {
   name: 'fldfx5XqnufDFx3il',
   email: 'fldtZABqLYuLRJef5',
   zingfitEmail: 'fldt1pMIEG1dGAJKs',
+};
+const INSTRUCTOR = {
+  name: 'fldfiP2nCrPWevw9T',
+  email: 'fldhiA1ZsdATK3L2G',
+  zingfitEmail: 'fldr2ziShqfHIyWaj',
+  status: 'fldHbQFBNAA4ENlgS',
 };
 
 // Report columns this sync reads. If MTEK renames one, the run stops rather than
@@ -224,9 +234,10 @@ function barterRowsFromReport(report, startDate, endDate, promotion = CONFIG.pro
 
 /**
  * Email first (Email or Zingfit e-mail), then full name. A key shared by two
- * active employees is ambiguous and left unmatched rather than guessed.
+ * people in the list is ambiguous and left unmatched rather than guessed.
+ * `keys` names the fields — Employees and Instructors use the same shape.
  */
-function buildEmployeeMatcher(employeeRecords) {
+function buildPersonMatcher(records, keys = EMPLOYEE) {
   const byEmail = new Map();
   const byName = new Map();
   const add = (map, key, id) => {
@@ -234,11 +245,11 @@ function buildEmployeeMatcher(employeeRecords) {
     if (!map.has(key)) map.set(key, new Set());
     map.get(key).add(id);
   };
-  for (const record of employeeRecords) {
+  for (const record of records) {
     const fields = record.fields || {};
-    add(byEmail, normalise(fields[EMPLOYEE.email]), record.id);
-    add(byEmail, normalise(fields[EMPLOYEE.zingfitEmail]), record.id);
-    add(byName, normalise(fields[EMPLOYEE.name]), record.id);
+    add(byEmail, normalise(fields[keys.email]), record.id);
+    add(byEmail, normalise(fields[keys.zingfitEmail]), record.id);
+    add(byName, normalise(fields[keys.name]), record.id);
   }
   return ({ customerEmail, customerName }) => {
     const email = byEmail.get(normalise(customerEmail));
@@ -292,6 +303,7 @@ async function run() {
       BARTER.orderNumber,
       BARTER.period,
       BARTER.employee,
+      BARTER.instructor,
       BARTER.customerName,
       BARTER.customerEmail,
       BARTER.discount,
@@ -353,32 +365,56 @@ async function run() {
       [PERIOD.employeeStatus]: 'Started',
     });
 
-    const matchEmployee = buildEmployeeMatcher(
+    const matchEmployee = buildPersonMatcher(
       await fetchAll(
         CONFIG.airtable.employeesTableId,
         [EMPLOYEE.name, EMPLOYEE.email, EMPLOYEE.zingfitEmail],
         CONFIG.airtable.employeesViewId,
       ),
+      EMPLOYEE,
+    );
+    const matchInstructor = buildPersonMatcher(
+      (
+        await fetchAll(CONFIG.airtable.instructorsTableId, [
+          INSTRUCTOR.name,
+          INSTRUCTOR.email,
+          INSTRUCTOR.zingfitEmail,
+          INSTRUCTOR.status,
+        ])
+      ).filter((record) => record.fields?.[INSTRUCTOR.status] !== 'Inactive'),
+      INSTRUCTOR,
     );
 
-    // New rows, plus earlier rows of this period still missing an employee — so
-    // fixing an employee's email and re-fetching fills them in.
-    const needEmployee = [
+    // New rows, plus earlier rows of this period with neither an employee nor an
+    // instructor — so fixing someone's email and re-fetching fills them in.
+    const needPerson = [
       ...created.map((record) => ({ id: record.id, fields: record.fields || {} })),
-      ...periodRows.filter((record) => !(record.fields?.[BARTER.employee] || []).length),
+      ...periodRows.filter(
+        (record) =>
+          !(record.fields?.[BARTER.employee] || []).length && !(record.fields?.[BARTER.instructor] || []).length,
+      ),
     ];
-    const employeeUpdates = [];
+    const personUpdates = [];
     const unmatched = [];
-    for (const record of needEmployee) {
+    let instructorsMatched = 0;
+    for (const record of needPerson) {
       const customer = {
         customerEmail: record.fields[BARTER.customerEmail],
         customerName: record.fields[BARTER.customerName],
       };
+      // Employee first; an instructor is only tried when no employee matches.
       const employeeId = matchEmployee(customer);
-      if (employeeId) employeeUpdates.push({ id: record.id, fields: { [BARTER.employee]: [employeeId] } });
-      else unmatched.push(`${customer.customerName || '(no name)'} <${customer.customerEmail || 'no email'}>`);
+      const instructorId = employeeId ? null : matchInstructor(customer);
+      if (employeeId) {
+        personUpdates.push({ id: record.id, fields: { [BARTER.employee]: [employeeId] } });
+      } else if (instructorId) {
+        personUpdates.push({ id: record.id, fields: { [BARTER.instructor]: [instructorId] } });
+        instructorsMatched += 1;
+      } else {
+        unmatched.push(`${customer.customerName || '(no name)'} <${customer.customerEmail || 'no email'}>`);
+      }
     }
-    await writeInBatches('PATCH', CONFIG.airtable.barterTableId, employeeUpdates);
+    await writeInBatches('PATCH', CONFIG.airtable.barterTableId, personUpdates);
 
     const unmatchedCustomers = [...new Set(unmatched)];
     const totalDiscount = mtekRows.reduce((sum, row) => sum + row.discount, 0);
@@ -397,13 +433,14 @@ async function run() {
       `# of Duplicates skipped: ${duplicatesSkipped}`,
       `# of Differs from MTEK: ${differs.length}`,
       `# of No longer in MTEK: ${noLongerInMtek.length}`,
-      `# of Redemptions with no employee: ${unmatched.length}`,
+      `# of Matched to an instructor: ${instructorsMatched}`,
+      `# of Redemptions with no employee or instructor: ${unmatched.length}`,
       `Period ${CONFIG.promotion} discount total: $${totalDiscount.toFixed(2)}`,
     ].join(' | ');
 
     const note = [
       summary,
-      ...listed('No employee found (customer)', unmatchedCustomers),
+      ...listed('No employee or instructor found (customer)', unmatchedCustomers),
       ...listed('Differs from MTEK (Airtable kept, not overwritten)', differs),
       ...listed('No longer in MTEK', noLongerInMtek),
     ].join('\n');
@@ -419,7 +456,8 @@ async function run() {
     // discount total stay in Barter Notes, which is private to Airtable.
     console.log(
       `HR Payroll Barter completed for ${CONFIG.recordId}. ${mtekRows.length} ${CONFIG.promotion} redemptions, ` +
-        `${created.length} new, ${duplicatesSkipped} already imported, ${unmatched.length} with no employee.`,
+        `${created.length} new, ${duplicatesSkipped} already imported, ${instructorsMatched} matched to an instructor, ` +
+        `${unmatched.length} with no employee or instructor.`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -443,4 +481,4 @@ if (process.env.HR_BARTER_SKIP_RUN !== '1') {
   });
 }
 
-export { barterRowsFromReport, buildEmployeeMatcher };
+export { barterRowsFromReport, buildPersonMatcher };
