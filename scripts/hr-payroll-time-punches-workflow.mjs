@@ -679,7 +679,14 @@ async function run() {
       Notes: await appendNote(note),
     });
 
-    console.log(`HR Payroll Time Punches completed for ${CONFIG.recordId}. ${note}`);
+    // Actions logs are public on this repo: counts only. Names, hours and the
+    // wage total stay in Notes, which is private to Airtable.
+    console.log(
+      `HR Payroll Time Punches completed for ${CONFIG.recordId}. ${mtekPunches.length} punches in MTEK, ` +
+        `${createdPunches.length} new, ${duplicatesSkipped} duplicates skipped, ${clockOutFills.length} clock-outs filled, ` +
+        `${openCount} with no clock-out, ${differs.length} differ from MTEK, ${noLongerInMtek.length} no longer in MTEK, ` +
+        `${employeeNotFound} employees not found, ${rateNotFound} rates not found.`,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Mark whichever phase was in flight, so a mid-run failure doesn't leave

@@ -338,6 +338,10 @@ sub-minute seconds that the text would drop.
 The script recomputes the same `HH:MM` arithmetic in memory for its run notes,
 so the reported totals always agree with the column.
 
+The GitHub Actions log for this job is public (the repo is public), so the
+script prints counts only. Employee names, hours and the week's wage total are
+written to `Notes` in Airtable and nowhere else.
+
 ### Re-running a fetch
 Each punch stores MTEK's shift id in `MTEK ID`. A run reads back the ids already
 linked to the Budget week - Studio record and skips them, so clicking **Fetch
