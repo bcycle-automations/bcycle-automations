@@ -516,6 +516,10 @@ wrong with each redemption (`No employee or instructor`, `No Desjardins ID`),
 and Payroll period counts each with a rollup — `Barter No Employee/Instructor`,
 `Barter No Desjardins ID` — each with an ALL GOOD / ISSUE `... Check` formula.
 (Airtable's API can't create conditional counts, hence the formula + rollup.)
+`MIN Date Barter` / `MAX Date Barter` feed `Barter Date Range Check`, which only
+requires every redemption to fall *within* Start–End (unlike the time punch
+check, which requires the first and last day exactly — barter isn't used daily).
+A period with no barter yet reads ALL GOOD.
 
 ### Run status sequence
 `Barter Overall Status` and `Barter Status` go `Started` (and `Barter Employee
