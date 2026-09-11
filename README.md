@@ -510,6 +510,13 @@ Notes.
 two links; `Desjardins ID` is a formula showing the employee's, else the
 instructor's.
 
+### Checks on Payroll period
+Like the time punch checks: a Barter formula `Payroll issues` lists what is
+wrong with each redemption (`No employee or instructor`, `No Desjardins ID`),
+and Payroll period counts each with a rollup — `Barter No Employee/Instructor`,
+`Barter No Desjardins ID` — each with an ALL GOOD / ISSUE `... Check` formula.
+(Airtable's API can't create conditional counts, hence the formula + rollup.)
+
 ### Run status sequence
 `Barter Overall Status` and `Barter Status` go `Started` (and `Barter Employee
 Status` is cleared) before anything else. `Barter Status` becomes `COMPLETE -
