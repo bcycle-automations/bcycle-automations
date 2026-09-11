@@ -53,6 +53,8 @@ jobs:
           AIRTABLE_INSTRUCTORS_TABLE_ID: tbljLkeIdWibQF6SH
           AIRTABLE_STUDIOS_TABLE_ID: tblpogHdeAA2Z7HiD
           AIRTABLE_CLASS_TYPES_TABLE_ID: tbliopHKhCtHLwGOf
+          # Synced from the HR base's Payroll period table.
+          AIRTABLE_PAYROLL_PERIODS_TABLE_ID: tblGYpEKsV63NzRCT
           MTEK_BASE_URL: https://bcycle.marianatek.com
           MTEK_CLASSES_PATH: /api/class_sessions
         run: node scripts/bcycle-payroll-classes-workflow.mjs

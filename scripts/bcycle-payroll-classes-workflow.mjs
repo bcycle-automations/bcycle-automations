@@ -13,6 +13,13 @@ const CONFIG = {
     instructorsTableId: process.env.AIRTABLE_INSTRUCTORS_TABLE_ID || 'tbljLkeIdWibQF6SH',
     studiosTableId: process.env.AIRTABLE_STUDIOS_TABLE_ID || 'tblpogHdeAA2Z7HiD',
     classTypesTableId: process.env.AIRTABLE_CLASS_TYPES_TABLE_ID || 'tbliopHKhCtHLwGOf',
+    // "Payroll Period" here is a synced copy of the HR base's table (the HR
+    // Create Budget week job creates periods there). Field IDs, so a renamed
+    // column can't break assignment.
+    payrollPeriodsTableId: process.env.AIRTABLE_PAYROLL_PERIODS_TABLE_ID || 'tblGYpEKsV63NzRCT',
+    periodStartFieldId: 'fldic4m4P8BVIieVv',
+    periodEndFieldId: 'fld4Hg7iYvAgHTHeu',
+    classPeriodFieldId: 'fldR0cD3vR4RE4pKY',
     token: process.env.AIRTABLE_TOKEN,
   },
   mtek: {
@@ -212,6 +219,59 @@ function getField(record, fieldName) {
   return record?.fields?.[fieldName];
 }
 
+async function fetchPayrollPeriods() {
+  const { payrollPeriodsTableId, periodStartFieldId, periodEndFieldId } = CONFIG.airtable;
+  const periods = [];
+  let offset = '';
+  do {
+    const params = new URLSearchParams({ returnFieldsByFieldId: 'true' });
+    params.append('fields[]', periodStartFieldId);
+    params.append('fields[]', periodEndFieldId);
+    if (offset) params.set('offset', offset);
+    const page = await airtableRequest({ tableId: payrollPeriodsTableId, query: params.toString() });
+    for (const record of page.records || []) {
+      const start = record.fields?.[periodStartFieldId];
+      const end = record.fields?.[periodEndFieldId];
+      if (start && end) periods.push({ id: record.id, start, end });
+    }
+    offset = page.offset || '';
+  } while (offset);
+  return periods;
+}
+
+/**
+ * Gives every class its pay period, by local class date, before anything is
+ * written — a missing or overlapping period fails the run cleanly instead of
+ * leaving half-assigned classes. Classes dated before the first period (the
+ * table starts at 2026-08-23) are left without one.
+ */
+function assignPayrollPeriods(classRecords, periods) {
+  if (!periods.length) return;
+  const earliestStart = periods.map((period) => period.start).sort()[0];
+  const uncovered = new Set();
+  const ambiguous = new Set();
+
+  for (const fields of classRecords) {
+    const date = String(fields['Class Date'] || '').slice(0, 10);
+    if (!date) {
+      throw new Error(`MTEK class ${fields['MTEK ID'] ?? '(no id)'} has no readable start time, so it can't be given a pay period. Nothing was imported.`);
+    }
+    if (date < earliestStart) continue;
+    const matches = periods.filter((period) => period.start <= date && date <= period.end);
+    if (matches.length === 1) fields[CONFIG.airtable.classPeriodFieldId] = [matches[0].id];
+    else (matches.length ? ambiguous : uncovered).add(date);
+  }
+
+  if (uncovered.size || ambiguous.size) {
+    const problems = [];
+    if (uncovered.size) problems.push(`no Payroll Period covers ${[...uncovered].sort().join(', ')}`);
+    if (ambiguous.size) problems.push(`more than one Payroll Period covers ${[...ambiguous].sort().join(', ')}`);
+    throw new Error(
+      `Can't give every class a pay period: ${problems.join('; ')}. Periods are created in the HR base by HR Create Budget week and synced here — check the sync, then re-run. Nothing was imported.`,
+    );
+  }
+}
+
 function sessionAttributes(session) {
   return session?.attributes || {};
 }
@@ -265,6 +325,8 @@ async function run() {
         'Payroll Class log': [CONFIG.recordId],
       });
     }
+
+    if (classRecordsToCreate.length) assignPayrollPeriods(classRecordsToCreate, await fetchPayrollPeriods());
 
     const createdClassRecords = classRecordsToCreate.length
       ? await createClassRecords(classRecordsToCreate)
@@ -378,7 +440,13 @@ async function run() {
   }
 }
 
-run().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+// Runs whenever this file is executed. BCYCLE_PAYROLL_CLASSES_SKIP_RUN=1 lets the
+// pay-period assignment be imported and exercised on its own.
+if (process.env.BCYCLE_PAYROLL_CLASSES_SKIP_RUN !== '1') {
+  run().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
+
+export { assignPayrollPeriods };
