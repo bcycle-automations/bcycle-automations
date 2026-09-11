@@ -508,7 +508,8 @@ Notes.
 
 `Employee Desjardins ID` and `Instructor Desjardins ID` are lookups through the
 two links; `Desjardins ID` is a formula showing the employee's, else the
-instructor's.
+instructor's. `MTEK Profile` is a formula linking to
+`https://bcycle.marianatek.com/admin/user/profile/<Customer ID>`.
 
 ### Checks on Payroll period
 Like the time punch checks: a Barter formula `Payroll issues` lists what is
