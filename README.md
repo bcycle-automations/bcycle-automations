@@ -273,6 +273,12 @@ From that link:
   `Classes No Instructor/No Emp ID` — each with a `... Check` formula using the
   log's own rule (`ALL GOOD` / `ISSUE - PLEASE CHECK`).
 
+Each class also has `Pay period start` (rollup) → `Week number` (1 / 2, from
+the class's *local* date via `SET_TIMEZONE(..., 'America/Toronto')` — Class
+Date is stored in UTC, so a late-evening class would otherwise slip into the
+next day) → `Week number & Instructor` (week then instructor, no separator),
+mirroring `Week number` / `Week number & Rate` on the HR base's Time Punches.
+
 Note: `.github/workflows/bcycle-payroll-classes.yml` is an older copy of this
 workflow whose YAML doesn't parse (an unquoted colon in its input description),
 so it has never run — every push records a failed run for it. The live one is
