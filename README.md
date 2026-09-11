@@ -496,11 +496,19 @@ MTEK, and any row on the period that is no longer a BARTER redemption in MTEK.
 Rows still missing an employee are re-matched on every run, so fixing an
 employee's email in HR and clicking Fetch Barter again fills them in.
 
-### Employee matching
-Against the **Active Employees - ALL** view, like time punches: the customer's
-email against `Email` and `Zingfit e-mail`, then their full name against `Name`.
-A key shared by two active employees is ambiguous and left unmatched rather than
-guessed. Customers with no match are listed by name and email in Barter Notes.
+### Employee / instructor matching
+First against the **Active Employees - ALL** view, like time punches: the
+customer's email against `Email` and `Zingfit e-mail`, then their full name
+against `Name`. Only if no employee matches is the same test run against the
+**Instructors** table (`tblGfu4QRovWm7oX0`, every status except `Inactive` —
+it has no active-only view), filling the separate `Instructor` link. A key
+shared by two people in the same list is ambiguous and left unmatched rather
+than guessed. Customers matching neither are listed by name and email in Barter
+Notes.
+
+`Employee Desjardins ID` and `Instructor Desjardins ID` are lookups through the
+two links; `Desjardins ID` is a formula showing the employee's, else the
+instructor's.
 
 ### Run status sequence
 `Barter Overall Status` and `Barter Status` go `Started` (and `Barter Employee
