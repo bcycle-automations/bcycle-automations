@@ -262,6 +262,17 @@ one. `BCYCLE_PAYROLL_CLASSES_SKIP_RUN=1` lets `assignPayrollPeriods` be
 imported and tested on its own. The 509 classes already imported for
 2026-08-23 → 2026-09-05 were backfilled once by hand.
 
+The run record itself (Payroll Class log, one Sunday–Saturday week) is linked
+to its period too (`Payroll Period`, `fldyNM6PrShMEbQQS`) by its Start Date.
+From that link:
+- on the log, `Pay period start` (rollup) → `Week of pay period` (1 / 2) →
+  `Week 1 status` / `Week 2 status` (its OVERALL Status for that week only);
+- on Payroll Period, `WEEK 1 Classes` / `WEEK 2 Classes` show each week's
+  OVERALL Status, and the log's four checks are summed across both weeks —
+  `Classes No Studios`, `Classes No Class Type`, `Classes DUOs to FIX`,
+  `Classes No Instructor/No Emp ID` — each with a `... Check` formula using the
+  log's own rule (`ALL GOOD` / `ISSUE - PLEASE CHECK`).
+
 Note: `.github/workflows/bcycle-payroll-classes.yml` is an older copy of this
 workflow whose YAML doesn't parse (an unquoted colon in its input description),
 so it has never run — every push records a failed run for it. The live one is
