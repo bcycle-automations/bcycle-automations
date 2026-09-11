@@ -20,6 +20,7 @@ const CONFIG = {
     periodStartFieldId: 'fldic4m4P8BVIieVv',
     periodEndFieldId: 'fld4Hg7iYvAgHTHeu',
     classPeriodFieldId: 'fldR0cD3vR4RE4pKY',
+    runPeriodFieldId: 'fldyNM6PrShMEbQQS',
     token: process.env.AIRTABLE_TOKEN,
   },
   mtek: {
@@ -326,7 +327,15 @@ async function run() {
       });
     }
 
-    if (classRecordsToCreate.length) assignPayrollPeriods(classRecordsToCreate, await fetchPayrollPeriods());
+    const periods = await fetchPayrollPeriods();
+    if (classRecordsToCreate.length) assignPayrollPeriods(classRecordsToCreate, periods);
+
+    // The run record (one week) belongs to the period its Start Date falls in, so
+    // Payroll Period can show week 1 / week 2 and roll up the run's checks.
+    const runPeriod = periods.filter((period) => period.start <= startDate && startDate <= period.end);
+    if (runPeriod.length === 1) {
+      await updateRunRecord({ [CONFIG.airtable.runPeriodFieldId]: [runPeriod[0].id] });
+    }
 
     const createdClassRecords = classRecordsToCreate.length
       ? await createClassRecords(classRecordsToCreate)
