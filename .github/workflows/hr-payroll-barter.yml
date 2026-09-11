@@ -1,0 +1,55 @@
+name: HR Payroll Barter
+run-name: HR Payroll Barter
+
+on:
+  workflow_dispatch:
+    inputs:
+      record_id:
+        description: 'Airtable "Payroll period" record ID from tbl9qw4kqw0BY0DyJ (example: recXXXX)'
+        required: true
+        type: string
+  repository_dispatch:
+    types:
+      - airtable-hr-payroll-barter
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Resolve record id
+        id: record
+        shell: bash
+        run: |
+          RECORD_ID="${{ github.event.inputs.record_id || github.event.client_payload.record_id }}"
+          if [ -z "$RECORD_ID" ]; then
+            echo "record_id is required (from workflow_dispatch input or repository_dispatch client_payload.record_id)." >&2
+            exit 1
+          fi
+          echo "record_id=$RECORD_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Run HR Payroll Barter
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          AIRTABLE_RECORD_ID: ${{ steps.record.outputs.record_id }}
+          # HR base (NOT HR - Instructors). Editable here, no extra secrets required.
+          AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
+          AIRTABLE_PAYROLL_PERIODS_TABLE_ID: tbl9qw4kqw0BY0DyJ
+          AIRTABLE_BARTER_TABLE_ID: tblYxeSSem1plIvIR
+          AIRTABLE_EMPLOYEES_TABLE_ID: tbl0FzJ2s4Mk5jWIi
+          AIRTABLE_EMPLOYEES_VIEW_ID: viws8tSbvXfujLnwG
+          MTEK_BASE_URL: https://bcycle.marianatek.com
+          # "Promotion Redemptions" table report — the same data as the CSV export.
+          MTEK_BARTER_REPORT_ID: '292'
+          MTEK_BARTER_REPORT_SLUG: promotion-redemptions
+          BARTER_PROMOTION: BARTER
+          PAYROLL_TIME_ZONE: America/Toronto
+        run: node scripts/hr-payroll-barter-workflow.mjs
