@@ -445,6 +445,83 @@ marks whichever phase was actually in flight.
   week's Date Range Check may flag it. A global check was considered and
   deliberately not added.
 
+## HR Payroll Barter
+
+Workflow file: `.github/workflows/hr-payroll-barter.yml`
+Script: `scripts/hr-payroll-barter-workflow.mjs`
+
+Imports staff barter (the `BARTER` promotion, promo code `TEAMBARTER`) from
+MTEK into the **Barter** table of the **HR** base, one row per redemption, so
+barter can be tied to the employee who used it and to the pay period.
+
+### Triggers
+- `workflow_dispatch` with required input `record_id`
+- `repository_dispatch` with event type `airtable-hr-payroll-barter` and payload
+  field `record_id`
+
+`record_id` is a **Payroll period** record (`tbl9qw4kqw0BY0DyJ`); its Start and
+End Date are the window. Payroll period has a `Fetch Barter` formula field
+(`<Make webhook>?recordId=` + `RECORD_ID()`), bridged to GitHub by the Make
+scenario **HR Fetch barter** (id `6234235`, webhook `2800037`) — a copy of HR
+Fetch time punches using the same `GITHUB BEARER` keychain key (`86508`).
+
+### Required secrets
+- `AIRTABLE_TOKEN`
+- `MTEK_API_TOKEN`
+
+### Where the data comes from
+MTEK's **Promotion Redemptions** table report (id `292`, slug
+`promotion-redemptions`) — the same data as the `promotionsRedeemed.csv` export.
+It goes through the shared async report fetcher (`scripts/lib/mtek-report.mjs`),
+filtered with `min_order_date` / `max_order_date`; its `Date` column is studio
+local time. There is no JSON:API resource for promotions
+(`/api/promotions`, `/api/promotion_redemptions`, `/api/promo_codes` all 404), and
+the report can't be filtered by promotion, so every redemption in the window
+comes back and the script keeps rows whose `Promotion` is `BARTER`
+(trimmed, case-insensitive). If a column the sync reads disappears from the
+report, the run stops rather than importing blanks.
+
+### Airtable schema (HR base)
+- `Barter` (`tblYxeSSem1plIvIR`) — Order Number (primary, dedupe key), Payroll
+  period, Employee, Customer ID, Customer Name, Customer Email, Discount Amount,
+  Promotion, Promo Code, Order Products, Date
+- On `Payroll period`: `Barter Status`, `Barter Employee Status`,
+  `Barter Overall Status`, `Barter Notes`, `Fetch Barter`
+
+### Dedupe and re-running
+Order numbers are unique in MTEK (one BARTER redemption per order), so an Order
+Number already anywhere in the Barter table is never imported again. A re-run
+reports, without overwriting, any row whose Date or Discount Amount differs from
+MTEK, and any row on the period that is no longer a BARTER redemption in MTEK.
+Rows still missing an employee are re-matched on every run, so fixing an
+employee's email in HR and clicking Fetch Barter again fills them in.
+
+### Employee matching
+Against the **Active Employees - ALL** view, like time punches: the customer's
+email against `Email` and `Zingfit e-mail`, then their full name against `Name`.
+A key shared by two active employees is ambiguous and left unmatched rather than
+guessed. Customers with no match are listed by name and email in Barter Notes.
+
+### Run status sequence
+`Barter Overall Status` and `Barter Status` go `Started` (and `Barter Employee
+Status` is cleared) before anything else. `Barter Status` becomes `COMPLETE -
+Barter found` once rows are written, then `Barter Employee Status` runs.
+Overall is COMPLETE only when every redemption on the period has an employee;
+otherwise PROBLEM. A crash marks whichever phase was in flight PROBLEM, and
+Barter Notes is append-only like the time punch Notes. An MTEK report with no
+redemptions at all (any promotion) fails the run — usually wrong dates, or a
+period that has only just started.
+
+### Verification record
+First run on 2026-08-23 -> 2026-09-05: 412 redemptions across all promotions, 92
+BARTER, 92 created, 69 matched to an employee, 23 (13 customers) with no active
+employee match — so Overall correctly reads PROBLEM. A second run created 0 and
+skipped all 92.
+
+The GitHub Actions log for this job is public (the repo is public), so the
+script prints counts only. Customer names, emails and the period's discount
+total are written to `Barter Notes` in Airtable and nowhere else.
+
 ## HR Create Budget week
 
 Workflow file: `.github/workflows/hr-create-budget-week.yml`

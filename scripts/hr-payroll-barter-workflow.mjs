@@ -415,7 +415,12 @@ async function run() {
       [PERIOD.notes]: await appendNote(note),
     });
 
-    console.log(`HR Payroll Barter completed for ${CONFIG.recordId}. ${summary}`);
+    // Actions logs are public on this repo: counts only. Names, emails and the
+    // discount total stay in Barter Notes, which is private to Airtable.
+    console.log(
+      `HR Payroll Barter completed for ${CONFIG.recordId}. ${mtekRows.length} ${CONFIG.promotion} redemptions, ` +
+        `${created.length} new, ${duplicatesSkipped} already imported, ${unmatched.length} with no employee.`,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Mark whichever phase was in flight, so a mid-run failure doesn't leave an
