@@ -345,10 +345,12 @@ async function run() {
 
     await updateRunRecord({ 'Instructors Status': 'Started' });
     const instructorRecords = await fetchAllRecords(CONFIG.airtable.instructorsTableId, ['Name']);
+    // If a name appears more than once, keep the earliest-created instructor record.
+    instructorRecords.sort((a, b) => Date.parse(a.createdTime) - Date.parse(b.createdTime));
     const instructorMap = new Map();
     for (const rec of instructorRecords) {
       const name = String(getField(rec, 'Name') || '').trim().toLowerCase();
-      if (name) instructorMap.set(name, rec.id);
+      if (name && !instructorMap.has(name)) instructorMap.set(name, rec.id);
     }
 
     const mtekInstructorSample = sessions
