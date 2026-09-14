@@ -9,6 +9,14 @@ on:
         description: "Dry run (no writes to BigQuery, no Slack message)"
         type: boolean
         default: true
+      sync_min_date:
+        description: "Backfill window start, YYYY-MM-DD (optional — only used if BOTH dates are set)"
+        type: string
+        default: ""
+      sync_max_date:
+        description: "Backfill window end, YYYY-MM-DD (optional — only used if BOTH dates are set)"
+        type: string
+        default: ""
 
 jobs:
   sync-reservations:
@@ -39,4 +47,9 @@ jobs:
           # Scheduled runs always write for real. Manual (workflow_dispatch)
           # runs default to a dry run unless the input is explicitly unchecked.
           DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
+          # Optional manual window override for backfills. The script only
+          # honours these when BOTH are non-empty; otherwise it resumes from
+          # MAX(`Class Start Date`) in ReservationsMTEK as usual.
+          SYNC_MIN_DATE: ${{ github.event.inputs.sync_min_date }}
+          SYNC_MAX_DATE: ${{ github.event.inputs.sync_max_date }}
         run: node scripts/mtek-reservations-to-bigquery.mjs
