@@ -491,18 +491,23 @@ Script: `scripts/hr-payroll-barter-workflow.mjs`
 
 Imports staff barter (the `BARTER` promotion, promo code `TEAMBARTER`) from
 MTEK into the **Barter** table of the **HR** base, one row per redemption, so
-barter can be tied to the employee who used it and to the pay period.
+barter can be tied to the person who used it and to the pay period.
+
+Barter is fetched **per studio per pay period**, the same shape as time punches:
+one **Barter - Studio** run record (`tbllavHLM27nBDM99`) links a Payroll period
+to a Studio, and its `Fetch Barter` runs that studio's import.
 
 ### Triggers
 - `workflow_dispatch` with required input `record_id`
 - `repository_dispatch` with event type `airtable-hr-payroll-barter` and payload
   field `record_id`
 
-`record_id` is a **Payroll period** record (`tbl9qw4kqw0BY0DyJ`); its Start and
-End Date are the window. Payroll period has a `Fetch Barter` formula field
-(`<Make webhook>?recordId=` + `RECORD_ID()`), bridged to GitHub by the Make
-scenario **HR Fetch barter** (id `6234235`, webhook `2800037`) — a copy of HR
-Fetch time punches using the same `GITHUB BEARER` keychain key (`86508`).
+`record_id` is a **Barter - Studio** record. Its Payroll period supplies the
+dates (Start/End lookups) and its Studio supplies the MTEK location. The
+`Fetch Barter` formula (`<Make webhook>?recordId=` + `RECORD_ID()`) is bridged to
+GitHub by the Make scenario **HR Fetch barter** (id `6234235`, webhook
+`2800037`), a copy of HR Fetch time punches using the same `GITHUB BEARER`
+keychain key (`86508`).
 
 ### Required secrets
 - `AIRTABLE_TOKEN`
@@ -511,75 +516,80 @@ Fetch time punches using the same `GITHUB BEARER` keychain key (`86508`).
 ### Where the data comes from
 MTEK's **Promotion Redemptions** table report (id `292`, slug
 `promotion-redemptions`) — the same data as the `promotionsRedeemed.csv` export.
-It goes through the shared async report fetcher (`scripts/lib/mtek-report.mjs`),
-filtered with `min_order_date` / `max_order_date`; its `Date` column is studio
-local time. There is no JSON:API resource for promotions
-(`/api/promotions`, `/api/promotion_redemptions`, `/api/promo_codes` all 404), and
-the report can't be filtered by promotion, so every redemption in the window
-comes back and the script keeps rows whose `Promotion` is `BARTER`
-(trimmed, case-insensitive). If a column the sync reads disappears from the
-report, the run stops rather than importing blanks.
+It goes through the shared async report fetcher (`scripts/lib/mtek-report.mjs`)
+with `min_order_date` / `max_order_date` **and `location`**, MTEK's
+fulfillment-location filter, so a run only sees its own studio's redemptions
+(verified: `location=48718` returns Rockland rows only). Its `Date` column is
+studio local time. There is no JSON:API resource for promotions
+(`/api/promotions`, `/api/promotion_redemptions`, `/api/promo_codes` all 404),
+and the report can't be filtered by promotion, so the script keeps the rows whose
+`Promotion` is `BARTER` (trimmed, case-insensitive). If a column the sync reads
+disappears from the report, the run stops rather than importing blanks.
 
 ### Airtable schema (HR base)
-- `Barter` (`tblYxeSSem1plIvIR`) — Order Number (primary, dedupe key), Payroll
-  period, Employee, Customer ID, Customer Name, Customer Email, Discount Amount,
-  Promotion, Promo Code, Order Products, Date
-- On `Payroll period`: `Barter Status`, `Barter Employee Status`,
-  `Barter Overall Status`, `Barter Notes`, `Fetch Barter`
+- `Barter - Studio` (`tbllavHLM27nBDM99`) — the run record: Name, Payroll period,
+  Studio, Start/End Date (lookups), Fetch Barter, Barter Status, Employee Status,
+  Overall Status, Notes, Barter (link), `Completed studio`, and the checks below
+- `Barter` (`tblYxeSSem1plIvIR`) — Order Number (primary, dedupe key), Barter -
+  Studio, Payroll period, Employee, Instructor, Customer ID / Name / Email,
+  Discount Amount, Promotion, Promo Code, Order Products, Date, Fulfillment
+  Location; plus Desjardins lookups, `Desjardins ID`, `Payroll issues`,
+  `MTEK Profile`
+- `Payroll period` (`tbl9qw4kqw0BY0DyJ`) — keeps the period-wide barter rollups
+  and checks, and gains `Barter studios completed`. Its old period-level
+  `Fetch Barter` button is renamed `(old - replaced by Barter - Studio)`.
 
-### Dedupe and re-running
-Order numbers are unique in MTEK (one BARTER redemption per order), so an Order
-Number already anywhere in the Barter table is never imported again. A re-run
-reports, without overwriting, any row whose Date or Discount Amount differs from
-MTEK, and any row on the period that is no longer a BARTER redemption in MTEK.
-Rows still missing an employee are re-matched on every run, so fixing an
-employee's email in HR and clicking Fetch Barter again fills them in.
+### Dedupe, adoption and re-running
+Order numbers are unique in MTEK, so an Order Number already anywhere in the
+Barter table is never imported again. A redemption that already exists but has no
+run record — imported before this table existed, for instance — is **adopted**
+into the run that finds it, which is how the original period-level rows were
+migrated. A re-run reports, without overwriting, rows whose Date or Discount
+Amount differs from MTEK, and rows on the run that MTEK no longer returns for
+that studio. Rows with nobody linked are re-matched on every run.
 
 ### Employee / instructor matching
-First against the **Active Employees - ALL** view, like time punches: the
-customer's email against `Email` and `Zingfit e-mail`, then their full name
-against `Name`. Only if no employee matches is the same test run against the
-**Instructors** table (`tblGfu4QRovWm7oX0`, every status except `Inactive` —
-it has no active-only view), filling the separate `Instructor` link. A key
-shared by two people in the same list is ambiguous and left unmatched rather
-than guessed. Customers matching neither are listed by name and email in Barter
-Notes.
+First against the **Active Employees - ALL** view: the customer's email against
+`Email` and `Zingfit e-mail`, then their full name against `Name`. Only if no
+employee matches is the same test run against the **Instructors** table
+(`tblGfu4QRovWm7oX0`, every status except `Inactive`), filling the separate
+`Instructor` link. A key shared by two people in the same list is ambiguous and
+left unmatched rather than guessed. Customers matching neither are listed by name
+and email in the run's Notes.
 
-`Employee Desjardins ID` and `Instructor Desjardins ID` are lookups through the
-two links; `Desjardins ID` is a formula showing the employee's, else the
-instructor's. `MTEK Profile` is a formula linking to
-`https://bcycle.marianatek.com/admin/user/profile/<Customer ID>`.
-
-### Checks on Payroll period
-Like the time punch checks: a Barter formula `Payroll issues` lists what is
-wrong with each redemption (`No employee or instructor`, `No Desjardins ID`),
-and Payroll period counts each with a rollup — `Barter No Employee/Instructor`,
-`Barter No Desjardins ID` — each with an ALL GOOD / ISSUE `... Check` formula.
-(Airtable's API can't create conditional counts, hence the formula + rollup.)
-`MIN Date Barter` / `MAX Date Barter` feed `Barter Date Range Check`, which only
-requires every redemption to fall *within* Start–End (unlike the time punch
-check, which requires the first and last day exactly — barter isn't used daily).
-A period with no barter yet reads ALL GOOD.
+### Checks
+On each **Barter - Studio** run: `No Employee/Instructor`, `No Desjardins ID`
+(both counted from the Barter `Payroll issues` formula, since the API can't
+create conditional counts) each with an ALL GOOD / ISSUE check, plus
+`MIN/MAX Date Barter` feeding a `Date Range Check` that only requires every
+redemption to fall within the period's Start–End. The period-wide equivalents
+stay on `Payroll period` and now cover every studio's rows.
 
 ### Run status sequence
-`Barter Overall Status` and `Barter Status` go `Started` (and `Barter Employee
-Status` is cleared) before anything else. `Barter Status` becomes `COMPLETE -
-Barter found` once rows are written, then `Barter Employee Status` runs.
-Overall is COMPLETE only when every redemption on the period has an employee;
-otherwise PROBLEM. A crash marks whichever phase was in flight PROBLEM, and
-Barter Notes is append-only like the time punch Notes. An MTEK report with no
-redemptions at all (any promotion) fails the run — usually wrong dates, or a
-period that has only just started.
+`Overall Status` and `Barter Status` go `Started` (and `Employee Status` is
+cleared) before anything else. `Barter Status` becomes `COMPLETE - Barter found`
+once rows are written, then `Employee Status` runs. Overall is COMPLETE only when
+every redemption on the run has an employee or instructor; otherwise PROBLEM. A
+crash marks whichever phase was in flight, and Notes is append-only. A studio
+whose MTEK location returns no redemptions at all (any promotion) fails the run —
+wrong studio, wrong location ID, or a period that has only just started.
+
+### Known data issues
+- `b.home` and `Vieux-port` share MTEK Location ID `48719`, so a run for either
+  returns the same redemptions. Global order-number dedupe keeps them from being
+  imported twice, but they stay attached to whichever studio ran first — don't
+  create both run records for the same period.
+- A studio can legitimately have zero BARTER redemptions in a period; that is not
+  an error, only an empty report is.
 
 ### Verification record
-First run on 2026-08-23 -> 2026-09-05: 412 redemptions across all promotions, 92
-BARTER, 92 created, 69 matched to an employee, 23 (13 customers) with no active
-employee match — so Overall correctly reads PROBLEM. A second run created 0 and
-skipped all 92.
-
-The GitHub Actions log for this job is public (the repo is public), so the
-script prints counts only. Customer names, emails and the period's discount
-total are written to `Barter Notes` in Airtable and nowhere else.
+Reference period 2026-08-23 → 2026-09-05: 92 BARTER redemptions, every one with a
+unique order number, splitting Westmount 43, Vieux-Port 26, Rockland 16,
+Centre-Ville 7. Those 92 were originally imported by the period-level fetch and
+adopted into the four studio runs. 69 matched an employee, 22 an instructor, 1
+neither. The GitHub Actions log for this job is public (the repo is public), so
+the script prints counts only; customer names, emails and the discount total are
+written to the run's Notes in Airtable and nowhere else.
 
 ## HR Create Budget week
 
