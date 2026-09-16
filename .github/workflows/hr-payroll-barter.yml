@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       record_id:
-        description: 'Airtable "Payroll period" record ID from tbl9qw4kqw0BY0DyJ (example: recXXXX)'
+        description: 'Airtable "Barter - Studio" record ID from tbllavHLM27nBDM99 (example: recXXXX)'
         required: true
         type: string
   repository_dispatch:
@@ -42,7 +42,9 @@ jobs:
           AIRTABLE_RECORD_ID: ${{ steps.record.outputs.record_id }}
           # HR base (NOT HR - Instructors). Editable here, no extra secrets required.
           AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
-          AIRTABLE_PAYROLL_PERIODS_TABLE_ID: tbl9qw4kqw0BY0DyJ
+          AIRTABLE_BARTER_RUNS_TABLE_ID: tbllavHLM27nBDM99
+          AIRTABLE_STUDIOS_TABLE_ID: tblAXy4xm0kJMkWeQ
+          AIRTABLE_INSTRUCTORS_TABLE_ID: tblGfu4QRovWm7oX0
           AIRTABLE_BARTER_TABLE_ID: tblYxeSSem1plIvIR
           AIRTABLE_EMPLOYEES_TABLE_ID: tbl0FzJ2s4Mk5jWIi
           AIRTABLE_EMPLOYEES_VIEW_ID: viws8tSbvXfujLnwG

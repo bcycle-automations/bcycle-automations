@@ -4,8 +4,9 @@
  * HR Payroll Barter
  * MarianaTek "Promotion Redemptions" report (id 292) -> Airtable "Barter" sync.
  *
- * Runs against the HR base (NOT HR - Instructors). Driven by one Payroll period
- * record, which supplies the date window. Only the BARTER promotion is imported.
+ * Runs against the HR base (NOT HR - Instructors). Driven by one
+ * "Barter - Studio" record, which supplies the pay period (its dates) and the
+ * studio (its MTEK location). Only the BARTER promotion is imported.
  */
 
 import { fetchMtekReport } from './lib/mtek-report.mjs';
@@ -13,8 +14,9 @@ import { fetchMtekReport } from './lib/mtek-report.mjs';
 const CONFIG = {
   airtable: {
     baseId: process.env.AIRTABLE_BASE_ID || 'appiwfeujJzUZPPBx',
-    periodsTableId: process.env.AIRTABLE_PAYROLL_PERIODS_TABLE_ID || 'tbl9qw4kqw0BY0DyJ',
+    runsTableId: process.env.AIRTABLE_BARTER_RUNS_TABLE_ID || 'tbllavHLM27nBDM99',
     barterTableId: process.env.AIRTABLE_BARTER_TABLE_ID || 'tblYxeSSem1plIvIR',
+    studiosTableId: process.env.AIRTABLE_STUDIOS_TABLE_ID || 'tblAXy4xm0kJMkWeQ',
     employeesTableId: process.env.AIRTABLE_EMPLOYEES_TABLE_ID || 'tbl0FzJ2s4Mk5jWIi',
     // "Active Employees - ALL" — the full table holds former staff and duplicated
     // names, which is how the time punch sync once matched people to stale records.
@@ -36,17 +38,21 @@ const CONFIG = {
 };
 
 // Field IDs, so renaming a column in Airtable can't break the sync.
-const PERIOD = {
-  start: 'fldMjpx7WN4tgNrNs',
-  end: 'fldCy4qUWOWq6SZdk',
-  status: 'fldbyYPApgtlly5os',
-  employeeStatus: 'fldnD89m4dqCjvLQ1',
-  overallStatus: 'fldgcIhMaf0hgk1EE',
-  notes: 'fldWxs9OlW2FsncnI',
+const RUN = {
+  period: 'fldFr899mSW5cT2v1',
+  studio: 'fldKhTRgId3p30wXI',
+  startDate: 'fldsKaVNmoGJc66Cw',
+  endDate: 'fldVc2IwklHyfHm1w',
+  barter: 'fld4HDWC6viSuBMrV',
+  status: 'fldnkqBMJiO3dsKtA',
+  employeeStatus: 'fldSyZOMSSgEooZkF',
+  overallStatus: 'fldZOd7iD6T324Kpt',
+  notes: 'fldWZM8q8CjaAPygp',
 };
 const BARTER = {
   orderNumber: 'fldKGp4HhI9g0GQu5',
   period: 'fldMD49SlLilK1W6L',
+  run: 'fld7umbRMOreXgwUe',
   employee: 'fldHWpwvRibP5K5WM',
   instructor: 'flds5L3E5cYeFAZit',
   customerId: 'fldS2ZTdXrfViRE1W',
@@ -57,7 +63,9 @@ const BARTER = {
   promoCode: 'fldXGpb8DdM98Wejo',
   products: 'fldnUwrhA8C7iByJQ',
   date: 'flde3BcUBVzU3atXN',
+  location: 'fldzLMd7hcYWJD1yL',
 };
+const STUDIO = { name: 'fld1CkulQKMT2jU0A', mtekLocationId: 'flde09lC8VKsmgFy4' };
 const EMPLOYEE = {
   name: 'fldfx5XqnufDFx3il',
   email: 'fldtZABqLYuLRJef5',
@@ -82,6 +90,7 @@ const REQUIRED_COLUMNS = [
   'Customer ID',
   'Customer Email',
   'Customer Name',
+  'Fulfillment Location',
 ];
 
 function requireConfig() {
@@ -113,14 +122,14 @@ async function airtableRequest({ method = 'GET', tableId, recordId = '', body, q
 
 const byFieldId = 'returnFieldsByFieldId=true';
 
-async function fetchPeriod() {
-  return airtableRequest({ tableId: CONFIG.airtable.periodsTableId, recordId: CONFIG.recordId, query: byFieldId });
+async function fetchRun() {
+  return airtableRequest({ tableId: CONFIG.airtable.runsTableId, recordId: CONFIG.recordId, query: byFieldId });
 }
 
-async function updatePeriod(fields) {
+async function updateRun(fields) {
   return airtableRequest({
     method: 'PATCH',
-    tableId: CONFIG.airtable.periodsTableId,
+    tableId: CONFIG.airtable.runsTableId,
     recordId: CONFIG.recordId,
     body: { fields },
   });
@@ -159,6 +168,11 @@ function normalise(value) {
   return String(value ?? '').trim().toLowerCase();
 }
 
+/** Lookup fields come back as arrays; take the first value. */
+function firstValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 const NOTES_MAX = 100000;
 const NOTE_ENTRY_MAX = 5000;
 
@@ -179,11 +193,11 @@ function localStamp() {
   return `${map.year}-${map.month}-${map.day} ${hour}:${map.minute} ${map.timeZoneName}`;
 }
 
-/** Barter Notes is an append-only log: newest run on top, older runs kept below. */
+/** Notes is an append-only log: newest run on top, older runs kept below. */
 async function appendNote(entry) {
   let existing = '';
   try {
-    existing = String((await fetchPeriod()).fields?.[PERIOD.notes] || '');
+    existing = String((await fetchRun()).fields?.[RUN.notes] || '');
   } catch {
     // Losing the previous notes must not mask the error we are trying to report.
   }
@@ -227,6 +241,7 @@ function barterRowsFromReport(report, startDate, endDate, promotion = CONFIG.pro
       promotion: String(col(row, 'Promotion') || '').trim(),
       promoCode: String(col(row, 'Promo Code') || '').trim(),
       products: String(col(row, 'Order Products') || '').trim(),
+      location: String(col(row, 'Fulfillment Location') || '').trim(),
     });
   }
   return rows;
@@ -265,35 +280,56 @@ async function run() {
 
   // Downstream status cleared so a re-run can't show a previous run's COMPLETE
   // while it is still working.
-  let phaseField = PERIOD.status;
-  await updatePeriod({
-    [PERIOD.overallStatus]: 'Started',
-    [PERIOD.status]: 'Started',
-    [PERIOD.employeeStatus]: null,
+  let phaseField = RUN.status;
+  await updateRun({
+    [RUN.overallStatus]: 'Started',
+    [RUN.status]: 'Started',
+    [RUN.employeeStatus]: null,
   });
 
   try {
-    const period = await fetchPeriod();
-    const startDate = period.fields?.[PERIOD.start];
-    const endDate = period.fields?.[PERIOD.end];
-    if (!startDate || !endDate) throw new Error('Start Date and/or End Date are missing on this Payroll period.');
+    const runRecord = await fetchRun();
+    const periodIds = runRecord.fields?.[RUN.period] || [];
+    const studioIds = runRecord.fields?.[RUN.studio] || [];
+    const startDate = firstValue(runRecord.fields?.[RUN.startDate]);
+    const endDate = firstValue(runRecord.fields?.[RUN.endDate]);
+
+    if (periodIds.length !== 1) {
+      throw new Error('This Barter - Studio record must be linked to exactly one Payroll period.');
+    }
+    if (studioIds.length !== 1) {
+      throw new Error('This Barter - Studio record must be linked to exactly one Studio.');
+    }
+    if (!startDate || !endDate) {
+      throw new Error('Start Date and/or End Date are missing — is the Payroll period filled in?');
+    }
+
+    const studioRecord = await airtableRequest({
+      tableId: CONFIG.airtable.studiosTableId,
+      recordId: studioIds[0],
+      query: byFieldId,
+    });
+    const studioName = String(studioRecord.fields?.[STUDIO.name] || studioIds[0]);
+    const locationId = String(studioRecord.fields?.[STUDIO.mtekLocationId] || '').trim();
+    if (!locationId) throw new Error(`Studio "${studioName}" has no MTEK Location ID.`);
 
     // One async report job returns the whole window from S3 in a single payload,
-    // so there are no pages to lose.
+    // so there are no pages to lose. `location` is MTEK's fulfillment-location
+    // filter, so only this studio's redemptions come back.
     const report = await fetchMtekReport({
       baseUrl: CONFIG.mtek.baseUrl,
       token: CONFIG.mtek.token,
       reportId: CONFIG.mtek.reportId,
       slug: CONFIG.mtek.reportSlug,
-      dateParams: { min_order_date: startDate, max_order_date: endDate },
+      dateParams: { min_order_date: startDate, max_order_date: endDate, location: locationId },
     });
 
     // Promotions are redeemed at every studio every day, so a completely empty
-    // report means the fetch or the dates are wrong — unless the period has only
-    // just started, which the message says.
+    // report means the studio, the location ID or the dates are wrong — unless
+    // the period has only just started, which the message says.
     if (!report.rows.length) {
       throw new Error(
-        `MTEK returned no promotion redemptions at all between ${startDate} and ${endDate}. If the period has only just started, re-run the fetch later.`,
+        `MTEK returned no promotion redemptions at all for ${studioName} (location ${locationId}) between ${startDate} and ${endDate}. Check the studio and the period; if the period has only just started, re-run later.`,
       );
     }
 
@@ -301,6 +337,7 @@ async function run() {
 
     const existing = await fetchAll(CONFIG.airtable.barterTableId, [
       BARTER.orderNumber,
+      BARTER.run,
       BARTER.period,
       BARTER.employee,
       BARTER.instructor,
@@ -308,6 +345,7 @@ async function run() {
       BARTER.customerEmail,
       BARTER.discount,
       BARTER.date,
+      BARTER.location,
     ]);
     // Order numbers are unique across MTEK, so one already anywhere in the table
     // is the same redemption — never import it twice.
@@ -316,6 +354,7 @@ async function run() {
     );
 
     const toCreate = [];
+    const adopted = [];
     const differs = [];
     const seen = new Set();
     let duplicatesSkipped = 0;
@@ -325,7 +364,8 @@ async function run() {
       if (!current) {
         toCreate.push({
           [BARTER.orderNumber]: row.orderNumber,
-          [BARTER.period]: [CONFIG.recordId],
+          [BARTER.run]: [CONFIG.recordId],
+          [BARTER.period]: [periodIds[0]],
           [BARTER.customerId]: row.customerId,
           [BARTER.customerName]: row.customerName,
           [BARTER.customerEmail]: row.customerEmail || null,
@@ -334,12 +374,26 @@ async function run() {
           [BARTER.promoCode]: row.promoCode,
           [BARTER.products]: row.products,
           [BARTER.date]: row.date,
+          [BARTER.location]: row.location,
         });
         continue;
       }
       duplicatesSkipped += 1;
-      // Reported, not overwritten: it may be an MTEK edit or a correction made here.
+
+      // Imported before this table had studio runs (or by another studio's run):
+      // attach it here so the run's counts and checks cover it.
       const fields = current.fields || {};
+      if (!(fields[BARTER.run] || []).length) {
+        adopted.push({
+          id: current.id,
+          fields: {
+            [BARTER.run]: [CONFIG.recordId],
+            [BARTER.period]: [periodIds[0]],
+            [BARTER.location]: row.location,
+          },
+        });
+      }
+      // Reported, not overwritten: it may be an MTEK edit or a correction made here.
       if (Number(fields[BARTER.discount] || 0) !== row.discount || fields[BARTER.date] !== row.date) {
         differs.push(
           `${row.orderNumber} ${row.customerName}: Airtable ${fields[BARTER.date]} $${Number(fields[BARTER.discount] || 0).toFixed(2)} / MTEK ${row.date} $${row.discount.toFixed(2)}`,
@@ -347,22 +401,23 @@ async function run() {
       }
     }
 
-    const periodRows = existing.filter((record) => (record.fields?.[BARTER.period] || []).includes(CONFIG.recordId));
-    const noLongerInMtek = periodRows
+    const runRows = existing.filter((record) => (record.fields?.[BARTER.run] || []).includes(CONFIG.recordId));
+    const noLongerInMtek = runRows
       .map((record) => String(record.fields?.[BARTER.orderNumber] || '').trim())
       .filter((orderNumber) => orderNumber && !seen.has(orderNumber))
-      .map((orderNumber) => `${orderNumber}: not a ${CONFIG.promotion} redemption in MTEK any more`);
+      .map((orderNumber) => `${orderNumber}: not a ${CONFIG.promotion} redemption for this studio in MTEK any more`);
 
     const created = await writeInBatches(
       'POST',
       CONFIG.airtable.barterTableId,
       toCreate.map((fields) => ({ fields })),
     );
+    await writeInBatches('PATCH', CONFIG.airtable.barterTableId, adopted);
 
-    phaseField = PERIOD.employeeStatus;
-    await updatePeriod({
-      [PERIOD.status]: 'COMPLETE - Barter found',
-      [PERIOD.employeeStatus]: 'Started',
+    phaseField = RUN.employeeStatus;
+    await updateRun({
+      [RUN.status]: 'COMPLETE - Barter found',
+      [RUN.employeeStatus]: 'Started',
     });
 
     const matchEmployee = buildPersonMatcher(
@@ -385,13 +440,17 @@ async function run() {
       INSTRUCTOR,
     );
 
-    // New rows, plus earlier rows of this period with neither an employee nor an
-    // instructor — so fixing someone's email and re-fetching fills them in.
+    // New rows, the ones just adopted, plus earlier rows of this run with neither
+    // an employee nor an instructor — so fixing someone's email and re-fetching
+    // fills them in.
+    const adoptedIds = new Set(adopted.map((update) => update.id));
     const needPerson = [
       ...created.map((record) => ({ id: record.id, fields: record.fields || {} })),
-      ...periodRows.filter(
+      ...existing.filter(
         (record) =>
-          !(record.fields?.[BARTER.employee] || []).length && !(record.fields?.[BARTER.instructor] || []).length,
+          ((record.fields?.[BARTER.run] || []).includes(CONFIG.recordId) || adoptedIds.has(record.id)) &&
+          !(record.fields?.[BARTER.employee] || []).length &&
+          !(record.fields?.[BARTER.instructor] || []).length,
       ),
     ];
     const personUpdates = [];
@@ -427,15 +486,17 @@ async function run() {
     };
 
     const summary = [
-      `# of Redemptions in MTEK (all promotions): ${report.rows.length}`,
+      `Studio: ${studioName} (MTEK location ${locationId})`,
+      `# of Redemptions in MTEK for this studio (all promotions): ${report.rows.length}`,
       `# of ${CONFIG.promotion} redemptions: ${mtekRows.length}`,
       `# of New: ${created.length}`,
       `# of Duplicates skipped: ${duplicatesSkipped}`,
+      `# of Adopted into this run: ${adopted.length}`,
       `# of Differs from MTEK: ${differs.length}`,
       `# of No longer in MTEK: ${noLongerInMtek.length}`,
       `# of Matched to an instructor: ${instructorsMatched}`,
       `# of Redemptions with no employee or instructor: ${unmatched.length}`,
-      `Period ${CONFIG.promotion} discount total: $${totalDiscount.toFixed(2)}`,
+      `Studio ${CONFIG.promotion} discount total: $${totalDiscount.toFixed(2)}`,
     ].join(' | ');
 
     const note = [
@@ -445,28 +506,28 @@ async function run() {
       ...listed('No longer in MTEK', noLongerInMtek),
     ].join('\n');
 
-    await updatePeriod({
-      [PERIOD.employeeStatus]: unmatched.length ? 'PROBLEM' : 'COMPLETE - Employees assigned',
-      // COMPLETE only when every redemption is tied to an employee.
-      [PERIOD.overallStatus]: unmatched.length ? 'PROBLEM' : 'COMPLETE',
-      [PERIOD.notes]: await appendNote(note),
+    await updateRun({
+      [RUN.employeeStatus]: unmatched.length ? 'PROBLEM' : 'COMPLETE - Employees assigned',
+      // COMPLETE only when every redemption is tied to an employee or instructor.
+      [RUN.overallStatus]: unmatched.length ? 'PROBLEM' : 'COMPLETE',
+      [RUN.notes]: await appendNote(note),
     });
 
     // Actions logs are public on this repo: counts only. Names, emails and the
-    // discount total stay in Barter Notes, which is private to Airtable.
+    // discount total stay in Notes, which is private to Airtable.
     console.log(
       `HR Payroll Barter completed for ${CONFIG.recordId}. ${mtekRows.length} ${CONFIG.promotion} redemptions, ` +
-        `${created.length} new, ${duplicatesSkipped} already imported, ${instructorsMatched} matched to an instructor, ` +
-        `${unmatched.length} with no employee or instructor.`,
+        `${created.length} new, ${duplicatesSkipped} already imported, ${adopted.length} adopted, ` +
+        `${instructorsMatched} matched to an instructor, ${unmatched.length} with no employee or instructor.`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Mark whichever phase was in flight, so a mid-run failure doesn't leave an
     // earlier phase reading COMPLETE next to an unexplained PROBLEM.
-    await updatePeriod({
-      [PERIOD.overallStatus]: 'PROBLEM',
+    await updateRun({
+      [RUN.overallStatus]: 'PROBLEM',
       [phaseField]: 'PROBLEM',
-      [PERIOD.notes]: await appendNote(message),
+      [RUN.notes]: await appendNote(message),
     });
     throw error;
   }
