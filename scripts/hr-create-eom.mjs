@@ -2,12 +2,13 @@
 
 /**
  * HR Create EOM
- * On the 25th of each month, creates next month's EOM (End of Month) record in
+ * On the 15th of each month, creates next month's EOM (End of Month) record in
  * the HR base: Start = the 1st, End = the last day of that month.
  *
  * EOM lives in HR (tbl3UMRShm59z41JL) and is synced into HR - Instructors, where
- * instructor classes are assigned to it by the PAYROLL Classes job. Creating it a
- * few days ahead gives the sync time to carry it over before the month starts.
+ * instructor classes are assigned to it by the PAYROLL Classes job. Creating it
+ * about two weeks ahead means no class fetch — even a week straddling month end,
+ * or one run early by hand — can reach a month that doesn't exist yet.
  */
 
 const CONFIG = {

@@ -284,8 +284,9 @@ mirroring `Week number` / `Week number & Rate` on the HR base's Time Punches.
 base's `EOM` table (`tbl3UMRShm59z41JL`) — one row per calendar month, Start =
 the 1st, End = the last day. `HR Create EOM`
 (`.github/workflows/hr-create-eom.yml`, `scripts/hr-create-eom.mjs`) runs on the
-**25th of each month** (`0 8 25 * *`) and creates next month's record in the HR
-base, early enough for the sync to carry it over; a missed run backfills the gap
+**15th of each month** (`0 8 15 * *`) and creates next month's record in the HR
+base — two weeks ahead, so no class fetch (even a week straddling month end, or
+one run early by hand) can reach a month that doesn't exist yet; a missed run backfills the gap
 (up to 3 months, then it refuses as a likely mistake) and a month that already
 exists is left alone. Name is a formula in Airtable, so the job writes only the
 dates.

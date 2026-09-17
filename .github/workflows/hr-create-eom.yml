@@ -3,8 +3,9 @@ run-name: HR Create EOM
 
 on:
   schedule:
-    # 25th of each month, 08:00 UTC = 4am America/Toronto (EDT), 3am (EST).
-    - cron: '0 8 25 * *'
+    # 15th of each month, 08:00 UTC = 4am America/Toronto (EDT), 3am (EST).
+    # Two weeks' lead, so no class fetch can reach next month before it exists.
+    - cron: '0 8 15 * *'
   workflow_dispatch:
 
 jobs:
