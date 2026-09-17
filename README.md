@@ -493,17 +493,22 @@ Imports staff barter (the `BARTER` promotion, promo code `TEAMBARTER`) from
 MTEK into the **Barter** table of the **HR** base, one row per redemption, so
 barter can be tied to the person who used it and to the pay period.
 
-Barter is fetched **per studio per pay period**, the same shape as time punches:
-one **Barter - Studio** run record (`tbllavHLM27nBDM99`) links a Payroll period
-to a Studio, and its `Fetch Barter` runs that studio's import.
+Barter is fetched **per studio per week**, the same shape as time punches: one
+**Barter - Studio** run record (`tbllavHLM27nBDM99`) links a **Budget week** to a
+Studio, and its `Fetch Barter` runs that studio's import for that week. The pay
+period is never chosen here — it comes from the Budget week's own
+`Payroll period` link, so `HR Create Budget week` stays the single place that
+decides which period a week belongs to.
 
 ### Triggers
 - `workflow_dispatch` with required input `record_id`
 - `repository_dispatch` with event type `airtable-hr-payroll-barter` and payload
   field `record_id`
 
-`record_id` is a **Barter - Studio** record. Its Payroll period supplies the
-dates (Start/End lookups) and its Studio supplies the MTEK location. The
+`record_id` is a **Barter - Studio** record. Its Budget week supplies the dates
+(Start/End lookups) and its Studio supplies the MTEK location. The run fails
+before importing anything if the Budget week isn't linked to exactly one Payroll
+period — run `HR Create Budget week` and try again. The
 `Fetch Barter` formula (`<Make webhook>?recordId=` + `RECORD_ID()`) is bridged to
 GitHub by the Make scenario **HR Fetch barter** (id `6234235`, webhook
 `2800037`), a copy of HR Fetch time punches using the same `GITHUB BEARER`
@@ -527,9 +532,11 @@ and the report can't be filtered by promotion, so the script keeps the rows whos
 disappears from the report, the run stops rather than importing blanks.
 
 ### Airtable schema (HR base)
-- `Barter - Studio` (`tbllavHLM27nBDM99`) — the run record: Name, Payroll period,
-  Studio, Start/End Date (lookups), Fetch Barter, Barter Status, Employee Status,
-  Overall Status, Notes, Barter (link), `Completed studio`, and the checks below
+- `Barter - Studio` (`tbllavHLM27nBDM99`) — the run record: Name, Budget Week,
+  Studio, Start/End Date (lookups off the Budget Week), Fetch Barter, Barter
+  Status, Employee Status, Overall Status, Notes, Barter (link),
+  `Completed studio`, `Payroll period` (mirrored from the week by the script, so
+  the period rollups still work), and the checks below
 - `Barter` (`tblYxeSSem1plIvIR`) — Order Number (primary, dedupe key), Barter -
   Studio, Payroll period, Employee, Instructor, Customer ID / Name / Email,
   Discount Amount, Promotion, Promo Code, Order Products, Date, Fulfillment
@@ -541,10 +548,10 @@ disappears from the report, the run stops rather than importing blanks.
 
 ### Dedupe, adoption and re-running
 Order numbers are unique in MTEK, so an Order Number already anywhere in the
-Barter table is never imported again. A redemption that already exists but has no
-run record — imported before this table existed, for instance — is **adopted**
-into the run that finds it, which is how the original period-level rows were
-migrated. A re-run reports, without overwriting, rows whose Date or Discount
+Barter table is never imported again. Because a fetch is filtered to one studio and one week, a redemption it returns
+belongs to that run: an existing row is **attached** to it even if it was on an
+older or wider run. That is how the original period-level rows were migrated to
+weekly runs. A re-run reports, without overwriting, rows whose Date or Discount
 Amount differs from MTEK, and rows on the run that MTEK no longer returns for
 that studio. Rows with nobody linked are re-matched on every run.
 
@@ -562,7 +569,7 @@ On each **Barter - Studio** run: `No Employee/Instructor`, `No Desjardins ID`
 (both counted from the Barter `Payroll issues` formula, since the API can't
 create conditional counts) each with an ALL GOOD / ISSUE check, plus
 `MIN/MAX Date Barter` feeding a `Date Range Check` that only requires every
-redemption to fall within the period's Start–End. The period-wide equivalents
+redemption to fall within the Budget week's Start–End. The period-wide equivalents
 stay on `Payroll period` and now cover every studio's rows.
 
 ### Run status sequence
@@ -585,8 +592,9 @@ wrong studio, wrong location ID, or a period that has only just started.
 ### Verification record
 Reference period 2026-08-23 → 2026-09-05: 92 BARTER redemptions, every one with a
 unique order number, splitting Westmount 43, Vieux-Port 26, Rockland 16,
-Centre-Ville 7. Those 92 were originally imported by the period-level fetch and
-adopted into the four studio runs. 69 matched an employee, 22 an instructor, 1
+Centre-Ville 7. Those 92 were originally imported by a period-level fetch, then
+re-attached to eight weekly runs — week 1 (Aug 23-29) 23/9/13/1 and week 2
+(Aug 30-Sep 5) 20/7/13/6 for Westmount/Rockland/Vieux-port/Centre-Ville. 69 matched an employee, 22 an instructor, 1
 neither. The GitHub Actions log for this job is public (the repo is public), so
 the script prints counts only; customer names, emails and the discount total are
 written to the run's Notes in Airtable and nowhere else.
