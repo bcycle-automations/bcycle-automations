@@ -279,6 +279,35 @@ Date is stored in UTC, so a late-evening class would otherwise slip into the
 next day) → `Week number & Instructor` (week then instructor, no separator),
 mirroring `Week number` / `Week number & Rate` on the HR base's Time Punches.
 
+### EOM (End of Month)
+`EOM` (`tbliX73kdfgme7r3R` in HR - Instructors) is an Airtable sync of the HR
+base's `EOM` table (`tbl3UMRShm59z41JL`) — one row per calendar month, Start =
+the 1st, End = the last day. `HR Create EOM`
+(`.github/workflows/hr-create-eom.yml`, `scripts/hr-create-eom.mjs`) runs on the
+**25th of each month** (`0 8 25 * *`) and creates next month's record in the HR
+base, early enough for the sync to carry it over; a missed run backfills the gap
+(up to 3 months, then it refuses as a likely mistake) and a month that already
+exists is left alone. Name is a formula in Airtable, so the job writes only the
+dates.
+
+Every class gets an `EOM` link (`flds49hl8DluvKyGk`) alongside its Payroll
+Period, resolved the same way — by local class date, before anything is written,
+failing the run if a month is missing or two overlap. Classes dated before the
+first EOM are left without one.
+
+EOM carries the **same checks as the Payroll Class log**, counted across the
+month's classes: `No Studios`, `No Class Type`, `No Instructor/No Emp ID`,
+`DUOs to FIX`, each with an `... Check` (`ALL GOOD` / `ISSUE - PLEASE CHECK`),
+plus `MIN/MAX Class Date` feeding a `Date Range Check`. The counts come from a
+`Payroll issues` formula on Classes (for Payroll) because the API can't create
+conditional counts; it **exempts `ROOM BOOKED` classes**, which is what the log's
+own counts do (a sample week had 9 room bookings with no class type or
+instructor, and the log reported 0 and 2 — matching once they're excluded).
+
+`HR Backfill class EOM` (`.github/workflows/hr-backfill-class-eom.yml`) is a
+dry-run-by-default repair job that fills the link on classes imported before EOM
+existed; it assigned 1,523 classes on 2026-09-17 and left 3,836 older ones alone.
+
 Note: `.github/workflows/bcycle-payroll-classes.yml` is an older copy of this
 workflow whose YAML doesn't parse (an unquoted colon in its input description),
 so it has never run — every push records a failed run for it. The live one is
