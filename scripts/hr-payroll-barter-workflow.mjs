@@ -5,8 +5,9 @@
  * MarianaTek "Promotion Redemptions" report (id 292) -> Airtable "Barter" sync.
  *
  * Runs against the HR base (NOT HR - Instructors). Driven by one
- * "Barter - Studio" record, which supplies the pay period (its dates) and the
- * studio (its MTEK location). Only the BARTER promotion is imported.
+ * "Barter - Studio" record, which supplies the Budget week (its dates) and the
+ * studio (its MTEK location). Only the BARTER promotion is imported. Each
+ * redemption is linked to the Payroll period that Budget week belongs to.
  */
 
 import { fetchMtekReport } from './lib/mtek-report.mjs';
@@ -17,6 +18,7 @@ const CONFIG = {
     runsTableId: process.env.AIRTABLE_BARTER_RUNS_TABLE_ID || 'tbllavHLM27nBDM99',
     barterTableId: process.env.AIRTABLE_BARTER_TABLE_ID || 'tblYxeSSem1plIvIR',
     studiosTableId: process.env.AIRTABLE_STUDIOS_TABLE_ID || 'tblAXy4xm0kJMkWeQ',
+    budgetWeeksTableId: process.env.AIRTABLE_BUDGET_WEEKS_TABLE_ID || 'tblt2pfs356rDVDIa',
     employeesTableId: process.env.AIRTABLE_EMPLOYEES_TABLE_ID || 'tbl0FzJ2s4Mk5jWIi',
     // "Active Employees - ALL" — the full table holds former staff and duplicated
     // names, which is how the time punch sync once matched people to stale records.
@@ -39,10 +41,11 @@ const CONFIG = {
 
 // Field IDs, so renaming a column in Airtable can't break the sync.
 const RUN = {
+  budgetWeek: 'fldFniMHdzlTSntMB',
   period: 'fldFr899mSW5cT2v1',
   studio: 'fldKhTRgId3p30wXI',
-  startDate: 'fldsKaVNmoGJc66Cw',
-  endDate: 'fldVc2IwklHyfHm1w',
+  startDate: 'fldFZWc6l4DcFIPOb',
+  endDate: 'fld39rF8Bp51yE9ED',
   barter: 'fld4HDWC6viSuBMrV',
   status: 'fldnkqBMJiO3dsKtA',
   employeeStatus: 'fldSyZOMSSgEooZkF',
@@ -66,6 +69,7 @@ const BARTER = {
   location: 'fldzLMd7hcYWJD1yL',
 };
 const STUDIO = { name: 'fld1CkulQKMT2jU0A', mtekLocationId: 'flde09lC8VKsmgFy4' };
+const BUDGET_WEEK = { period: 'fld73OutMIP1NYSOe' };
 const EMPLOYEE = {
   name: 'fldfx5XqnufDFx3il',
   email: 'fldtZABqLYuLRJef5',
@@ -289,19 +293,33 @@ async function run() {
 
   try {
     const runRecord = await fetchRun();
-    const periodIds = runRecord.fields?.[RUN.period] || [];
+    const budgetWeekIds = runRecord.fields?.[RUN.budgetWeek] || [];
     const studioIds = runRecord.fields?.[RUN.studio] || [];
     const startDate = firstValue(runRecord.fields?.[RUN.startDate]);
     const endDate = firstValue(runRecord.fields?.[RUN.endDate]);
 
-    if (periodIds.length !== 1) {
-      throw new Error('This Barter - Studio record must be linked to exactly one Payroll period.');
+    if (budgetWeekIds.length !== 1) {
+      throw new Error('This Barter - Studio record must be linked to exactly one Budget week.');
     }
     if (studioIds.length !== 1) {
       throw new Error('This Barter - Studio record must be linked to exactly one Studio.');
     }
     if (!startDate || !endDate) {
-      throw new Error('Start Date and/or End Date are missing — is the Payroll period filled in?');
+      throw new Error("Start Date and/or End Date are missing — does the Budget week have its dates?");
+    }
+
+    // The period comes from the week, never from the run record: one place decides
+    // which pay period a week belongs to, and that is HR Create Budget week.
+    const budgetWeek = await airtableRequest({
+      tableId: CONFIG.airtable.budgetWeeksTableId,
+      recordId: budgetWeekIds[0],
+      query: byFieldId,
+    });
+    const periodIds = budgetWeek.fields?.[BUDGET_WEEK.period] || [];
+    if (periodIds.length !== 1) {
+      throw new Error(
+        `Budget week ${startDate} -> ${endDate} is linked to ${periodIds.length} Payroll periods, so its barter can't be placed in one. Run HR Create Budget week (or fix the link) and re-run the fetch. Nothing was imported.`,
+      );
     }
 
     const studioRecord = await airtableRequest({
@@ -334,6 +352,12 @@ async function run() {
     }
 
     const mtekRows = barterRowsFromReport(report, startDate, endDate);
+
+    // Mirror the week's period onto the run record, so Payroll period rollups
+    // (Barter studios completed) cover this run without anyone filling it in.
+    if ((runRecord.fields?.[RUN.period] || [])[0] !== periodIds[0]) {
+      await updateRun({ [RUN.period]: [periodIds[0]] });
+    }
 
     const existing = await fetchAll(CONFIG.airtable.barterTableId, [
       BARTER.orderNumber,
@@ -380,10 +404,10 @@ async function run() {
       }
       duplicatesSkipped += 1;
 
-      // Imported before this table had studio runs (or by another studio's run):
-      // attach it here so the run's counts and checks cover it.
+      // The fetch is filtered to this studio and week, so a row it finds belongs
+      // to this run: attach it, whether it had no run or an older/wider one.
       const fields = current.fields || {};
-      if (!(fields[BARTER.run] || []).length) {
+      if ((fields[BARTER.run] || [])[0] !== CONFIG.recordId) {
         adopted.push({
           id: current.id,
           fields: {
@@ -491,7 +515,7 @@ async function run() {
       `# of ${CONFIG.promotion} redemptions: ${mtekRows.length}`,
       `# of New: ${created.length}`,
       `# of Duplicates skipped: ${duplicatesSkipped}`,
-      `# of Adopted into this run: ${adopted.length}`,
+      `# of Attached to this run: ${adopted.length}`,
       `# of Differs from MTEK: ${differs.length}`,
       `# of No longer in MTEK: ${noLongerInMtek.length}`,
       `# of Matched to an instructor: ${instructorsMatched}`,
@@ -517,7 +541,7 @@ async function run() {
     // discount total stay in Notes, which is private to Airtable.
     console.log(
       `HR Payroll Barter completed for ${CONFIG.recordId}. ${mtekRows.length} ${CONFIG.promotion} redemptions, ` +
-        `${created.length} new, ${duplicatesSkipped} already imported, ${adopted.length} adopted, ` +
+        `${created.length} new, ${duplicatesSkipped} already imported, ${adopted.length} attached, ` +
         `${instructorsMatched} matched to an instructor, ${unmatched.length} with no employee or instructor.`,
     );
   } catch (error) {

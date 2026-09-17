@@ -43,6 +43,7 @@ jobs:
           # HR base (NOT HR - Instructors). Editable here, no extra secrets required.
           AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
           AIRTABLE_BARTER_RUNS_TABLE_ID: tbllavHLM27nBDM99
+          AIRTABLE_BUDGET_WEEKS_TABLE_ID: tblt2pfs356rDVDIa
           AIRTABLE_STUDIOS_TABLE_ID: tblAXy4xm0kJMkWeQ
           AIRTABLE_INSTRUCTORS_TABLE_ID: tblGfu4QRovWm7oX0
           AIRTABLE_BARTER_TABLE_ID: tblYxeSSem1plIvIR
