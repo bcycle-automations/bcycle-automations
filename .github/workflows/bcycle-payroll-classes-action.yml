@@ -55,6 +55,8 @@ jobs:
           AIRTABLE_CLASS_TYPES_TABLE_ID: tbliopHKhCtHLwGOf
           # Synced from the HR base's Payroll period table.
           AIRTABLE_PAYROLL_PERIODS_TABLE_ID: tblGYpEKsV63NzRCT
+          # "EOM" synced from the HR base.
+          AIRTABLE_EOM_TABLE_ID: tbliX73kdfgme7r3R
           MTEK_BASE_URL: https://bcycle.marianatek.com
           MTEK_CLASSES_PATH: /api/class_sessions
         run: node scripts/bcycle-payroll-classes-workflow.mjs

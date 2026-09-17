@@ -1,0 +1,29 @@
+name: HR Create EOM
+run-name: HR Create EOM
+
+on:
+  schedule:
+    # 25th of each month, 08:00 UTC = 4am America/Toronto (EDT), 3am (EST).
+    - cron: '0 8 25 * *'
+  workflow_dispatch:
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Create next month's EOM
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          # HR base (NOT HR - Instructors); EOM is synced from here into HR - Instructors.
+          AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
+          AIRTABLE_EOM_TABLE_ID: tbl3UMRShm59z41JL
+          PAYROLL_TIME_ZONE: America/Toronto
+        run: node scripts/hr-create-eom.mjs

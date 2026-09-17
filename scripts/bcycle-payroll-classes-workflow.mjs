@@ -17,6 +17,12 @@ const CONFIG = {
     // Create Budget week job creates periods there). Field IDs, so a renamed
     // column can't break assignment.
     payrollPeriodsTableId: process.env.AIRTABLE_PAYROLL_PERIODS_TABLE_ID || 'tblGYpEKsV63NzRCT',
+    // "EOM" is a synced copy of the HR base's EOM table (HR Create EOM makes the
+    // records). One calendar month per row.
+    eomTableId: process.env.AIRTABLE_EOM_TABLE_ID || 'tbliX73kdfgme7r3R',
+    eomStartFieldId: 'fldwo53Yx2PI2VVVJ',
+    eomEndFieldId: 'fldt7m3KygcrA7GZf',
+    classEomFieldId: 'flds49hl8DluvKyGk',
     periodStartFieldId: 'fldic4m4P8BVIieVv',
     periodEndFieldId: 'fld4Hg7iYvAgHTHeu',
     classPeriodFieldId: 'fldR0cD3vR4RE4pKY',
@@ -220,19 +226,18 @@ function getField(record, fieldName) {
   return record?.fields?.[fieldName];
 }
 
-async function fetchPayrollPeriods() {
-  const { payrollPeriodsTableId, periodStartFieldId, periodEndFieldId } = CONFIG.airtable;
+async function fetchWindows(tableId, startFieldId, endFieldId) {
   const periods = [];
   let offset = '';
   do {
     const params = new URLSearchParams({ returnFieldsByFieldId: 'true' });
-    params.append('fields[]', periodStartFieldId);
-    params.append('fields[]', periodEndFieldId);
+    params.append('fields[]', startFieldId);
+    params.append('fields[]', endFieldId);
     if (offset) params.set('offset', offset);
-    const page = await airtableRequest({ tableId: payrollPeriodsTableId, query: params.toString() });
+    const page = await airtableRequest({ tableId, query: params.toString() });
     for (const record of page.records || []) {
-      const start = record.fields?.[periodStartFieldId];
-      const end = record.fields?.[periodEndFieldId];
+      const start = record.fields?.[startFieldId];
+      const end = record.fields?.[endFieldId];
       if (start && end) periods.push({ id: record.id, start, end });
     }
     offset = page.offset || '';
@@ -241,12 +246,12 @@ async function fetchPayrollPeriods() {
 }
 
 /**
- * Gives every class its pay period, by local class date, before anything is
- * written — a missing or overlapping period fails the run cleanly instead of
- * leaving half-assigned classes. Classes dated before the first period (the
- * table starts at 2026-08-23) are left without one.
+ * Gives every class its pay period (and its EOM), by local class date, before
+ * anything is written — a missing or overlapping window fails the run cleanly
+ * instead of leaving half-assigned classes. Classes dated before the first
+ * window are left without one, so older date ranges still run.
  */
-function assignPayrollPeriods(classRecords, periods) {
+function assignWindows(classRecords, periods, fieldId = CONFIG.airtable.classPeriodFieldId, label = 'Payroll Period') {
   if (!periods.length) return;
   const earliestStart = periods.map((period) => period.start).sort()[0];
   const uncovered = new Set();
@@ -259,16 +264,16 @@ function assignPayrollPeriods(classRecords, periods) {
     }
     if (date < earliestStart) continue;
     const matches = periods.filter((period) => period.start <= date && date <= period.end);
-    if (matches.length === 1) fields[CONFIG.airtable.classPeriodFieldId] = [matches[0].id];
+    if (matches.length === 1) fields[fieldId] = [matches[0].id];
     else (matches.length ? ambiguous : uncovered).add(date);
   }
 
   if (uncovered.size || ambiguous.size) {
     const problems = [];
-    if (uncovered.size) problems.push(`no Payroll Period covers ${[...uncovered].sort().join(', ')}`);
-    if (ambiguous.size) problems.push(`more than one Payroll Period covers ${[...ambiguous].sort().join(', ')}`);
+    if (uncovered.size) problems.push(`no ${label} covers ${[...uncovered].sort().join(', ')}`);
+    if (ambiguous.size) problems.push(`more than one ${label} covers ${[...ambiguous].sort().join(', ')}`);
     throw new Error(
-      `Can't give every class a pay period: ${problems.join('; ')}. Periods are created in the HR base by HR Create Budget week and synced here — check the sync, then re-run. Nothing was imported.`,
+      `Can't give every class its ${label}: ${problems.join('; ')}. These records are created in the HR base (HR Create Budget week / HR Create EOM) and synced here — check the sync, then re-run. Nothing was imported.`,
     );
   }
 }
@@ -327,8 +332,14 @@ async function run() {
       });
     }
 
-    const periods = await fetchPayrollPeriods();
-    if (classRecordsToCreate.length) assignPayrollPeriods(classRecordsToCreate, periods);
+    const { payrollPeriodsTableId, periodStartFieldId, periodEndFieldId } = CONFIG.airtable;
+    const periods = await fetchWindows(payrollPeriodsTableId, periodStartFieldId, periodEndFieldId);
+    if (classRecordsToCreate.length) {
+      assignWindows(classRecordsToCreate, periods);
+      const { eomTableId, eomStartFieldId, eomEndFieldId, classEomFieldId } = CONFIG.airtable;
+      const months = await fetchWindows(eomTableId, eomStartFieldId, eomEndFieldId);
+      assignWindows(classRecordsToCreate, months, classEomFieldId, 'EOM');
+    }
 
     // The run record (one week) belongs to the period its Start Date falls in, so
     // Payroll Period can show week 1 / week 2 and roll up the run's checks.
@@ -460,4 +471,4 @@ if (process.env.BCYCLE_PAYROLL_CLASSES_SKIP_RUN !== '1') {
   });
 }
 
-export { assignPayrollPeriods };
+export { assignWindows };
