@@ -461,6 +461,22 @@ written*: a date no period covers, or one covered by two overlapping periods,
 fails the run and imports nothing. Fix the Payroll period table (or run HR Create
 Payroll period) and re-fetch.
 
+### EOM assignment
+Every punch is also linked to its **EOM** (End of Month, `tbl3UMRShm59z41JL`,
+field `EOM` `fldRzRhdN0dv3OHnR`), resolved exactly like the pay period: before
+anything is written, and the run fails with nothing imported if no EOM — or two —
+covers a punch date (fix: run `HR Create EOM`). `HR Create Budget week`'s Sunday
+safety net links stray punches to their EOM as well as their period; its first run
+with this (2026-09-17) backfilled 479 punches.
+
+EOM carries the Payroll period's time-punch checks for the month: `MIN/MAX Date
+Time Punches`, `Time punches count`, `Other Rates`, `No Employees`, `No Rate`,
+`$0 Wages`, `No Desjardins ID`, `No Clock Out` (all from the Time Punches
+`Payroll issues` / `b.home rate` formulas) with their `... Check` formulas, and a
+`Date Range Check` using the period's exact rule — first and last punch must fall
+on Start and End, so a month in progress, or one whose early weeks were never
+imported, reads PROBLEM.
+
 ### Notes is an append-only log
 Each run prepends a timestamped entry and keeps everything below it, so a
 Budget week - Studio row reads as a history rather than only the last result:
