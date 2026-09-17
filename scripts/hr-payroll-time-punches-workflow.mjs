@@ -25,6 +25,11 @@ const CONFIG = {
     periodStartFieldId: 'fldMjpx7WN4tgNrNs',
     periodEndFieldId: 'fldCy4qUWOWq6SZdk',
     punchPeriodFieldId: 'fld4XJAYoen5lCaaM',
+    // EOM (End of Month), created monthly by HR Create EOM.
+    eomTableId: process.env.AIRTABLE_EOM_TABLE_ID || 'tbl3UMRShm59z41JL',
+    eomStartFieldId: 'fldduMMEtqShh6CPB',
+    eomEndFieldId: 'fld8fIYiRFAdcwN1l',
+    punchEomFieldId: 'fldRzRhdN0dv3OHnR',
     token: process.env.AIRTABLE_TOKEN,
   },
   mtek: {
@@ -342,19 +347,18 @@ function paddedBound(dateString, days) {
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-async function fetchPayrollPeriods() {
-  const { payrollPeriodsTableId, periodStartFieldId, periodEndFieldId } = CONFIG.airtable;
+async function fetchWindows(tableId, startFieldId, endFieldId) {
   const periods = [];
   let offset = '';
   do {
     const params = new URLSearchParams({ returnFieldsByFieldId: 'true' });
-    params.append('fields[]', periodStartFieldId);
-    params.append('fields[]', periodEndFieldId);
+    params.append('fields[]', startFieldId);
+    params.append('fields[]', endFieldId);
     if (offset) params.set('offset', offset);
-    const page = await airtableRequest({ tableId: payrollPeriodsTableId, query: params.toString() });
+    const page = await airtableRequest({ tableId, query: params.toString() });
     for (const record of page.records || []) {
-      const start = record.fields?.[periodStartFieldId];
-      const end = record.fields?.[periodEndFieldId];
+      const start = record.fields?.[startFieldId];
+      const end = record.fields?.[endFieldId];
       if (start && end) periods.push({ id: record.id, start, end });
     }
     offset = page.offset || '';
@@ -542,24 +546,41 @@ async function run() {
       .filter((punch) => punch.mtekId && !seenMtekIds.has(punch.mtekId))
       .map((punch) => `${punch.employeeName} ${punch.date} ${punch.timeIn}: not in MTEK any more`);
 
-    // Every punch belongs to exactly one Payroll period. Resolve them all before
-    // writing anything, so a missing or overlapping period fails the run cleanly.
+    // Every punch belongs to exactly one Payroll period and one EOM. Resolve them
+    // all before writing anything, so a missing or overlapping window fails the
+    // run cleanly.
     if (punchRecordsToCreate.length) {
-      const periods = await fetchPayrollPeriods();
-      const uncovered = new Set();
-      const ambiguous = new Set();
-      for (const fields of punchRecordsToCreate) {
-        const matches = periods.filter((period) => period.start <= fields.Date && fields.Date <= period.end);
-        if (matches.length === 1) fields[CONFIG.airtable.punchPeriodFieldId] = [matches[0].id];
-        else (matches.length ? ambiguous : uncovered).add(fields.Date);
-      }
-      if (uncovered.size || ambiguous.size) {
-        const problems = [];
-        if (uncovered.size) problems.push(`no Payroll period covers ${[...uncovered].sort().join(', ')}`);
-        if (ambiguous.size) problems.push(`more than one Payroll period covers ${[...ambiguous].sort().join(', ')}`);
-        throw new Error(
-          `Can't give every punch a pay period: ${problems.join('; ')}. Fix the Payroll period table (or run HR Create Budget week) and re-run the fetch. Nothing was imported.`,
-        );
+      const a = CONFIG.airtable;
+      const windows = [
+        {
+          label: 'Payroll period',
+          fix: 'run HR Create Budget week',
+          fieldId: a.punchPeriodFieldId,
+          list: await fetchWindows(a.payrollPeriodsTableId, a.periodStartFieldId, a.periodEndFieldId),
+        },
+        {
+          label: 'EOM',
+          fix: 'run HR Create EOM',
+          fieldId: a.punchEomFieldId,
+          list: await fetchWindows(a.eomTableId, a.eomStartFieldId, a.eomEndFieldId),
+        },
+      ];
+      for (const window of windows) {
+        const uncovered = new Set();
+        const ambiguous = new Set();
+        for (const fields of punchRecordsToCreate) {
+          const matches = window.list.filter((w) => w.start <= fields.Date && fields.Date <= w.end);
+          if (matches.length === 1) fields[window.fieldId] = [matches[0].id];
+          else (matches.length ? ambiguous : uncovered).add(fields.Date);
+        }
+        if (uncovered.size || ambiguous.size) {
+          const problems = [];
+          if (uncovered.size) problems.push(`no ${window.label} covers ${[...uncovered].sort().join(', ')}`);
+          if (ambiguous.size) problems.push(`more than one ${window.label} covers ${[...ambiguous].sort().join(', ')}`);
+          throw new Error(
+            `Can't give every punch its ${window.label}: ${problems.join('; ')}. Fix the ${window.label} table (or ${window.fix}) and re-run the fetch. Nothing was imported.`,
+          );
+        }
       }
     }
 

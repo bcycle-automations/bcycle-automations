@@ -18,6 +18,7 @@ const CONFIG = {
   baseId: process.env.AIRTABLE_BASE_ID || 'appiwfeujJzUZPPBx',
   budgetWeeksTableId: process.env.AIRTABLE_BUDGET_WEEKS_TABLE_ID || 'tblt2pfs356rDVDIa',
   periodsTableId: process.env.AIRTABLE_PAYROLL_PERIODS_TABLE_ID || 'tbl9qw4kqw0BY0DyJ',
+  eomTableId: process.env.AIRTABLE_EOM_TABLE_ID || 'tbl3UMRShm59z41JL',
   punchesTableId: process.env.AIRTABLE_PUNCHES_TABLE_ID || 'tblVxt2W7NanQmJFR',
   token: process.env.AIRTABLE_TOKEN,
   timeZone: process.env.PAYROLL_TIME_ZONE || 'America/Toronto',
@@ -32,6 +33,9 @@ const FIELD = {
   periodEnd: 'fldCy4qUWOWq6SZdk',
   punchDate: 'fldwxo5JqKNOf4KvY',
   punchPeriod: 'fld4XJAYoen5lCaaM',
+  punchEom: 'fldRzRhdN0dv3OHnR',
+  eomStart: 'fldduMMEtqShh6CPB',
+  eomEnd: 'fld8fIYiRFAdcwN1l',
 };
 
 const PERIOD_DAYS = 14;
@@ -185,15 +189,30 @@ async function run() {
   }
   await writeInBatches('PATCH', CONFIG.budgetWeeksTableId, weekUpdates);
 
-  // 3. Punches get their period at import; this catches any that didn't. It links
-  //    only to periods that exist — a punch never causes a period to be created.
+  // 3. Punches get their period and EOM at import; this catches any that didn't.
+  //    It links only to records that exist — a punch never causes one to be created.
+  const months = (await fetchAll(CONFIG.eomTableId, [FIELD.eomStart, FIELD.eomEnd]))
+    .map((r) => ({ id: r.id, start: r.fields?.[FIELD.eomStart], end: r.fields?.[FIELD.eomEnd] }))
+    .filter((m) => m.start && m.end);
+  const earliestMonth = months.map((m) => m.start).sort()[0];
+
   const punchUpdates = [];
-  for (const punch of await fetchAll(CONFIG.punchesTableId, [FIELD.punchDate, FIELD.punchPeriod])) {
+  for (const punch of await fetchAll(CONFIG.punchesTableId, [FIELD.punchDate, FIELD.punchPeriod, FIELD.punchEom])) {
     const date = punch.fields?.[FIELD.punchDate];
-    if (!date || date < earliestStart || (punch.fields?.[FIELD.punchPeriod] || []).length) continue;
-    const matches = periods.filter((p) => p.start <= date && date <= p.end);
-    if (matches.length === 1) punchUpdates.push({ id: punch.id, fields: { [FIELD.punchPeriod]: [matches[0].id] } });
-    else problems.push(`Time punch ${punch.id} on ${date}: ${matches.length ? 'more than one pay period covers it' : 'no pay period covers it'}`);
+    if (!date) continue;
+    const fields = {};
+
+    if (date >= earliestStart && !(punch.fields?.[FIELD.punchPeriod] || []).length) {
+      const matches = periods.filter((p) => p.start <= date && date <= p.end);
+      if (matches.length === 1) fields[FIELD.punchPeriod] = [matches[0].id];
+      else problems.push(`Time punch ${punch.id} on ${date}: ${matches.length ? 'more than one pay period covers it' : 'no pay period covers it'}`);
+    }
+    if (earliestMonth && date >= earliestMonth && !(punch.fields?.[FIELD.punchEom] || []).length) {
+      const matches = months.filter((m) => m.start <= date && date <= m.end);
+      if (matches.length === 1) fields[FIELD.punchEom] = [matches[0].id];
+      else problems.push(`Time punch ${punch.id} on ${date}: ${matches.length ? 'more than one EOM covers it' : 'no EOM covers it'}`);
+    }
+    if (Object.keys(fields).length) punchUpdates.push({ id: punch.id, fields });
   }
   await writeInBatches('PATCH', CONFIG.punchesTableId, punchUpdates);
 
@@ -202,12 +221,12 @@ async function run() {
       createdWeek ? `Created Budget week ${startDate} -> ${endDate}.` : `Budget week ${startDate} already existed.`,
       `Created ${newPeriods.length} pay period(s)${newPeriods.length ? `: ${newPeriods.map((p) => `${p.start} -> ${p.end}`).join(', ')}` : ''}.`,
       `Assigned or corrected ${weekUpdates.length} Budget week(s).`,
-      `Linked ${punchUpdates.length} time punch(es) to a pay period.`,
+      `Linked ${punchUpdates.length} time punch(es) to a pay period and/or EOM.`,
     ].join(' '),
   );
 
   if (problems.length) {
-    throw new Error(`Could not place everything in a pay period:\n- ${problems.join('\n- ')}`);
+    throw new Error(`Could not place everything in a pay period / EOM:\n- ${problems.join('\n- ')}`);
   }
 }
 
