@@ -250,7 +250,10 @@ for (const company of COMPANIES) {
 
 // Close out rows whose window has ended, once every company ran cleanly.
 if (!failures && COMPANIES.length === 2) {
-  const ended = rows.filter((r) => r.end && r.end < today && r.tag && (r.status !== "COMPLETE" || !r.tagRemoved));
+  const promoTags = COMPANIES.map((c) => c.tag);
+  const ended = rows.filter(
+    (r) => r.end && r.end < today && promoTags.includes(String(r.tag || "").trim()) && (r.status !== "COMPLETE" || !r.tagRemoved)
+  );
   console.log(`\nMarking ${ended.length} ended rows COMPLETE${DRY_RUN || process.env.ROWS_JSON ? " (skipped: dry run / local rows)" : ""}`);
   await markRowsComplete(ended);
 }
