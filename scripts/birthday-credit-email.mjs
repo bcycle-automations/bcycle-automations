@@ -452,7 +452,7 @@ async function grantBirthdayCreditViaCheckout({ userId, product, partnerId }) {
 // HTML example (English/standard) — the other three footers are adapted from
 // that same line, not verbatim from Jess, so worth a final look before going
 // live.
-const EMAIL_CONTENT = {
+export const EMAIL_CONTENT = {
   standard: {
     fr: {
       headlineLines: ["C’EST TA SEMAINE", "DE FÊTE!"],
@@ -515,7 +515,7 @@ const EMAIL_CONTENT = {
   },
 };
 
-const BRAND = {
+export const BRAND = {
   pageBackground: "#f0f1f5",
   cardBackground: "#f6f6ec",
   band: "#09403f",
@@ -523,7 +523,7 @@ const BRAND = {
   button: "#adc5c0",
 };
 
-const BOOKING_URL = "https://www.bcyclespin.com";
+export const BOOKING_URL = "https://www.bcyclespin.com";
 
 // Renders one full language block (header band, body copy + button, footer
 // band) — reproduces the structure/styling of Jess's worked HTML example,
@@ -620,7 +620,7 @@ ${testBanner}
 </html>`;
 }
 
-function escapeHtml(value) {
+export function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
