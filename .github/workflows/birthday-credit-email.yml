@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       test_email:
-        description: "TEST ONLY: MTEK account + email that will receive the redirected test send (defaults to jonathan@bcyclespin.com)"
+        description: "LIVE MODE IS ON — real matches email/credit real customers regardless of this input. Unused now (only applied when LIVE_MODE=false in the script)."
         required: false
         type: string
 
       target_birthday_date:
-        description: "TEST ONLY: birthday date to search for, formatted YYYY-MM-DD (defaults to 7 days from today)"
+        description: "LIVE MODE IS ON — overrides the search date, but still processes every REAL match found for that date (formatted YYYY-MM-DD)."
         required: false
         type: string
 

@@ -20,13 +20,16 @@
 // refilling 650/sec — ~101 sequential requests per run is nowhere near that,
 // so no need to split the birth-year range across multiple days.
 //
-// LIVE_MODE is hardcoded false: this script has never sent a real customer
-// an email or a real credit. In this mode, only the FIRST real match found
-// each run is processed, and both the email and the credit grant are
-// redirected to a test account (default jonathan@bcyclespin.com) instead of
-// the real customer — see recipientEmail / creditTargetUserId below. Flip
-// LIVE_MODE to true (and remove the redirect) only once Jess's final HTML
-// templates are ready and you've verified a test run end to end.
+// LIVE_MODE went live 2026-09-22, after Jess (marketing) approved the
+// content/format (Option 1: English first — free-class terms dropped from
+// the English copy and starred — straight into French with no gap, French
+// keeps the terms + footer, matching "*" on the French terms sentence).
+// When true, every real match found each run is processed (not just the
+// first), and both the email and the credit grant go to the real customer
+// — see recipientEmail / creditTargetUserId below. If this ever needs to go
+// back to a safe dry-run, flip LIVE_MODE back to false: every match found
+// still gets logged to the console either way, so nothing about matching
+// depends on this flag — only where the email/credit actually land does.
 //
 // The credit is granted via a real MTEK checkout (POST /carts/ -> POST
 // /cart_lines/ -> POST /checkouts/), not a direct POST /credit_transactions/.
@@ -41,10 +44,16 @@
 // pre-existing OPEN cart they already have (found a real unrelated $31 item
 // this way during testing) — grantBirthdayCreditViaCheckout() refuses to
 // check out unless the cart total is exactly $0 after adding our line.
+//
+// fulfillment_partner is per-studio, not universal — in live mode each
+// customer's own home_location (from MTEK) is mapped to their studio's
+// partner id via LOCATION_TO_PARTNER, falling back to Vieux-Port with a
+// logged warning if that's ever missing/unrecognized, rather than failing
+// their credit outright.
 
 import { fetchJsonWithRateLimit, fetchAllPages } from "./lib/mtek.mjs";
 
-const LIVE_MODE = false;
+const LIVE_MODE = true;
 
 const MTEK_BASE_URL = "https://bcycle.marianatek.com/api";
 const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
@@ -60,10 +69,21 @@ const ACTIVE_MEMBERSHIP_STATUSES = new Set(["active", "frozen"]);
 
 // fulfillment_partner is per-studio, not universal (confirmed live):
 // VieuxPort=41364, CentreVille=41362, Rockland=41363, Westmount=41365.
-// Test mode always targets jonathan@bcyclespin.com, whose home studio is
-// Vieux-Port, so this is hardcoded for now. LIVE_MODE will need to map each
-// real customer's own location to the right partner id before going live.
+// Test account (jonathan@bcyclespin.com) is home-studio Vieux-Port, so this
+// is what non-live/manual test runs use.
 const TEST_PARTNER_ID = "41364";
+
+// Maps each MTEK location id (relationships.home_location on /users/) to
+// its fulfillment_partner id, confirmed live from real orders at each
+// studio. Real customers do have home_location populated (confirmed on
+// several real matches during testing) — used in LIVE_MODE to route the
+// checkout to the customer's own studio instead of always Vieux-Port.
+const LOCATION_TO_PARTNER = {
+  "48719": "41364", // Vieux-Port
+  "48717": "41362", // Centre-Ville
+  "48718": "41363", // Rockland
+  "48720": "41365", // Westmount
+};
 
 // child_products ids are the same underlying ids as the product_variants
 // ids (16602/16604) — just referenced under a different type name when
@@ -133,8 +153,8 @@ async function main() {
     return;
   }
 
-  // LIVE_MODE is always false right now — only ever process the first real
-  // match, mirroring the existing isTestMode ? transactions.slice(0, 1) : ...
+  // Live: process every real match. Non-live (manual/dry-run only): just
+  // the first, mirroring the isTestMode ? transactions.slice(0, 1) : ...
   // precedent in credit-expiry-email.mjs.
   const matchesToProcess = LIVE_MODE ? matches : matches.slice(0, 1);
 
@@ -171,6 +191,22 @@ async function main() {
       const recipientEmail = LIVE_MODE ? match.email : testEmail;
       const creditTargetUserId = LIVE_MODE ? match.id : testUser.id;
 
+      // Route the checkout to the real customer's own studio in live mode
+      // (fulfillment_partner is per-studio — confirmed live). Falls back to
+      // Vieux-Port with a warning if home_location is missing/unrecognized,
+      // rather than failing that customer's credit entirely.
+      let partnerId = TEST_PARTNER_ID;
+      if (LIVE_MODE) {
+        partnerId = LOCATION_TO_PARTNER[match.homeLocationId];
+        if (!partnerId) {
+          console.warn(
+            `  Warning: no known partner for home_location=${match.homeLocationId} ` +
+              `(user ${match.id}) — falling back to Vieux-Port.`
+          );
+          partnerId = TEST_PARTNER_ID;
+        }
+      }
+
       console.log(
         `Processing ${match.email} (segment: ${segment}, product: ${product.name})` +
           (LIVE_MODE ? "" : ` — redirecting to ${recipientEmail} / MTEK user ${creditTargetUserId}`)
@@ -179,7 +215,7 @@ async function main() {
       const order = await grantBirthdayCreditViaCheckout({
         userId: creditTargetUserId,
         product,
-        partnerId: TEST_PARTNER_ID,
+        partnerId,
       });
 
       console.log(`  Granted via order ${order.attributes.number} (${order.id}).`);
@@ -331,6 +367,7 @@ async function findBirthdayMatches(targetDates) {
           lastName: attrs.last_name,
           birthDate: attrs.birth_date,
           upcomingBirthdayDate: targetDate,
+          homeLocationId: user.relationships?.home_location?.data?.id || null,
         });
       }
     }
@@ -450,8 +487,9 @@ async function grantBirthdayCreditViaCheckout({ userId, product, partnerId }) {
 // literal <strong> for the two bolded phrases from that doc — safe, static
 // markup, not user input. Footer text was only given in the doc's one worked
 // HTML example (English/standard) — the other three footers are adapted from
-// that same line, not verbatim from Jess, so worth a final look before going
-// live.
+// that same line, not verbatim from Jess. Jess approved the Option 1
+// layout/format (2026-09-21), not a re-confirmation of this specific footer
+// wording — real customers will now see it, so worth a final check with her.
 export const EMAIL_CONTENT = {
   standard: {
     fr: {
@@ -525,12 +563,29 @@ export const BRAND = {
 
 export const BOOKING_URL = "https://www.bcyclespin.com";
 
-// Renders one full language block (header band, body copy + button, footer
-// band) — reproduces the structure/styling of Jess's worked HTML example,
-// including the Outlook VML button fallback. Called twice per email (fr,
-// then en) to build the bilingual send.
-function renderLanguageSection(content, firstName) {
-  const paragraphHtml = [content.intro, content.giftHtml, content.celebrate]
+// Renders one language block (header band, body paragraphs + button, and
+// optionally the footer band) — reproduces the structure/styling of Jess's
+// worked HTML example, including the Outlook VML button fallback.
+// `includeGift`/`includeFooter` let the English half skip the free-class
+// terms ("the condition") per Jess's approved format (2026-09-21: Option 1
+// — English first, condition dropped from English and starred, straight
+// into French with no gap, French keeps the condition + footer).
+// `starGiftSentence` appends a footnote "*" to the end of the gift/condition
+// sentence itself — the French half carries this so it visually pairs with
+// the "*" on the English closing line (confirmed with Jon 2026-09-22: the
+// star belongs at the end of the condition, not just as a generic aside).
+function renderLanguageSection(
+  content,
+  firstName,
+  { includeGift, includeFooter, starClosing, starGiftSentence }
+) {
+  const bodyParagraphs = [content.intro];
+  if (includeGift) {
+    bodyParagraphs.push(content.giftHtml + (starGiftSentence ? " *" : ""));
+  }
+  bodyParagraphs.push(content.celebrate);
+
+  const paragraphHtml = bodyParagraphs
     .map(
       (text) =>
         `<tr><td dir="ltr" style="color:#000000;font-size:16px;font-family:Helvetica, Arial, sans-serif;text-align:center;padding:0 24px 16px;line-height:1.4">${text}</td></tr>`
@@ -539,7 +594,19 @@ function renderLanguageSection(content, firstName) {
 
   const closingHtml = `<tr><td dir="ltr" style="color:#000000;font-size:16px;font-family:Helvetica, Arial, sans-serif;text-align:center;padding:0 24px 16px;line-height:1.4">${escapeHtml(
     content.closingPrefix
-  )}${escapeHtml(firstName)}${escapeHtml(content.closingSuffix)}</td></tr>`;
+  )}${escapeHtml(firstName)}${escapeHtml(content.closingSuffix)}${
+    starClosing ? " *" : ""
+  }</td></tr>`;
+
+  const footerHtml = includeFooter
+    ? `<table border="0" cellpadding="0" cellspacing="0" align="center" width="100%" style="border-collapse:separate;table-layout:fixed;background-color:${BRAND.band}">
+        <tbody><tr><td style="padding:20px;text-align:center">
+          <span style="color:#ffffff;font-size:11px;font-family:Helvetica, Arial, sans-serif;line-height:14px">${escapeHtml(
+            content.footer
+          )}</span>
+        </td></tr></tbody>
+      </table>`
+    : "";
 
   return `
 <table border="0" cellpadding="0" cellspacing="0" align="center" width="100%" style="border-collapse:separate;table-layout:fixed;background-color:${BRAND.band}">
@@ -577,13 +644,7 @@ function renderLanguageSection(content, firstName) {
     </td></tr>
   </tbody>
 </table>
-<table border="0" cellpadding="0" cellspacing="0" align="center" width="100%" style="border-collapse:separate;table-layout:fixed;background-color:${BRAND.band}">
-  <tbody><tr><td style="padding:20px;text-align:center">
-    <span style="color:#ffffff;font-size:11px;font-family:Helvetica, Arial, sans-serif;line-height:14px">${escapeHtml(
-      content.footer
-    )}</span>
-  </td></tr></tbody>
-</table>`;
+${footerHtml}`;
 }
 
 export function buildEmailHtml({ firstName, segment }) {
@@ -595,6 +656,20 @@ export function buildEmailHtml({ firstName, segment }) {
     : `<tr><td style="padding:12px 24px;background-color:#ffffff;border-bottom:2px solid #000000;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#000000;text-align:center">TEST EMAIL — segment: ${escapeHtml(
         segment
       )}</td></tr>`;
+
+  const enSection = renderLanguageSection(content.en, displayName, {
+    includeGift: false,
+    includeFooter: false,
+    starClosing: true,
+    starGiftSentence: false,
+  });
+
+  const frSection = renderLanguageSection(content.fr, displayName, {
+    includeGift: true,
+    includeFooter: true,
+    starClosing: false,
+    starGiftSentence: true,
+  });
 
   return `<!DOCTYPE html>
 <html lang="fr">
@@ -609,9 +684,8 @@ export function buildEmailHtml({ firstName, segment }) {
 <table align="center" width="600" border="0" cellpadding="0" cellspacing="0" role="presentation" style="max-width:600px;margin:0 auto;background-color:${BRAND.cardBackground};width:600px">
 <tbody>
 ${testBanner}
-<tr><td>${renderLanguageSection(content.fr, displayName)}</td></tr>
-<tr><td style="height:24px;font-size:0;line-height:0" aria-hidden="true">&nbsp;</td></tr>
-<tr><td>${renderLanguageSection(content.en, displayName)}</td></tr>
+<tr><td>${enSection}</td></tr>
+<tr><td>${frSection}</td></tr>
 </tbody>
 </table>
 </td></tr></tbody>
