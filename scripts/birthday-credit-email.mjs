@@ -1,7 +1,7 @@
 // scripts/birthday-credit-email.mjs
 //
-// Weekly automation: finds clients whose birthday falls exactly 7 days from
-// today, grants them a free class credit in MTEK, and emails them. Two
+// Weekly automation: finds clients whose birthday falls within the next 7
+// days, grants them a free class credit in MTEK, and emails them. Two
 // segments, decided by whether the client has an active-or-frozen unlimited
 // membership (Emilie created both products on 2026-07-28):
 //   - Unlimited (active/frozen): "Passe invité d'anniversaire" (shareable,
@@ -10,6 +10,13 @@
 //   - Everyone else: "Pass d'anniversaire" (not shareable) — product 16601 /
 //     variant 16602 / credit id 2324 ("Passe Flex").
 // Both are $0 variants configured in MTEK with a 2-week relative expiration.
+//
+// Eligibility (added 2026-09-23): a birthday match alone isn't enough — see
+// isEligibleForBirthdayCredit(). Must have checked into a class within the
+// last 5 years, or, if they've never completed one, have created their
+// profile within the last 6 months. This isn't treated as marketing (opt-in
+// status is intentionally not checked): it's a transactional free-class
+// grant to an engaged or recent account, per Jonathan.
 //
 // MTEK's /users/ endpoint only supports an *exact* birth_date=YYYY-MM-DD
 // filter (no month/day-only filter exists — confirmed by testing
@@ -153,15 +160,36 @@ async function main() {
     return;
   }
 
-  // Live: process every real match. Non-live (manual/dry-run only): just
+  // Birthday matching alone is too broad (any non-archived account with an
+  // email) — filter to people who've actually engaged: checked into a class
+  // within the last 5 years, or, if they've never completed one, created
+  // their profile within the last 6 months.
+  const eligibleMatches = [];
+  for (const match of matches) {
+    if (await isEligibleForBirthdayCredit(match)) {
+      eligibleMatches.push(match);
+    }
+  }
+
+  console.log(
+    `${eligibleMatches.length} of ${matches.length} match(es) are eligible ` +
+      "(active within 5 years, or profile created within 6 months if never attended)."
+  );
+
+  if (eligibleMatches.length === 0) {
+    console.log("No eligible birthdays found for this run.");
+    return;
+  }
+
+  // Live: process every eligible match. Non-live (manual/dry-run only): just
   // the first, mirroring the isTestMode ? transactions.slice(0, 1) : ...
   // precedent in credit-expiry-email.mjs.
-  const matchesToProcess = LIVE_MODE ? matches : matches.slice(0, 1);
+  const matchesToProcess = LIVE_MODE ? eligibleMatches : eligibleMatches.slice(0, 1);
 
-  if (!LIVE_MODE && matches.length > 1) {
+  if (!LIVE_MODE && eligibleMatches.length > 1) {
     console.log(
       `TEST MODE: only processing the first match (${matchesToProcess[0].email}); ` +
-        `${matches.length - 1} other real match(es) found this run were skipped.`
+        `${eligibleMatches.length - 1} other eligible match(es) found this run were skipped.`
     );
   }
 
@@ -324,6 +352,14 @@ function addCalendarDays(dateString, daysToAdd) {
   return result.toISOString().slice(0, 10);
 }
 
+// Negative monthsToAdd moves back in time (e.g. -60 for "5 years ago").
+// Date.UTC naturally rolls the year when month goes out of 0-11 range.
+function addCalendarMonths(dateString, monthsToAdd) {
+  const [year, month, day] = dateString.split("-").map(Number);
+  const result = new Date(Date.UTC(year, month - 1 + monthsToAdd, day, 12, 0, 0));
+  return result.toISOString().slice(0, 10);
+}
+
 function getMTechHeaders() {
   return {
     Authorization: `Bearer ${process.env.MTEK_API_TOKEN}`,
@@ -368,12 +404,59 @@ async function findBirthdayMatches(targetDates) {
           birthDate: attrs.birth_date,
           upcomingBirthdayDate: targetDate,
           homeLocationId: user.relationships?.home_location?.data?.id || null,
+          completedClassCount: attrs.completed_class_count || 0,
+          dateJoined: attrs.date_joined || null,
         });
       }
     }
   }
 
   return matches;
+}
+
+// Eligibility rule (added 2026-09-23, per Jonathan): birthday matching alone
+// is too broad — it would include anyone with a non-archived account,
+// regardless of engagement. Two cases:
+//   - Has completed at least one class: must have actually checked into a
+//     class within the last 5 years.
+//   - Never completed a class (completedClassCount === 0): their profile
+//     must have been created within the last 6 months — otherwise it's a
+//     years-old account that signed up and never came back.
+// "Checked in" uses reservations status=check in (confirmed live: count
+// under this filter exactly matches the user's completed_class_count), not
+// just any reservation (which would also include cancellations/no-shows).
+async function isEligibleForBirthdayCredit(match) {
+  const todayInToronto = getDateInTimeZone(new Date(), TIME_ZONE);
+
+  if (match.completedClassCount === 0) {
+    const sixMonthsAgo = addCalendarMonths(todayInToronto, -6);
+    return Boolean(match.dateJoined) && match.dateJoined.slice(0, 10) >= sixMonthsAgo;
+  }
+
+  const fiveYearsAgo = addCalendarMonths(todayInToronto, -60);
+  const lastCheckIn = await getLastCheckInDate(match.id);
+  return Boolean(lastCheckIn) && lastCheckIn.slice(0, 10) >= fiveYearsAgo;
+}
+
+// Fetches a small page (not just 1) of the user's most recent check-ins and
+// takes the true max client-side, as cheap insurance against the API's
+// default ordering ever being anything other than newest-first — confirmed
+// live that it is (verified page_size=1's result against the true max
+// across a 393-reservation history), but this costs almost nothing extra.
+async function getLastCheckInDate(userId) {
+  const url = new URL(`${MTEK_BASE_URL}/reservations/`);
+  url.searchParams.set("user", userId);
+  url.searchParams.set("status", "check in");
+  url.searchParams.set("page_size", "5");
+
+  const body = await fetchJsonWithRateLimit(url, { headers: getMTechHeaders() });
+  const checkInDates = (body?.data || [])
+    .map((reservation) => reservation.attributes?.check_in_date)
+    .filter(Boolean);
+
+  if (checkInDates.length === 0) return null;
+
+  return checkInDates.sort().reverse()[0];
 }
 
 async function findUserByEmail(email) {
