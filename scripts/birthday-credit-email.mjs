@@ -14,9 +14,12 @@
 // Eligibility (added 2026-09-23): a birthday match alone isn't enough — see
 // isEligibleForBirthdayCredit(). Must have checked into a class within the
 // last 5 years, or, if they've never completed one, have created their
-// profile within the last 6 months. This isn't treated as marketing (opt-in
-// status is intentionally not checked): it's a transactional free-class
-// grant to an engaged or recent account, per Jonathan.
+// profile between 4 weeks and 6 months ago — old enough to have had a real
+// chance to book (added 2026-09-24: brand-new signups under 4 weeks aren't
+// eligible yet), but not so old it's a signup that's clearly not coming
+// back. This isn't treated as marketing (opt-in status is intentionally not
+// checked): it's a transactional free-class grant to an engaged or recent
+// account, per Jonathan.
 //
 // MTEK's /users/ endpoint only supports an *exact* birth_date=YYYY-MM-DD
 // filter (no month/day-only filter exists — confirmed by testing
@@ -429,8 +432,16 @@ async function isEligibleForBirthdayCredit(match) {
   const todayInToronto = getDateInTimeZone(new Date(), TIME_ZONE);
 
   if (match.completedClassCount === 0) {
+    if (!match.dateJoined) return false;
+
+    const joinedDate = match.dateJoined.slice(0, 10);
     const sixMonthsAgo = addCalendarMonths(todayInToronto, -6);
-    return Boolean(match.dateJoined) && match.dateJoined.slice(0, 10) >= sixMonthsAgo;
+    const fourWeeksAgo = addCalendarDays(todayInToronto, -28);
+
+    // Profile must be old enough to have had a real chance to book (at
+    // least 4 weeks) but not so old it's a signup that's clearly not
+    // coming back (more than 6 months, never having taken a class).
+    return joinedDate >= sixMonthsAgo && joinedDate <= fourWeeksAgo;
   }
 
   const fiveYearsAgo = addCalendarMonths(todayInToronto, -60);
