@@ -103,11 +103,19 @@ export async function fetchAllPages(baseUrl, searchParams, headers) {
 }
 
 // Runs `fn` over every item in `items` with at most `concurrency` in flight
-// at once, preserving input order in the returned array. MTEK's confirmed
-// rate limit (1300-request bucket, refilling 650/sec — see
-// birthday-credit-email.mjs) comfortably supports this; sequential
-// (concurrency: 1) loops over hundreds of calls were the practical
-// bottleneck, not the API's actual limit.
+// at once, preserving input order in the returned array.
+//
+// CAUTION on choosing `concurrency`: the "1300-request bucket, refills
+// 650/sec" figure Mariana Tek gave us is NOT a single global rate — it
+// clearly does not apply uniformly to every endpoint. Confirmed live
+// 2026-09-24: /users/ tolerates concurrency 20 fine (findBirthdayMatches,
+// verified identical results at ~25x the sequential speed), but the same
+// concurrency 20 against /reservations/ triggered escalating 429s reaching
+// a 600-SECOND Retry-After across several requests. Mariana Tek's own
+// onboarding email warns that "consistently exceeding limits will result in
+// permanent throttle/disconnection" — treat concurrency > 1 as unproven for
+// any endpoint until confirmed safe there specifically, not just fetched
+// from this file's use elsewhere.
 export async function mapWithConcurrency(items, concurrency, fn) {
   const results = new Array(items.length);
   let nextIndex = 0;

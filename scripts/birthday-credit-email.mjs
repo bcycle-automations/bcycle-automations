@@ -74,8 +74,13 @@ const TIME_ZONE = "America/Toronto";
 const MIN_BIRTH_YEAR = 1920;
 const MAX_BIRTH_YEAR = 2020;
 
-// How many birth-year queries to run at once in findBirthdayMatches. Well
-// within MTEK's confirmed rate limit (1300-request bucket, refills 650/sec).
+// How many birth-year queries to run at once in findBirthdayMatches — only
+// against /users/, confirmed live to tolerate this (verified identical
+// match results at ~25x sequential speed). NOT a blanket rate limit for
+// every MTEK endpoint: the same concurrency against /reservations/
+// triggered escalating 429s up to a 600s Retry-After (see mapWithConcurrency
+// in lib/mtek.mjs) — don't reuse this constant elsewhere without confirming
+// that specific endpoint tolerates it first.
 const MATCH_QUERY_CONCURRENCY = 20;
 
 const UNLIMITED_MEMBERSHIP_PATTERN = /unlimited|illimit/i;
@@ -376,8 +381,9 @@ function getMTechHeaders() {
 
 // For every date in the window, queries every birth year in range for the
 // exact birth_date=YYYY-MM-DD match (up to MATCH_QUERY_CONCURRENCY at once
-// — MTEK's confirmed rate limit, a 1300-request bucket refilling 650/sec,
-// comfortably supports this; running all ~700 queries one at a time was the
+// — confirmed live that /users/ specifically tolerates this concurrency
+// fine, see the constant's own comment); running all ~700 queries one at a
+// time was the
 // real bottleneck, not the API), and collects every real (non-archived,
 // has-email) match. Dedupes by user id in case someone somehow matches more
 // than one date in the window (shouldn't happen since each date has a

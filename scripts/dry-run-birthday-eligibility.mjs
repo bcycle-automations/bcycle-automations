@@ -29,12 +29,7 @@ import {
   getMembershipSegment,
   getLastCheckInDate,
 } from "./birthday-credit-email.mjs";
-import { fetchAllPages, mapWithConcurrency } from "./lib/mtek.mjs";
-
-// MTEK's confirmed rate limit (1300-request bucket, refills 650/sec)
-// comfortably supports this — running each per-person lookup one at a time
-// was the real bottleneck on a ~1000-match window, not the API.
-const LOOKUP_CONCURRENCY = 20;
+import { fetchAllPages } from "./lib/mtek.mjs";
 
 const MTEK_BASE_URL = "https://bcycle.marianatek.com/api";
 
@@ -102,13 +97,24 @@ async function main() {
 
   // Per-match: has this person ever attended, and if so, when was their
   // last check-in (fetched once, reused across every threshold).
-  const enriched = await mapWithConcurrency(matches, LOOKUP_CONCURRENCY, async (match) => {
+  // Sequential, deliberately — /reservations/ has a much stricter rate
+  // limit than /users/ (confirmed live 2026-09-24: concurrency 20 here
+  // triggered escalating 429s up to a 600-SECOND Retry-After across
+  // several users). Mariana Tek's own onboarding email warns that
+  // "consistently exceeding limits will result in permanent
+  // throttle/disconnection" — not a risk worth taking for an analysis
+  // script. The "1300-request bucket, 650/sec refill" figure from that
+  // same email is evidently NOT a single global rate — some endpoints
+  // (this one) have their own much stricter limit on top of it.
+  const enriched = [];
+  for (const match of matches) {
     if (match.completedClassCount === 0) {
-      return { ...match, lastCheckIn: null };
+      enriched.push({ ...match, lastCheckIn: null });
+    } else {
+      const lastCheckIn = await getLastCheckInDate(match.id);
+      enriched.push({ ...match, lastCheckIn });
     }
-    const lastCheckIn = await getLastCheckInDate(match.id);
-    return { ...match, lastCheckIn };
-  });
+  }
 
   const results = {};
 
@@ -130,17 +136,22 @@ async function main() {
     // Fetched in parallel first, then tallied in a plain synchronous loop —
     // keeps the counting logic simple and avoids interleaving async calls
     // with shared mutable counters.
-    const classifications = await mapWithConcurrency(
-      eligible,
-      LOOKUP_CONCURRENCY,
-      async (match) => {
-        const segment = await getMembershipSegment(match.id);
-        if (segment === "unlimited") return { match, bucket: "unlimited" };
-
-        const hasMembership = await hasAnyActiveMembership(match.id);
-        return { match, bucket: hasMembership ? "other_membership" : "no_membership" };
+    // Sequential — see the note above /reservations/: not willing to risk
+    // the same escalating-429 pattern on /membership_instances/ without
+    // separately confirming it tolerates concurrency first.
+    const classifications = [];
+    for (const match of eligible) {
+      const segment = await getMembershipSegment(match.id);
+      if (segment === "unlimited") {
+        classifications.push({ match, bucket: "unlimited" });
+        continue;
       }
-    );
+      const hasMembership = await hasAnyActiveMembership(match.id);
+      classifications.push({
+        match,
+        bucket: hasMembership ? "other_membership" : "no_membership",
+      });
+    }
 
     let unlimitedCount = 0;
     let hasOtherMembershipCount = 0;
