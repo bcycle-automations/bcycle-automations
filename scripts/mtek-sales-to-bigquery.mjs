@@ -78,6 +78,10 @@ const META_TARGET_PRODUCT_TYPES = new Set([
   "Physical Gift Cards",
 ]);
 
+// Headroom under Meta's hard 7-day event-time window (subcode 2804003).
+const META_MAX_EVENT_AGE_DAYS = 6.5;
+const META_MAX_EVENT_AGE_SECONDS = META_MAX_EVENT_AGE_DAYS * 24 * 60 * 60;
+
 // Report headers, column mapping, and dedup key now live in
 // ./lib/bcycle-mtek-tables.mjs (shared with the monthly data audit script).
 const EXPECTED_HEADERS = SALES.expectedHeaders;
@@ -88,15 +92,64 @@ function sha256(value) {
   return createHash("sha256").update(String(value).trim().toLowerCase()).digest("hex");
 }
 
+// "7/1/2026" or "07/01/2026" -> { year, month, day } (month/day 1-indexed).
+function parseMonthDayYear(dateStr) {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(String(dateStr || "").trim());
+  if (!m) return null;
+  const [, month, day, year] = m;
+  return { year: Number(year), month: Number(month), day: Number(day) };
+}
+
 // Raw report row's "Order Date (UTC)" + "Order Time (UTC)" are already UTC
-// — combine and parse directly, no timezone math needed.
-function eventTimeFromRawRow(rawRow, headerIndex) {
+// — combine and parse directly, no timezone math needed. Returns null
+// (rather than throwing) so callers can fall back to Transaction Date.
+function orderTimestampSeconds(rawRow, headerIndex) {
   const orderDateUtc = rawRow[headerIndex["Order Date (UTC)"]];
+  if (!orderDateUtc) return null;
   const orderTimeUtc = rawRow[headerIndex["Order Time (UTC)"]] || "00:00:00";
   const ms = Date.parse(`${orderDateUtc}T${orderTimeUtc}Z`);
-  if (Number.isNaN(ms)) throw new Error(`Could not parse event time from "${orderDateUtc} ${orderTimeUtc}"`);
-  return Math.floor(ms / 1000);
+  return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
 }
+
+// event_time is derived from Transaction Date, not Order Date — recurring
+// charges (membership renewals above all) carry the ORIGINAL order date,
+// often months old, which falls outside Meta's 7-day window, while
+// Transaction Date reflects when the charge actually happened. The one
+// exception is a same-UTC-day order, where the precise order timestamp is
+// used instead of a flattened noon-UTC one. Falls back to the order
+// timestamp if Transaction Date doesn't parse; throws only if neither does.
+function eventTimeFromRow(rawRow, row, headerIndex) {
+  const orderSeconds = orderTimestampSeconds(rawRow, headerIndex);
+  const txDate = parseMonthDayYear(row.transaction_date);
+
+  if (txDate) {
+    if (orderSeconds !== null) {
+      const orderDate = new Date(orderSeconds * 1000);
+      const sameUtcDay =
+        orderDate.getUTCFullYear() === txDate.year &&
+        orderDate.getUTCMonth() === txDate.month - 1 &&
+        orderDate.getUTCDate() === txDate.day;
+      if (sameUtcDay) return orderSeconds;
+    }
+    return Math.floor(Date.UTC(txDate.year, txDate.month - 1, txDate.day, 12, 0, 0) / 1000);
+  }
+
+  if (orderSeconds !== null) return orderSeconds;
+
+  throw new Error(
+    `Could not parse event time from Transaction Date "${row.transaction_date}" or Order Date/Time`
+  );
+}
+
+function hasMetaContactInfo(userData) {
+  return Boolean(userData.em || userData.ph);
+}
+
+export function isEventTooOldForMeta(eventTimeSeconds, nowSeconds = Math.floor(Date.now() / 1000)) {
+  return nowSeconds - eventTimeSeconds > META_MAX_EVENT_AGE_SECONDS;
+}
+
+export { eventTimeFromRow, META_MAX_EVENT_AGE_DAYS };
 
 const mtekUserCache = new Map();
 
@@ -120,7 +173,7 @@ async function fetchMtekUser(customerId) {
   return attrs;
 }
 
-async function buildMetaEvent(rawRow, headerIndex) {
+async function buildMetaEvent(rawRow, row, headerIndex) {
   const get = (name) => rawRow[headerIndex[name]];
   const customerId = get("Customer ID");
 
@@ -141,10 +194,11 @@ async function buildMetaEvent(rawRow, headerIndex) {
   if (phone) userData.ph = [sha256(phone)];
   if (firstName) userData.fn = [sha256(firstName)];
   if (lastName) userData.ln = [sha256(lastName)];
+  if (customerId) userData.external_id = [sha256(customerId)];
 
   return {
     event_name: "Purchase",
-    event_time: eventTimeFromRawRow(rawRow, headerIndex),
+    event_time: eventTimeFromRow(rawRow, row, headerIndex),
     action_source: "physical_store",
     user_data: userData,
     custom_data: {
@@ -222,7 +276,10 @@ async function main() {
 
   let totalInserted = 0;
   let totalMetaSent = 0;
+  let totalMetaSkippedNoContact = 0;
+  let totalMetaSkippedTooOld = 0;
   let chunkCount = 0;
+  const metaFailedChunks = [];
 
   while (true) {
     const window = manualOverride
@@ -286,18 +343,52 @@ async function main() {
       `${metaQualifying.length} of ${newRows.length} new row(s) qualify for Meta (target product types, Completed).`
     );
 
+    // Build every qualifying event, then filter out anything Meta would
+    // reject the WHOLE BATCH for (subcodes 2804050 and 2804003) rather than
+    // let one bad row take down every other event in the chunk.
+    const chunkEvents = [];
     if (metaQualifying.length > 0) {
-      if (DRY_RUN) {
-        const sampleEvent = await buildMetaEvent(metaQualifying[0].raw, headerIndex);
-        console.log("DRY RUN — nothing sent to Meta. Sample event:", JSON.stringify(sampleEvent, null, 2));
-      } else {
-        const events = [];
-        for (const { raw } of metaQualifying) {
-          events.push(await buildMetaEvent(raw, headerIndex));
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      for (const { raw, row } of metaQualifying) {
+        const event = await buildMetaEvent(raw, row, headerIndex);
+        const orderNumber = raw[headerIndex["Order Number"]];
+        const customerId = raw[headerIndex["Customer ID"]];
+
+        if (!hasMetaContactInfo(event.user_data)) {
+          totalMetaSkippedNoContact++;
+          console.log(
+            `  Skipping Meta event (no em/ph): order ${orderNumber}, customer ${customerId}, event_time ${event.event_time}`
+          );
+          continue;
         }
-        const totalReceived = await sendMetaEvents(events);
-        console.log(`Sent ${events.length} event(s) to Meta, acknowledged ${totalReceived}.`);
-        totalMetaSent += events.length;
+        if (isEventTooOldForMeta(event.event_time, nowSeconds)) {
+          totalMetaSkippedTooOld++;
+          console.log(
+            `  Skipping Meta event (older than ${META_MAX_EVENT_AGE_DAYS} days): order ${orderNumber}, customer ${customerId}, event_time ${event.event_time}`
+          );
+          continue;
+        }
+        chunkEvents.push(event);
+      }
+    }
+
+    if (chunkEvents.length > 0) {
+      if (DRY_RUN) {
+        console.log(
+          `DRY RUN — would send ${chunkEvents.length} event(s) to Meta. Sample:`,
+          JSON.stringify(chunkEvents[0], null, 2)
+        );
+      } else {
+        // Meta rejecting this chunk's events must never take down the
+        // BigQuery sync for later chunks — collect the failure and keep going.
+        try {
+          const totalReceived = await sendMetaEvents(chunkEvents);
+          console.log(`Sent ${chunkEvents.length} event(s) to Meta, acknowledged ${totalReceived}.`);
+          totalMetaSent += chunkEvents.length;
+        } catch (err) {
+          console.error(`Meta send failed for chunk ${chunkCount} (${minDate}..${maxDate}): ${err.message}`);
+          metaFailedChunks.push({ chunk: chunkCount, minDate, maxDate, count: chunkEvents.length, error: err.message });
+        }
       }
     }
 
@@ -308,20 +399,43 @@ async function main() {
     sinceDate = addDaysUTC(maxDate, 1);
   }
 
+  if (metaFailedChunks.length > 0) {
+    const summaryLines = metaFailedChunks
+      .map((f) => `  chunk ${f.chunk} (${f.minDate}..${f.maxDate}): ${f.count} event(s) — ${f.error}`)
+      .join("\n");
+    console.error(`Meta Offline Conversions failed for ${metaFailedChunks.length} chunk(s):\n${summaryLines}`);
+    if (!DRY_RUN) {
+      try {
+        await sendSlackMessage(
+          `⚠️ ${SYNC_LABEL} sync: Meta Offline Conversions failed for ${metaFailedChunks.length} chunk(s) ` +
+            `(BigQuery inserts were not affected):\n${summaryLines}`
+        );
+      } catch (slackErr) {
+        console.error("Additionally failed to post Meta failure summary to Slack:", slackErr.message);
+      }
+    }
+    process.exitCode = 1;
+  }
+
   console.log(
     `\nDone. ${chunkCount} chunk(s), ${totalInserted} total row(s) ${DRY_RUN ? "would be " : ""}inserted, ` +
-      `${totalMetaSent} event(s) ${DRY_RUN ? "would be " : ""}sent to Meta.`
+      `${totalMetaSent} event(s) ${DRY_RUN ? "would be " : ""}sent to Meta, ` +
+      `${totalMetaSkippedNoContact} skipped (no contact info), ${totalMetaSkippedTooOld} skipped (too old).`
   );
 }
 
-main().catch(async (err) => {
-  console.error("Sync failed:", err.message);
-  if (!DRY_RUN) {
-    try {
-      await sendSlackMessage(`⚠️ ${SYNC_LABEL} sync failed: ${err.message}`);
-    } catch (slackErr) {
-      console.error("Additionally failed to post failure notice to Slack:", slackErr.message);
+// Guarded so test scripts can import the pure helpers above (eventTimeFromRow,
+// isEventTooOldForMeta) without triggering the real sync.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(async (err) => {
+    console.error("Sync failed:", err.message);
+    if (!DRY_RUN) {
+      try {
+        await sendSlackMessage(`⚠️ ${SYNC_LABEL} sync failed: ${err.message}`);
+      } catch (slackErr) {
+        console.error("Additionally failed to post failure notice to Slack:", slackErr.message);
+      }
     }
-  }
-  process.exit(1);
-});
+    process.exit(1);
+  });
+}
