@@ -9,10 +9,32 @@ function sleep(ms) {
 }
 
 // MTEK: rate-limit aware fetch. On HTTP 429, waits for the Retry-After
-// header (falling back to 2s) before retrying, up to maxRetries times.
+// header (falling back to 2s) before retrying, up to maxRetries times. Also
+// retries on transient network-level failures (fetch throwing before a
+// response even comes back — e.g. ETIMEDOUT, EADDRNOTAVAIL, ECONNRESET),
+// which surfaced during a long-running batch of ~700 sequential calls —
+// these aren't rate limiting, just an unreliable connection blip, so they
+// get a short fixed backoff rather than the Retry-After logic below.
 export async function fetchJsonWithRateLimit(url, options = {}, maxRetries = 5) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const res = await fetch(url, options);
+    let res;
+
+    try {
+      res = await fetch(url, options);
+    } catch (networkError) {
+      if (attempt === maxRetries) {
+        throw new Error(
+          `Network error after ${maxRetries} attempts for ${url}: ${networkError.message}`
+        );
+      }
+
+      console.warn(
+        `Network error fetching ${url} (${networkError.message}); ` +
+          `retrying in 2s (attempt ${attempt}/${maxRetries})`
+      );
+      await sleep(2000);
+      continue;
+    }
 
     if (res.status !== 429) {
       if (!res.ok) {

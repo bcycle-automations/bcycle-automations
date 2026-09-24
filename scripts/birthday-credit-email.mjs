@@ -375,7 +375,7 @@ function getMTechHeaders() {
 // (non-archived, has-email) match. Dedupes by user id in case someone
 // somehow matches more than one date in the window (shouldn't happen since
 // each date has a distinct month/day, but cheap insurance).
-async function findBirthdayMatches(targetDates) {
+export async function findBirthdayMatches(targetDates) {
   const matches = [];
   const seenUserIds = new Set();
 
@@ -428,7 +428,7 @@ async function findBirthdayMatches(targetDates) {
 // "Checked in" uses reservations status=check in (confirmed live: count
 // under this filter exactly matches the user's completed_class_count), not
 // just any reservation (which would also include cancellations/no-shows).
-async function isEligibleForBirthdayCredit(match) {
+export async function isEligibleForBirthdayCredit(match) {
   const todayInToronto = getDateInTimeZone(new Date(), TIME_ZONE);
 
   if (match.completedClassCount === 0) {
@@ -454,7 +454,7 @@ async function isEligibleForBirthdayCredit(match) {
 // default ordering ever being anything other than newest-first — confirmed
 // live that it is (verified page_size=1's result against the true max
 // across a 393-reservation history), but this costs almost nothing extra.
-async function getLastCheckInDate(userId) {
+export async function getLastCheckInDate(userId) {
   const url = new URL(`${MTEK_BASE_URL}/reservations/`);
   url.searchParams.set("user", userId);
   url.searchParams.set("status", "check in");
@@ -488,7 +488,7 @@ async function findUserByEmail(email) {
 // the instance's own membership_name is the only reliable signal (same
 // convention as the bike-rental `LIKE '%1 bike%'` check used elsewhere for
 // b.cycle's BigQuery data).
-async function getMembershipSegment(userId) {
+export async function getMembershipSegment(userId) {
   const instances = await fetchAllPages(
     `${MTEK_BASE_URL}/membership_instances/`,
     { user: userId, page_size: "100" },
