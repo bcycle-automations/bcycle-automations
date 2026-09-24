@@ -29,7 +29,12 @@ import {
   getMembershipSegment,
   getLastCheckInDate,
 } from "./birthday-credit-email.mjs";
-import { fetchAllPages } from "./lib/mtek.mjs";
+import { fetchAllPages, mapWithConcurrency } from "./lib/mtek.mjs";
+
+// MTEK's confirmed rate limit (1300-request bucket, refills 650/sec)
+// comfortably supports this — running each per-person lookup one at a time
+// was the real bottleneck on a ~1000-match window, not the API.
+const LOOKUP_CONCURRENCY = 20;
 
 const MTEK_BASE_URL = "https://bcycle.marianatek.com/api";
 
@@ -97,15 +102,13 @@ async function main() {
 
   // Per-match: has this person ever attended, and if so, when was their
   // last check-in (fetched once, reused across every threshold).
-  const enriched = [];
-  for (const match of matches) {
+  const enriched = await mapWithConcurrency(matches, LOOKUP_CONCURRENCY, async (match) => {
     if (match.completedClassCount === 0) {
-      enriched.push({ ...match, lastCheckIn: null });
-    } else {
-      const lastCheckIn = await getLastCheckInDate(match.id);
-      enriched.push({ ...match, lastCheckIn });
+      return { ...match, lastCheckIn: null };
     }
-  }
+    const lastCheckIn = await getLastCheckInDate(match.id);
+    return { ...match, lastCheckIn };
+  });
 
   const results = {};
 
@@ -124,19 +127,32 @@ async function main() {
 
     // Classify eligible people by membership status + segment (extra MTEK
     // calls only for the eligible set, not the whole 1000+ match pool).
+    // Fetched in parallel first, then tallied in a plain synchronous loop —
+    // keeps the counting logic simple and avoids interleaving async calls
+    // with shared mutable counters.
+    const classifications = await mapWithConcurrency(
+      eligible,
+      LOOKUP_CONCURRENCY,
+      async (match) => {
+        const segment = await getMembershipSegment(match.id);
+        if (segment === "unlimited") return { match, bucket: "unlimited" };
+
+        const hasMembership = await hasAnyActiveMembership(match.id);
+        return { match, bucket: hasMembership ? "other_membership" : "no_membership" };
+      }
+    );
+
     let unlimitedCount = 0;
     let hasOtherMembershipCount = 0;
     let noMembershipCount = 0;
     let expectedVisitsThatWeek = 0; // see note below
 
-    for (const match of eligible) {
-      const segment = await getMembershipSegment(match.id);
-      if (segment === "unlimited") {
+    for (const { match, bucket } of classifications) {
+      if (bucket === "unlimited") {
         unlimitedCount += 1;
         continue;
       }
-      const hasMembership = await hasAnyActiveMembership(match.id);
-      if (hasMembership) {
+      if (bucket === "other_membership") {
         hasOtherMembershipCount += 1;
         continue;
       }

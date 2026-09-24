@@ -61,7 +61,7 @@
 // logged warning if that's ever missing/unrecognized, rather than failing
 // their credit outright.
 
-import { fetchJsonWithRateLimit, fetchAllPages } from "./lib/mtek.mjs";
+import { fetchJsonWithRateLimit, fetchAllPages, mapWithConcurrency } from "./lib/mtek.mjs";
 
 const LIVE_MODE = true;
 
@@ -73,6 +73,10 @@ const TIME_ZONE = "America/Toronto";
 
 const MIN_BIRTH_YEAR = 1920;
 const MAX_BIRTH_YEAR = 2020;
+
+// How many birth-year queries to run at once in findBirthdayMatches. Well
+// within MTEK's confirmed rate limit (1300-request bucket, refills 650/sec).
+const MATCH_QUERY_CONCURRENCY = 20;
 
 const UNLIMITED_MEMBERSHIP_PATTERN = /unlimited|illimit/i;
 const ACTIVE_MEMBERSHIP_STATUSES = new Set(["active", "frozen"]);
@@ -370,47 +374,60 @@ function getMTechHeaders() {
   };
 }
 
-// For every date in the window, loops every birth year in range querying
-// the exact birth_date=YYYY-MM-DD match, and collects every real
-// (non-archived, has-email) match. Dedupes by user id in case someone
-// somehow matches more than one date in the window (shouldn't happen since
-// each date has a distinct month/day, but cheap insurance).
+// For every date in the window, queries every birth year in range for the
+// exact birth_date=YYYY-MM-DD match (up to MATCH_QUERY_CONCURRENCY at once
+// — MTEK's confirmed rate limit, a 1300-request bucket refilling 650/sec,
+// comfortably supports this; running all ~700 queries one at a time was the
+// real bottleneck, not the API), and collects every real (non-archived,
+// has-email) match. Dedupes by user id in case someone somehow matches more
+// than one date in the window (shouldn't happen since each date has a
+// distinct month/day, but cheap insurance).
 export async function findBirthdayMatches(targetDates) {
   const matches = [];
   const seenUserIds = new Set();
 
+  const queries = [];
   for (const targetDate of targetDates) {
     const monthDay = targetDate.slice(5); // "MM-DD"
-
     for (let year = MIN_BIRTH_YEAR; year <= MAX_BIRTH_YEAR; year++) {
-      const birthDate = `${year}-${monthDay}`;
+      queries.push({ targetDate, birthDate: `${year}-${monthDay}` });
+    }
+  }
 
-      const users = await fetchAllPages(
+  const resultsByQuery = await mapWithConcurrency(
+    queries,
+    MATCH_QUERY_CONCURRENCY,
+    ({ birthDate }) =>
+      fetchAllPages(
         `${MTEK_BASE_URL}/users/`,
         { birth_date: birthDate, page_size: "100" },
         getMTechHeaders()
-      );
+      )
+  );
 
-      for (const user of users) {
-        const attrs = user.attributes || {};
+  for (let i = 0; i < queries.length; i++) {
+    const { targetDate } = queries[i];
+    const users = resultsByQuery[i];
 
-        if (attrs.archived_at) continue;
-        if (!attrs.email) continue;
-        if (seenUserIds.has(user.id)) continue;
+    for (const user of users) {
+      const attrs = user.attributes || {};
 
-        seenUserIds.add(user.id);
-        matches.push({
-          id: user.id,
-          email: attrs.email,
-          firstName: attrs.first_name,
-          lastName: attrs.last_name,
-          birthDate: attrs.birth_date,
-          upcomingBirthdayDate: targetDate,
-          homeLocationId: user.relationships?.home_location?.data?.id || null,
-          completedClassCount: attrs.completed_class_count || 0,
-          dateJoined: attrs.date_joined || null,
-        });
-      }
+      if (attrs.archived_at) continue;
+      if (!attrs.email) continue;
+      if (seenUserIds.has(user.id)) continue;
+
+      seenUserIds.add(user.id);
+      matches.push({
+        id: user.id,
+        email: attrs.email,
+        firstName: attrs.first_name,
+        lastName: attrs.last_name,
+        birthDate: attrs.birth_date,
+        upcomingBirthdayDate: targetDate,
+        homeLocationId: user.relationships?.home_location?.data?.id || null,
+        completedClassCount: attrs.completed_class_count || 0,
+        dateJoined: attrs.date_joined || null,
+      });
     }
   }
 

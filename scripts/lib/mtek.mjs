@@ -101,3 +101,26 @@ export async function fetchAllPages(baseUrl, searchParams, headers) {
 
   return allData;
 }
+
+// Runs `fn` over every item in `items` with at most `concurrency` in flight
+// at once, preserving input order in the returned array. MTEK's confirmed
+// rate limit (1300-request bucket, refilling 650/sec — see
+// birthday-credit-email.mjs) comfortably supports this; sequential
+// (concurrency: 1) loops over hundreds of calls were the practical
+// bottleneck, not the API's actual limit.
+export async function mapWithConcurrency(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await fn(items[index], index);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker);
+  await Promise.all(workers);
+
+  return results;
+}
