@@ -127,6 +127,7 @@ async function main() {
     let unlimitedCount = 0;
     let hasOtherMembershipCount = 0;
     let noMembershipCount = 0;
+    let expectedVisitsThatWeek = 0; // see note below
 
     for (const match of eligible) {
       const segment = await getMembershipSegment(match.id);
@@ -137,8 +138,29 @@ async function main() {
       const hasMembership = await hasAnyActiveMembership(match.id);
       if (hasMembership) {
         hasOtherMembershipCount += 1;
-      } else {
-        noMembershipCount += 1;
+        continue;
+      }
+
+      noMembershipCount += 1;
+
+      // Not everyone with no active membership would have visited that
+      // specific week anyway — assuming 100% of them is a worst-case, not a
+      // realistic one (per Jonathan, 2026-09-24). Estimate each person's
+      // probability of visiting in any given week from their own lifetime
+      // visit rate (completedClassCount / weeks since date_joined, both
+      // already fetched with the birthday match — no extra API calls),
+      // capped at 1.0 since a rate above "once a week" doesn't raise the
+      // odds of visiting in a *specific* week beyond certain. This is a
+      // lifetime average, not a recent-activity-weighted rate — a real
+      // simplification, flagged clearly in the output.
+      if (match.dateJoined) {
+        const weeksSinceJoined = Math.max(
+          (new Date(today).getTime() - new Date(match.dateJoined).getTime()) /
+            (7 * 24 * 60 * 60 * 1000),
+          1
+        );
+        const visitProbability = Math.min(match.completedClassCount / weeksSinceJoined, 1);
+        expectedVisitsThatWeek += visitProbability;
       }
     }
 
@@ -147,13 +169,18 @@ async function main() {
       unlimitedCount,
       hasOtherMembershipCount,
       noMembershipCount,
+      expectedVisitsThatWeek,
     };
   }
+
+  const AVG_REVENUE_PER_CLASS = 61.21; // BigQuery: avg per single-class-credit-equivalent, last 180 days
+  const MEDIAN_REVENUE_PER_CLASS = 31.04; // same query, median
 
   console.log("==========================================");
   console.log("RESULTS BY THRESHOLD");
   for (const years of yearsThresholds) {
     const r = results[years];
+    const roundedExpected = Math.round(r.expectedVisitsThatWeek * 10) / 10;
     console.log(`--- Attended within ${years} year(s) ---`);
     console.log(`  Total eligible: ${r.eligibleCount}`);
     console.log(`  - Unlimited members (guest pass, no incremental cost): ${r.unlimitedCount}`);
@@ -163,12 +190,15 @@ async function main() {
     console.log(
       `  - No active membership (credit-pack/drop-in — closest to a real cost): ${r.noMembershipCount}`
     );
+    console.log(
+      `    Worst case (100% would've come that week): $${(r.noMembershipCount * AVG_REVENUE_PER_CLASS).toFixed(2)} (avg) / $${(r.noMembershipCount * MEDIAN_REVENUE_PER_CLASS).toFixed(2)} (median)`
+    );
+    console.log(
+      `    Realistic (weighted by each person's own lifetime visit rate): ~${roundedExpected} expected visits that week ` +
+        `-> $${(r.expectedVisitsThatWeek * AVG_REVENUE_PER_CLASS).toFixed(2)} (avg) / $${(r.expectedVisitsThatWeek * MEDIAN_REVENUE_PER_CLASS).toFixed(2)} (median)`
+    );
   }
   console.log("==========================================");
-  console.log(
-    "NOTE: dollar-value estimate needs the BigQuery connector (currently disconnected) " +
-      "for an average revenue-per-class figure — these are headcounts only."
-  );
 }
 
 main().catch((error) => {
