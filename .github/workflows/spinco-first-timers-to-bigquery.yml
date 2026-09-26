@@ -2,7 +2,7 @@ name: SPINCO First Timers → BigQuery sync
 
 on:
   schedule:
-    - cron: "0 7 * * 1" # Monday 07:00 UTC (fixed — not DST-adjusted)
+    - cron: "0 7 * * 0" # Sunday 07:00 UTC (fixed — not DST-adjusted)
   workflow_dispatch:
     inputs:
       dry_run:
