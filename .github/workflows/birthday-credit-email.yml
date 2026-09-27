@@ -13,9 +13,13 @@ on:
         required: false
         type: string
 
-  schedule:
-    # 12:00 UTC = 8:00 a.m. EDT (7:00 a.m. EST)
-    - cron: "0 12 * * 1"
+  # Weekly schedule disabled 2026-09-26: eligibility threshold (3yr vs 5yr,
+  # no-membership cost estimate) is still under review — no decision made
+  # yet. Re-enable this cron once a threshold is chosen (and flip LIVE_MODE
+  # back to true in the script).
+  # schedule:
+  #   # 12:00 UTC = 8:00 a.m. EDT (7:00 a.m. EST)
+  #   - cron: "0 12 * * 1"
 
 jobs:
   birthday-credit-email:

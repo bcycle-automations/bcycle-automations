@@ -63,7 +63,11 @@
 
 import { fetchJsonWithRateLimit, fetchAllPages, mapWithConcurrency } from "./lib/mtek.mjs";
 
-const LIVE_MODE = true;
+// Deactivated 2026-09-26: eligibility threshold (3yr vs 5yr, no-membership
+// cost estimate) is still under review with Bijan/Jess — no decision made
+// yet. Flip back to true once a threshold is chosen. The weekly cron
+// trigger is also disabled in the workflow file for the same reason.
+const LIVE_MODE = false;
 
 const MTEK_BASE_URL = "https://bcycle.marianatek.com/api";
 const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
