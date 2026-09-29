@@ -69,6 +69,34 @@ otherwise see.
   — but don't assume "no Slack message today" means nothing happened; check
   Actions run history if that ever seems off.
 
+## SPINCO Sales → BigQuery sync + Meta Offline Conversions
+
+Workflow file: `.github/workflows/spinco-sales-to-bigquery.yml`
+Script: `scripts/spinco-sales-to-bigquery.mjs`
+Doc: `docs/spinco-sales-to-bigquery.docx`
+
+Runs daily (`23 7 * * *` UTC). Same shape as the b.cycle sync above: inserts new
+rows into `SPINCO.Sales`, then sends qualifying new rows to Meta as `Purchase`
+events. Dataset: **"SPINCO Offline Data"**, ID `1119305444099374`, owned by the
+Spinco Franchise Inc business.
+
+Differences from b.cycle:
+- **`$0` lines are skipped.** ~20% of qualifying Credits/Memberships lines are
+  genuine `$0` (comps, promos, staff passes); b.cycle does not filter these.
+- **Test mode:** dispatch with `dry_run` off and `meta_test_event_code` set — sends
+  at most 20 events to Meta's Test events tab only, with **no BigQuery insert**
+  (otherwise the next live run would see those rows as already synced and never
+  send them to Meta). Keep the Test events page open in Events Manager while it
+  runs or nothing shows.
+- Secret is `META_OFFLINE_CONVERSIONS_TOKEN_SPINCO` — a System User token from an
+  app owned by Spinco Franchise Inc. The b.cycle token gets error 100 on this dataset.
+
+Token setup gotchas: the system user needs **both** an app role (Business Settings →
+Accounts → Apps → Manage app) **and** the dataset assigned as an asset with full
+control. No app role → "No permissions available" when generating the token; no
+dataset asset → every send fails with Graph error 100, subcode 33. The Events Manager
+Settings tab crashed during setup, so the Business Settings system-user route was used.
+
 ## b.cycle MTEK Monthly Data Audit
 
 Workflow file: `.github/workflows/bcycle-mtek-monthly-data-audit.yml`
