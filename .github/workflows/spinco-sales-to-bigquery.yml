@@ -2,13 +2,17 @@ name: SPINCO Sales → BigQuery sync
 
 on:
   schedule:
-    - cron: "0 7 * * 0" # Sunday 07:00 UTC (fixed — not DST-adjusted)
+    - cron: "23 7 * * *" # Daily ~07:23 UTC (off top-of-hour to dodge GH Actions cron contention — not DST-adjusted)
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Dry run (no writes to BigQuery, no Slack message)"
+        description: "Dry run (no writes to BigQuery, no Meta events, no Slack message)"
         type: boolean
         default: true
+      meta_test_event_code:
+        description: "Optional Meta test_event_code (Events Manager → dataset → Test events). Events show in the Test events tab only."
+        type: string
+        default: ""
 
 jobs:
   sync-sales:
@@ -36,6 +40,8 @@ jobs:
           MTEK_SPINCO_BASE_URL: https://spinco.marianatek.com
           MTEK_SPINCO_API_TOKEN: ${{ secrets.MTEK_SPINCO_API_TOKEN }}
           SLACK_BIGQUERY_UPDATES_WEBHOOK_URL: ${{ secrets.SLACK_BIGQUERY_UPDATES_WEBHOOK_URL }}
+          META_OFFLINE_CONVERSIONS_TOKEN_SPINCO: ${{ secrets.META_OFFLINE_CONVERSIONS_TOKEN_SPINCO }}
+          META_TEST_EVENT_CODE: ${{ github.event.inputs.meta_test_event_code }}
           # Scheduled runs always write for real. Manual (workflow_dispatch)
           # runs default to a dry run unless the input is explicitly unchecked.
           DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
