@@ -63,6 +63,12 @@ const DRY_RUN = process.env.DRY_RUN !== "false";
 const META_OFFLINE_CONVERSIONS_TOKEN = (process.env.META_OFFLINE_CONVERSIONS_TOKEN_SPINCO || "").trim();
 const META_OFFLINE_DATASET_ID = process.env.META_OFFLINE_DATASET_ID_SPINCO || "1119305444099374";
 const META_TEST_EVENT_CODE = (process.env.META_TEST_EVENT_CODE || "").trim();
+// Test mode (test code set on a real run): send a small sample of events to
+// Meta's Test events tab ONLY — no BigQuery inserts (otherwise the next live
+// run would see those rows as already synced and never send them to Meta),
+// no Slack, single chunk.
+const TEST_MODE = Boolean(META_TEST_EVENT_CODE) && !DRY_RUN;
+const TEST_MODE_MAX_EVENTS = 20;
 const META_GRAPH_VERSION = "v19.0";
 const META_EVENT_BATCH_SIZE = 500;
 
@@ -294,6 +300,8 @@ async function main() {
 
     if (DRY_RUN) {
       console.log("DRY RUN — nothing written. Sample:", JSON.stringify(newRows.slice(0, 2), null, 2));
+    } else if (TEST_MODE) {
+      console.log("TEST MODE — skipping BigQuery insert and Slack.");
     } else if (newRows.length > 0) {
       await insertInBatches(table, newRows);
       console.log(`Inserted ${newRows.length} rows into ${BQ_TABLE}`);
@@ -306,9 +314,11 @@ async function main() {
 
     // Meta offline conversions: only ever drawn from rows just confirmed new
     // (never resends rows already in BigQuery from a prior run).
-    const metaQualifying = newIndexed.filter(
+    let metaQualifying = newIndexed.filter(
       ({ row }) => META_TARGET_PRODUCT_TYPES.has(row["Product Type"]) && row["Line Status"] === "Completed"
     );
+    // Test mode: avoid hundreds of MTEK user lookups for a 20-event sample.
+    if (TEST_MODE) metaQualifying = metaQualifying.slice(0, TEST_MODE_MAX_EVENTS * 3);
     console.log(
       `${metaQualifying.length} of ${newRows.length} new row(s) qualify for Meta (target product types, Completed).`
     );
@@ -343,6 +353,8 @@ async function main() {
       chunkEvents.push(event);
     }
 
+    if (TEST_MODE) chunkEvents.splice(TEST_MODE_MAX_EVENTS);
+
     if (chunkEvents.length > 0) {
       if (DRY_RUN) {
         console.log(
@@ -365,7 +377,7 @@ async function main() {
     for (const r of newRows) seenThisRun.add(dedupKey(r));
     totalInserted += newRows.length;
 
-    if (manualOverride) break;
+    if (manualOverride || TEST_MODE) break;
     sinceDate = addDaysUTC(maxDate, 1);
   }
 
