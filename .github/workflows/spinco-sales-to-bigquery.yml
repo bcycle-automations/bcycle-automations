@@ -9,6 +9,14 @@ on:
         description: "Dry run (no writes to BigQuery, no Meta events, no Slack message)"
         type: boolean
         default: true
+      meta_backfill_min_date:
+        description: "Meta-ONLY backfill start (YYYY-MM-DD). Sends already-synced rows to Meta with no BigQuery writes. Only set if that window was never sent (a resend double-counts). Meta rejects events older than 7 days."
+        type: string
+        default: ""
+      meta_backfill_max_date:
+        description: "Meta-ONLY backfill end (YYYY-MM-DD, inclusive)"
+        type: string
+        default: ""
       meta_test_event_code:
         description: "Optional Meta test_event_code (Events Manager → dataset → Test events). Events show in the Test events tab only."
         type: string
@@ -42,6 +50,8 @@ jobs:
           SLACK_BIGQUERY_UPDATES_WEBHOOK_URL: ${{ secrets.SLACK_BIGQUERY_UPDATES_WEBHOOK_URL }}
           META_OFFLINE_CONVERSIONS_TOKEN_SPINCO: ${{ secrets.META_OFFLINE_CONVERSIONS_TOKEN_SPINCO }}
           META_TEST_EVENT_CODE: ${{ github.event.inputs.meta_test_event_code }}
+          META_BACKFILL_MIN_DATE: ${{ github.event.inputs.meta_backfill_min_date }}
+          META_BACKFILL_MAX_DATE: ${{ github.event.inputs.meta_backfill_max_date }}
           # Scheduled runs always write for real. Manual (workflow_dispatch)
           # runs default to a dry run unless the input is explicitly unchecked.
           DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}

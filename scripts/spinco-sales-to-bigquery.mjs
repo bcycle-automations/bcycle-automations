@@ -82,7 +82,12 @@ const META_TARGET_PRODUCT_TYPES = new Set([
 ]);
 
 // Headroom under Meta's hard 7-day event-time window (subcode 2804003).
-const META_MAX_EVENT_AGE_DAYS = 6.5;
+const BACKFILL_MIN_DATE = (process.env.META_BACKFILL_MIN_DATE || "").trim();
+const BACKFILL_MAX_DATE = (process.env.META_BACKFILL_MAX_DATE || "").trim();
+const BACKFILL = Boolean(BACKFILL_MIN_DATE && BACKFILL_MAX_DATE);
+// Backfill sends are one-off and retryable, so use a tighter-to-the-limit
+// cutoff (Meta's hard limit is 7 days) to recover as many events as possible.
+const META_MAX_EVENT_AGE_DAYS = BACKFILL ? 6.8 : 6.5;
 const META_MAX_EVENT_AGE_SECONDS = META_MAX_EVENT_AGE_DAYS * 24 * 60 * 60;
 
 // Report headers, column mapping, and dedup key now live in
@@ -233,10 +238,74 @@ async function getExistingKeys(bq, minDate, maxDate) {
   );
 }
 
+// Meta-ONLY backfill: sends qualifying rows for an explicit date window that
+// are already in BigQuery but were never sent to Meta. No BigQuery insert, no
+// dedup against BigQuery — the caller must have verified the window has not
+// already been sent (a resend would double-count purchases, since no event_id
+// is set). Meta's 7-day event-time limit still applies.
+async function metaBackfill() {
+  const headerIndex = {};
+  EXPECTED_HEADERS.forEach((h, i) => (headerIndex[h] = i));
+  console.log(`META BACKFILL ${BACKFILL_MIN_DATE}..${BACKFILL_MAX_DATE}${DRY_RUN ? " (DRY RUN)" : ""}`);
+
+  let sent = 0, zero = 0, noContact = 0, tooOld = 0, qualifyingTotal = 0;
+  let start = BACKFILL_MIN_DATE;
+  while (start <= BACKFILL_MAX_DATE) {
+    const end = [addDaysUTC(start, MAX_WINDOW_DAYS - 1), BACKFILL_MAX_DATE].sort()[0];
+    console.log(`\n--- Backfill chunk ${start}..${end} ---`);
+    const report = await fetchMtekReport({
+      baseUrl: MTEK_BASE_URL,
+      token: MTEK_API_TOKEN,
+      reportId: REPORT_ID,
+      slug: REPORT_SLUG,
+      pageSize: PAGE_SIZE,
+      dateParams: SALES.dateParams(start, end),
+    });
+    if (JSON.stringify(report.headers) !== JSON.stringify(EXPECTED_HEADERS)) {
+      throw new Error(`Report headers changed shape — refusing to guess. Got: ${JSON.stringify(report.headers)}`);
+    }
+    const qualifying = report.rows
+      .map((raw) => ({ raw, row: mapRow(raw) }))
+      .filter(({ row }) => META_TARGET_PRODUCT_TYPES.has(row["Product Type"]) && row["Line Status"] === "Completed");
+    qualifyingTotal += qualifying.length;
+    console.log(`Fetched ${report.rows.length} rows, ${qualifying.length} qualify by product type/status.`);
+
+    const events = [];
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    for (const { raw, row } of qualifying) {
+      const event = await buildMetaEvent(raw, row, headerIndex);
+      if (!(event.custom_data.value > 0)) { zero++; continue; }
+      if (!hasMetaContactInfo(event.user_data)) { noContact++; continue; }
+      if (isEventTooOldForMeta(event.event_time, nowSeconds)) { tooOld++; continue; }
+      events.push(event);
+    }
+    console.log(`${events.length} event(s) ready for chunk ${start}..${end}.`);
+    if (events.length > 0) {
+      if (DRY_RUN) {
+        console.log("DRY RUN — would send. Sample:", JSON.stringify(events[0], null, 2));
+      } else {
+        const received = await sendMetaEvents(events);
+        console.log(`Sent ${events.length} event(s) to Meta, acknowledged ${received}.`);
+        sent += events.length;
+      }
+    }
+    start = addDaysUTC(end, 1);
+  }
+  console.log(
+    `\nBackfill done. ${qualifyingTotal} qualifying, ${sent} sent${DRY_RUN ? " (dry run: none)" : ""}, ` +
+      `${zero} skipped ($0), ${noContact} skipped (no contact), ${tooOld} skipped (too old).`
+  );
+}
+
 async function main() {
   if (!MTEK_API_TOKEN) throw new Error("Missing MTEK_SPINCO_API_TOKEN");
   if (!DRY_RUN && !META_OFFLINE_CONVERSIONS_TOKEN) {
     throw new Error("Missing META_OFFLINE_CONVERSIONS_TOKEN_SPINCO");
+  }
+
+  if (BACKFILL) {
+    await metaBackfill();
+    return;
   }
 
   const bq = new BigQuery({ projectId: BQ_PROJECT_ID });
