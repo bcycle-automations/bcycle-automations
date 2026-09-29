@@ -248,6 +248,7 @@ async function main() {
   let totalMetaSent = 0;
   let totalMetaSkippedNoContact = 0;
   let totalMetaSkippedTooOld = 0;
+  let totalMetaSkippedZeroValue = 0;
   let chunkCount = 0;
   const metaFailedChunks = [];
 
@@ -321,6 +322,12 @@ async function main() {
       const orderNumber = row["Order Number"];
       const customerId = row["Customer ID"];
 
+      // ~20% of qualifying rows are genuine $0 lines (comps, promos, staff
+      // passes) — not real purchases, and they'd dilute ad optimization.
+      if (!(event.custom_data.value > 0)) {
+        totalMetaSkippedZeroValue++;
+        continue;
+      }
       if (!hasMetaContactInfo(event.user_data)) {
         totalMetaSkippedNoContact++;
         console.log(`  Skipping Meta event (no em/ph): order ${orderNumber}, customer ${customerId}`);
@@ -383,7 +390,7 @@ async function main() {
   console.log(
     `\nDone. ${chunkCount} chunk(s), ${totalInserted} total row(s) ${DRY_RUN ? "would be " : ""}inserted, ` +
       `${totalMetaSent} event(s) ${DRY_RUN ? "would be " : ""}sent to Meta, ` +
-      `${totalMetaSkippedNoContact} skipped (no contact info), ${totalMetaSkippedTooOld} skipped (too old).`
+      `${totalMetaSkippedZeroValue} skipped ($0 value), ${totalMetaSkippedNoContact} skipped (no contact info), ${totalMetaSkippedTooOld} skipped (too old).`
   );
 }
 
