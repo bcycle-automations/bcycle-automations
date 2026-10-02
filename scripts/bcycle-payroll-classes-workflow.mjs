@@ -5,6 +5,8 @@
  * MTEK -> Airtable class sync workflow.
  */
 
+import { eomMembership } from './lib/eom-weekend.mjs';
+
 const CONFIG = {
   airtable: {
     baseId: process.env.AIRTABLE_BASE_ID || 'appBC0Ja4B5LKbZLW',
@@ -23,6 +25,8 @@ const CONFIG = {
     eomStartFieldId: 'fldwo53Yx2PI2VVVJ',
     eomEndFieldId: 'fldt7m3KygcrA7GZf',
     classEomFieldId: 'flds49hl8DluvKyGk',
+    // Checked when the class's week (ending Saturday) finishes in a later EOM.
+    classEomWeekEndFieldId: 'fldrZyYGCYzN6hp2Z',
     periodStartFieldId: 'fldic4m4P8BVIieVv',
     periodEndFieldId: 'fld4Hg7iYvAgHTHeu',
     classPeriodFieldId: 'fldR0cD3vR4RE4pKY',
@@ -339,6 +343,15 @@ async function run() {
       const { eomTableId, eomStartFieldId, eomEndFieldId, classEomFieldId } = CONFIG.airtable;
       const months = await fetchWindows(eomTableId, eomStartFieldId, eomEndFieldId);
       assignWindows(classRecordsToCreate, months, classEomFieldId, 'EOM');
+      // Week-end rule: a class also joins the EOM its week (ending Saturday)
+      // finishes in, and the checkbox is ticked. Its own date's EOM stays.
+      for (const fields of classRecordsToCreate) {
+        const date = String(fields['Class Date'] || '').slice(0, 10);
+        if (!date || !fields[classEomFieldId]) continue; // before the first EOM
+        const membership = eomMembership(date, months);
+        fields[classEomFieldId] = membership.ids;
+        fields[CONFIG.airtable.classEomWeekEndFieldId] = membership.viaWeekEnd;
+      }
     }
 
     // The run record (one week) belongs to the period its Start Date falls in, so

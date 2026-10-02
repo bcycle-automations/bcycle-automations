@@ -8,6 +8,8 @@
  * "Budget week - Studio" record, which supplies the date window and the studio.
  */
 
+import { eomMembership } from './lib/eom-weekend.mjs';
+
 const CONFIG = {
   airtable: {
     baseId: process.env.AIRTABLE_BASE_ID || 'appiwfeujJzUZPPBx',
@@ -30,6 +32,8 @@ const CONFIG = {
     eomStartFieldId: 'fldduMMEtqShh6CPB',
     eomEndFieldId: 'fld8fIYiRFAdcwN1l',
     punchEomFieldId: 'fldRzRhdN0dv3OHnR',
+    // Checked when the punch's week (ending Saturday) finishes in a later EOM.
+    punchEomWeekEndFieldId: 'fldh4VnWcNn1YXJQ3',
     token: process.env.AIRTABLE_TOKEN,
   },
   mtek: {
@@ -570,8 +574,16 @@ async function run() {
         const ambiguous = new Set();
         for (const fields of punchRecordsToCreate) {
           const matches = window.list.filter((w) => w.start <= fields.Date && fields.Date <= w.end);
-          if (matches.length === 1) fields[window.fieldId] = [matches[0].id];
-          else (matches.length ? ambiguous : uncovered).add(fields.Date);
+          if (matches.length === 1) {
+            fields[window.fieldId] = [matches[0].id];
+            if (window.label === 'EOM') {
+              // Week-end rule: also join the EOM the punch's week (ending Saturday)
+              // finishes in, and tick the checkbox. The date-based EOM stays.
+              const membership = eomMembership(fields.Date, window.list);
+              fields[window.fieldId] = membership.ids;
+              fields[a.punchEomWeekEndFieldId] = membership.viaWeekEnd;
+            }
+          } else (matches.length ? ambiguous : uncovered).add(fields.Date);
         }
         if (uncovered.size || ambiguous.size) {
           const problems = [];
