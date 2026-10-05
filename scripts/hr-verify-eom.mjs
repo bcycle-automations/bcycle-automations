@@ -16,7 +16,10 @@
  * Time punches live in the HR base; classes in HR - Instructors, whose EOM is a
  * synced copy matched here by Start Date. The result is written back to the HR
  * EOM record (Month-end verification / notes / verified at) and syncs across.
- * Nothing but those three fields is ever written.
+ * "Month-end verification status" goes Running at the start (clearing the old
+ * result) and Complete at the end, or FAILED if the run itself errors, so the
+ * EOM record always shows whether the automation has finished.
+ * Nothing but those four fields is ever written.
  */
 
 import { eomMembership, addDays } from './lib/eom-weekend.mjs';
@@ -28,6 +31,7 @@ const recordId = process.env.AIRTABLE_RECORD_ID;
 const HR = TARGETS.punches;
 const EOM_FIELD = {
   name: 'fldPpqbbTxeNZ1zmh',
+  status: 'fldKLk86LHgL79KzP',
   verification: 'fld9PlAxJVO8nshbb',
   notes: 'fldaCqFd8ruPm3rIK',
   verifiedAt: 'fld1BMmklfRCZIksm',
@@ -96,6 +100,10 @@ async function verifyTarget(target, eom, notes) {
   report(flagWrong, 'with the week-end checkbox wrong');
 }
 
+function setEom(fields) {
+  return airtable({ token, baseId: HR.baseId, tableId: HR.eomTableId, recordId, method: 'PATCH', body: { fields } });
+}
+
 async function run() {
   if (!token) throw new Error('Missing required environment variable: AIRTABLE_TOKEN');
   if (!recordId) throw new Error('Missing required environment variable: AIRTABLE_RECORD_ID');
@@ -106,6 +114,11 @@ async function run() {
     tableId: HR.eomTableId,
     recordId,
     query: `returnFieldsByFieldId=true`,
+  });
+  await setEom({
+    [EOM_FIELD.status]: 'Running',
+    [EOM_FIELD.verification]: null,
+    [EOM_FIELD.notes]: null,
   });
   const f = eomRecord.fields || {};
   const eom = { id: recordId, name: f[EOM_FIELD.name], start: f[HR.eomStartFieldId], end: f[HR.eomEndFieldId] };
@@ -126,23 +139,22 @@ async function run() {
   const text = [...notes.lines, '', ok ? 'Nothing missed — every time punch and class is in the right EOM.' : 'PROBLEMS:', ...notes.problems.map((p) => `- ${p}`)].join('\n');
   console.log(text);
 
-  await airtable({
-    token,
-    baseId: HR.baseId,
-    tableId: HR.eomTableId,
-    recordId,
-    method: 'PATCH',
-    body: {
-      fields: {
-        [EOM_FIELD.verification]: ok ? 'ALL GOOD' : 'PROBLEM',
-        [EOM_FIELD.notes]: text,
-        [EOM_FIELD.verifiedAt]: new Date().toISOString(),
-      },
-    },
+  await setEom({
+    [EOM_FIELD.status]: 'Complete',
+    [EOM_FIELD.verification]: ok ? 'ALL GOOD' : 'PROBLEM',
+    [EOM_FIELD.notes]: text,
+    [EOM_FIELD.verifiedAt]: new Date().toISOString(),
   });
 }
 
-run().catch((error) => {
+run().catch(async (error) => {
   console.error(error);
+  // Make the failure visible on the EOM record instead of leaving it on "Running".
+  if (token && recordId) {
+    await setEom({
+      [EOM_FIELD.status]: 'FAILED',
+      [EOM_FIELD.notes]: `The verification action failed: ${String(error?.message || error).slice(0, 1500)}`,
+    }).catch(() => {});
+  }
   process.exit(1);
 });
