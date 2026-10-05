@@ -347,8 +347,9 @@ async function run() {
       // finishes in, and the checkbox is ticked. Its own date's EOM stays.
       for (const fields of classRecordsToCreate) {
         const date = String(fields['Class Date'] || '').slice(0, 10);
-        if (!date || !fields[classEomFieldId]) continue; // before the first EOM
+        if (!date) continue;
         const membership = eomMembership(date, months);
+        if (!membership.ids.length) continue; // before the first EOM, week ends outside it too
         fields[classEomFieldId] = membership.ids;
         fields[CONFIG.airtable.classEomWeekEndFieldId] = membership.viaWeekEnd;
       }

@@ -8,7 +8,8 @@
  * "In EOM via week-end rule" ticked. Re-running is safe — it only touches
  * records whose EOM links or checkbox differ from the rule.
  *
- * Records dated before the first EOM are left alone. Runs read-only unless
+ * Records dated before the first EOM are left alone UNLESS their week (ending
+ * Saturday) finishes inside it — then they join that EOM via the week-end rule. Runs read-only unless
  * DRY_RUN is "false". TARGET is punches | classes | both (default both).
  */
 
@@ -29,7 +30,8 @@ async function backfill(target) {
     baseId: target.baseId,
     tableId: target.tableId,
     fieldIds: [target.dateFieldId, target.eomLinkFieldId, target.flagFieldId],
-    filter: `IS_AFTER({${target.dateFieldId}}, '${addDays(earliestStart, -2)}')`,
+    // A week can start up to 6 days before the first EOM and still end inside it.
+    filter: `IS_AFTER({${target.dateFieldId}}, '${addDays(earliestStart, -9)}')`,
   });
 
   const updates = [];
@@ -44,16 +46,19 @@ async function backfill(target) {
       noDate += 1;
       continue;
     }
-    if (day < earliestStart) {
-      before += 1;
+    const membership = eomMembership(day, months);
+    if (day < earliestStart && membership.ids.length === 0) {
+      before += 1; // before the first EOM and its week doesn't end in one either
       continue;
     }
-    const membership = eomMembership(day, months);
-    if (membership.own.length !== 1) {
+    if (day < earliestStart) {
+      // Before the first EOM, but the week ends inside it: only the week-end link applies.
+      flagged += 1;
+    } else if (membership.own.length !== 1) {
       problems.push(`${day}: ${membership.own.length ? 'more than one EOM covers it' : 'no EOM covers it'}`);
       continue;
     }
-    if (membership.viaWeekEnd) flagged += 1;
+    if (day >= earliestStart && membership.viaWeekEnd) flagged += 1;
     const current = new Set(record.fields?.[target.eomLinkFieldId] || []);
     const wanted = new Set(membership.ids);
     const sameLinks = current.size === wanted.size && [...wanted].every((id) => current.has(id));
