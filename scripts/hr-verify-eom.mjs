@@ -13,6 +13,13 @@
  *   - the checkbox isn't ticked where the rule doesn't apply
  *   - the EOM's own live checks (date range, no employee, ...) are reported
  *
+ * It doesn't just report: anything it finds wrong (a missing or wrong EOM link,
+ * a wrong week-end checkbox) it FIXES using the shared rule, then counts it as
+ * fixed. The month only reads PROBLEM if something couldn't be put right (e.g. a
+ * record with no date, or the EOM missing from the synced base). The EOM's own
+ * live checks (date range, no employee, ...) are listed as "still open" for the
+ * people closing the month, but don't by themselves make the result PROBLEM.
+ *
  * Time punches live in the HR base; classes in HR - Instructors, whose EOM is a
  * synced copy matched here by Start Date. The result is written back to the HR
  * EOM record (Month-end verification / notes / verified at) and syncs across.
@@ -23,7 +30,7 @@
  */
 
 import { eomMembership, addDays } from './lib/eom-weekend.mjs';
-import { TARGETS, airtable, fetchAll, loadMonths, localDay } from './lib/eom-targets.mjs';
+import { TARGETS, airtable, fetchAll, loadMonths, localDay, patchInBatches } from './lib/eom-targets.mjs';
 
 const token = process.env.AIRTABLE_TOKEN;
 const recordId = process.env.AIRTABLE_RECORD_ID;
@@ -67,6 +74,8 @@ async function verifyTarget(target, eom, notes) {
   const missing = [];
   const wronglyIn = [];
   const flagWrong = [];
+  const unfixable = [];
+  const updates = [];
   let belong = 0;
   let viaRule = 0;
 
@@ -75,29 +84,53 @@ async function verifyTarget(target, eom, notes) {
     const linked = (record.fields?.[target.eomLinkFieldId] || []).includes(thisMonth.id);
     const flag = Boolean(record.fields?.[target.flagFieldId]);
     if (!day) {
-      if (linked) wronglyIn.push(`${record.id} (no date)`);
+      if (linked) unfixable.push(`${record.id} (linked here but has no date)`);
       continue;
     }
     const membership = eomMembership(day, months);
     const shouldBeIn = membership.ids.includes(thisMonth.id);
+    let broken = false;
     if (shouldBeIn) {
       belong += 1;
       if (membership.extra.some((m) => m.id === thisMonth.id)) viaRule += 1;
-      if (!linked) missing.push(`${day} ${record.id}`);
-      if (flag !== membership.viaWeekEnd) flagWrong.push(`${day} ${record.id} (checkbox ${flag ? 'ticked' : 'empty'}, should be ${membership.viaWeekEnd ? 'ticked' : 'empty'})`);
+      if (!linked) {
+        missing.push(`${day} ${record.id}`);
+        broken = true;
+      }
+      if (flag !== membership.viaWeekEnd) {
+        flagWrong.push(`${day} ${record.id}`);
+        broken = true;
+      }
     } else if (linked) {
       wronglyIn.push(`${day} ${record.id}`);
+      broken = true;
+    }
+    if (broken) {
+      if (membership.own.length > 1) {
+        unfixable.push(`${day} ${record.id} (more than one EOM covers this date)`);
+      } else {
+        updates.push({
+          id: record.id,
+          fields: { [target.eomLinkFieldId]: membership.ids, [target.flagFieldId]: membership.viaWeekEnd },
+        });
+      }
     }
   }
 
+  // Put right what the rule says is wrong, then it's no longer a problem.
+  if (updates.length) await patchInBatches({ token, baseId: target.baseId, tableId: target.tableId, updates });
+
   notes.lines.push(`${target.label}: ${belong} belong to this EOM (${belong - viaRule} by date, ${viaRule} only by the week-end rule).`);
-  const report = (list, text) => {
-    if (!list.length) return;
-    notes.problems.push(`${target.label}: ${list.length} ${text}: ${list.slice(0, SAMPLE).join('; ')}${list.length > SAMPLE ? `; +${list.length - SAMPLE} more` : ''}`);
-  };
-  report(missing, 'not linked to this EOM but should be');
-  report(wronglyIn, 'linked to this EOM but do not belong (by date or by the week-end rule)');
-  report(flagWrong, 'with the week-end checkbox wrong');
+  if (updates.length) {
+    notes.lines.push(
+      `${target.label}: fixed ${updates.length} record(s) — ${missing.length} added to this EOM, ${wronglyIn.length} removed from it, ${flagWrong.length} week-end checkbox(es) corrected. e.g. ${updates.slice(0, 3).map((u) => u.id).join(', ')}`,
+    );
+  }
+  if (unfixable.length) {
+    notes.problems.push(
+      `${target.label}: ${unfixable.length} record(s) couldn't be put right: ${unfixable.slice(0, SAMPLE).join('; ')}${unfixable.length > SAMPLE ? `; +${unfixable.length - SAMPLE} more` : ''}`,
+    );
+  }
 }
 
 function setEom(fields) {
@@ -133,10 +166,15 @@ async function run() {
   const badChecks = Object.entries(EOM_FIELD.checks)
     .filter(([, id]) => ['ISSUE', 'PROBLEM'].includes(String(f[id] ?? '')))
     .map(([label, id]) => `${label} reads ${f[id]}`);
-  if (badChecks.length) notes.problems.push(`Live EOM checks not clear: ${badChecks.join('; ')}`);
 
   const ok = notes.problems.length === 0;
-  const text = [...notes.lines, '', ok ? 'Nothing missed — every time punch and class is in the right EOM.' : 'PROBLEMS:', ...notes.problems.map((p) => `- ${p}`)].join('\n');
+  const text = [
+    ...notes.lines,
+    '',
+    ok ? 'ALL GOOD — every time punch and class is in the right EOM (anything wrong was fixed above).' : 'PROBLEM — these could not be put right:',
+    ...notes.problems.map((p) => `- ${p}`),
+    ...(badChecks.length ? ['', `Still open for the month-end team (doesn't change the result above): ${badChecks.join('; ')}`] : []),
+  ].join('\n');
   console.log(text);
 
   await setEom({

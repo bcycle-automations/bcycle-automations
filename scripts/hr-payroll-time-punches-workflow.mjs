@@ -20,6 +20,10 @@ const CONFIG = {
     // staff, and 74 names are duplicated across it, so matching against everything
     // silently linked 14 people to a stale record instead of their current one.
     employeesViewId: process.env.AIRTABLE_EMPLOYEES_VIEW_ID || 'viws8tSbvXfujLnwG',
+    // Instructors (same HR base). If a punch's name isn't an Employee, it's
+    // matched here instead and linked in the punch's "Instructor" field.
+    instructorsTableId: process.env.AIRTABLE_INSTRUCTORS_TABLE_ID || 'tblGfu4QRovWm7oX0',
+    punchInstructorFieldId: 'fld8IZMWZMnp5zY6B',
     ratesTableId: process.env.AIRTABLE_RATES_TABLE_ID || 'tblufK9k5Tg5uCd74',
     studiosTableId: process.env.AIRTABLE_STUDIOS_TABLE_ID || 'tblAXy4xm0kJMkWeQ',
     payrollPeriodsTableId: process.env.AIRTABLE_PAYROLL_PERIODS_TABLE_ID || 'tbl9qw4kqw0BY0DyJ',
@@ -340,6 +344,23 @@ function shiftTypeNameFromShift(shift, included) {
   return included.get(`shift_types:${shiftTypeId}`)?.attributes?.name || '';
 }
 
+/** name (normalised) -> Instructor record id; Active wins over any other status. */
+async function loadInstructorMap() {
+  const records = await fetchAllRecords(CONFIG.airtable.instructorsTableId, ['Name', 'Status']);
+  const map = new Map();
+  const active = new Set();
+  for (const rec of records) {
+    const name = normalise(String(getField(rec, 'Name') || '').replace(/\s+/g, ' '));
+    if (!name) continue;
+    const isActive = getField(rec, 'Status') === 'Active';
+    if (!map.has(name) || (isActive && !active.has(name))) {
+      map.set(name, rec.id);
+      if (isActive) active.add(name);
+    }
+  }
+  return map;
+}
+
 function normalise(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -624,12 +645,27 @@ async function run() {
       if (name && !employeeMap.has(name)) employeeMap.set(name, rec.id);
     }
 
+    // Fallback for people who aren't Employees: match the Instructors table by
+    // name, preferring an Active instructor when a name appears more than once.
+    const instructorMap = await loadInstructorMap();
+
     let employeeNotFound = 0;
+    let instructorMatched = 0;
     const employeeUpdates = [];
     for (const punch of createdPunches) {
-      const employeeId = employeeMap.get(normalise(getField(punch, 'Employee Name')));
-      if (employeeId) employeeUpdates.push({ id: punch.id, fields: { Employee: [employeeId] } });
-      else employeeNotFound += 1;
+      const name = normalise(getField(punch, 'Employee Name'));
+      const employeeId = employeeMap.get(name);
+      if (employeeId) {
+        employeeUpdates.push({ id: punch.id, fields: { Employee: [employeeId] } });
+        continue;
+      }
+      const instructorId = instructorMap.get(name);
+      if (instructorId) {
+        instructorMatched += 1;
+        employeeUpdates.push({ id: punch.id, fields: { [CONFIG.airtable.punchInstructorFieldId]: [instructorId] } });
+      } else {
+        employeeNotFound += 1;
+      }
     }
     await patchPunchRecords(employeeUpdates);
 
@@ -692,6 +728,7 @@ async function run() {
       `# of Punches with no clock-out: ${openCount}`,
       `# of Differs from MTEK: ${differs.length}`,
       `# of No longer in MTEK: ${noLongerInMtek.length}`,
+      `# of Matched to an Instructor instead of an Employee: ${instructorMatched}`,
       `# of Employees not found: ${employeeNotFound}`,
       `# of Rates not found: ${rateNotFound}`,
       `Week total hours: ${totalHours.toFixed(2)}`,
@@ -718,7 +755,7 @@ async function run() {
       `HR Payroll Time Punches completed for ${CONFIG.recordId}. ${mtekPunches.length} punches in MTEK, ` +
         `${createdPunches.length} new, ${duplicatesSkipped} duplicates skipped, ${clockOutFills.length} clock-outs filled, ` +
         `${openCount} with no clock-out, ${differs.length} differ from MTEK, ${noLongerInMtek.length} no longer in MTEK, ` +
-        `${employeeNotFound} employees not found, ${rateNotFound} rates not found.`,
+        `${instructorMatched} matched to an instructor, ${employeeNotFound} employees not found, ${rateNotFound} rates not found.`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

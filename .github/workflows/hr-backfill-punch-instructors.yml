@@ -1,0 +1,39 @@
+name: HR Backfill punch instructors
+run-name: HR Backfill punch instructors
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: 'Only punches dated on/after this date (YYYY-MM-DD)'
+        required: true
+        default: '2026-09-01'
+        type: string
+      dry_run:
+        description: 'Report only, write nothing'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Link instructors on unmatched punches
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          FROM_DATE: ${{ inputs.from_date }}
+          # HR base (NOT HR - Instructors).
+          HR_BASE_ID: appiwfeujJzUZPPBx
+          HR_PUNCHES_TABLE_ID: tblVxt2W7NanQmJFR
+          AIRTABLE_INSTRUCTORS_TABLE_ID: tblGfu4QRovWm7oX0
+        run: node scripts/hr-backfill-punch-instructors.mjs

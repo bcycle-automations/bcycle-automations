@@ -13,6 +13,11 @@ on:
           - both
           - punches
           - classes
+      from_date:
+        description: 'Only touch records whose week ends on/after this date (YYYY-MM-DD)'
+        required: true
+        default: '2026-09-01'
+        type: string
       dry_run:
         description: 'Report only, write nothing'
         required: true
@@ -36,6 +41,7 @@ jobs:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
           TARGET: ${{ inputs.target }}
+          FROM_DATE: ${{ inputs.from_date }}
           # Punches: HR base. Classes: HR - Instructors base (EOM is a synced copy).
           HR_BASE_ID: appiwfeujJzUZPPBx
           HR_PUNCHES_TABLE_ID: tblVxt2W7NanQmJFR
