@@ -7,8 +7,8 @@
  * should be in that EOM and compares with what is actually linked:
  *
  *   - every time punch / class whose own date is in the EOM is linked to it
- *   - every record whose week (ending Saturday) finishes in the EOM is linked to
- *     it AND has "In EOM via week-end rule" ticked
+ *   - (time punches only) every punch whose week (ending Saturday) finishes in the
+ *     EOM is linked to it AND has "In EOM via week-end rule" ticked
  *   - nothing is linked to the EOM that doesn't belong (by date or by the rule)
  *   - the checkbox isn't ticked where the rule doesn't apply
  *   - the EOM's own live checks (date range, no employee, ...) are reported
@@ -87,7 +87,7 @@ async function verifyTarget(target, eom, notes) {
       if (linked) unfixable.push(`${record.id} (linked here but has no date)`);
       continue;
     }
-    const membership = eomMembership(day, months);
+    const membership = eomMembership(day, months, { weekEnd: target.weekEndRule });
     const shouldBeIn = membership.ids.includes(thisMonth.id);
     let broken = false;
     if (shouldBeIn) {

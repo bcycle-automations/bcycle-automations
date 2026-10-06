@@ -1,5 +1,6 @@
 /**
- * EOM week-end rule, shared by the payroll syncs, the backfill and the month-end
+ * EOM week-end rule (TIME PUNCHES ONLY — classes keep a single, date-based EOM),
+ * shared by the punch sync, the backfill and the month-end
  * verification so they can never disagree.
  *
  * A time punch / class always belongs to the EOM whose Start..End covers its own
@@ -31,14 +32,15 @@ export function addDays(date, days) {
  *   extra:     windows covering the week's Saturday that are not `own`
  *   ids:       own + extra (what the EOM link should hold)
  *   viaWeekEnd true when `extra` is not empty (what the checkbox should say)
- * `months` is [{ id, start, end }].
+ * `months` is [{ id, start, end }]. Pass { weekEnd: false } for records the
+ * week-end rule doesn't apply to (classes): they only ever get their own date's EOM.
  */
-export function eomMembership(date, months) {
+export function eomMembership(date, months, { weekEnd = true } = {}) {
   const day = String(date).slice(0, 10);
   const own = months.filter((m) => m.start <= day && day <= m.end);
   const saturday = weekEndSaturday(day);
   const ownIds = new Set(own.map((m) => m.id));
-  const extra = months.filter((m) => m.start <= saturday && saturday <= m.end && !ownIds.has(m.id));
+  const extra = weekEnd ? months.filter((m) => m.start <= saturday && saturday <= m.end && !ownIds.has(m.id)) : [];
   return {
     own,
     extra,

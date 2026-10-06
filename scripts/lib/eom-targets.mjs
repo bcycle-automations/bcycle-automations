@@ -1,5 +1,5 @@
 /**
- * The two places the EOM week-end rule applies, plus tiny Airtable helpers used
+ * The two places EOM links are kept (the week-end rule applies to punches only), plus tiny Airtable helpers used
  * by the backfill and the month-end verification.
  *
  *  punches: HR base, "Time Punches"        -> HR "EOM" (source table)
@@ -11,6 +11,7 @@
 export const TARGETS = {
   punches: {
     label: 'Time punches',
+    weekEndRule: true,
     baseId: process.env.HR_BASE_ID || 'appiwfeujJzUZPPBx',
     tableId: process.env.HR_PUNCHES_TABLE_ID || 'tblVxt2W7NanQmJFR',
     dateFieldId: 'fldwxo5JqKNOf4KvY',
@@ -23,6 +24,8 @@ export const TARGETS = {
   },
   classes: {
     label: 'Classes',
+    // The week-end rule does NOT apply to classes: one EOM, by the class's own date.
+    weekEndRule: false,
     baseId: process.env.INSTRUCTORS_BASE_ID || 'appBC0Ja4B5LKbZLW',
     tableId: process.env.INSTRUCTORS_CLASSES_TABLE_ID || 'tbl8RbWysEFdNuz37',
     dateFieldId: 'fldBkXtX4DU9n5scl',
