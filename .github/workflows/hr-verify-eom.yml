@@ -43,8 +43,10 @@ jobs:
           HR_BASE_ID: appiwfeujJzUZPPBx
           HR_PUNCHES_TABLE_ID: tblVxt2W7NanQmJFR
           HR_EOM_TABLE_ID: tbl3UMRShm59z41JL
+          HR_PAYROLL_PERIODS_TABLE_ID: tbl9qw4kqw0BY0DyJ
           INSTRUCTORS_BASE_ID: appBC0Ja4B5LKbZLW
           INSTRUCTORS_CLASSES_TABLE_ID: tbl8RbWysEFdNuz37
           INSTRUCTORS_EOM_TABLE_ID: tbliX73kdfgme7r3R
+          INSTRUCTORS_PAYROLL_PERIODS_TABLE_ID: tblGYpEKsV63NzRCT
           PAYROLL_TIME_ZONE: America/Toronto
         run: node scripts/hr-verify-eom.mjs

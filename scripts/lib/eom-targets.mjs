@@ -21,6 +21,12 @@ export const TARGETS = {
     eomTableId: process.env.HR_EOM_TABLE_ID || 'tbl3UMRShm59z41JL',
     eomStartFieldId: 'fldduMMEtqShh6CPB',
     eomEndFieldId: 'fld8fIYiRFAdcwN1l',
+    period: {
+      tableId: process.env.HR_PAYROLL_PERIODS_TABLE_ID || 'tbl9qw4kqw0BY0DyJ',
+      startFieldId: 'fldMjpx7WN4tgNrNs',
+      endFieldId: 'fldCy4qUWOWq6SZdk',
+      linkFieldId: 'fld4XJAYoen5lCaaM',
+    },
   },
   classes: {
     label: 'Classes',
@@ -35,6 +41,12 @@ export const TARGETS = {
     eomTableId: process.env.INSTRUCTORS_EOM_TABLE_ID || 'tbliX73kdfgme7r3R',
     eomStartFieldId: 'fldwo53Yx2PI2VVVJ',
     eomEndFieldId: 'fldt7m3KygcrA7GZf',
+    period: {
+      tableId: process.env.INSTRUCTORS_PAYROLL_PERIODS_TABLE_ID || 'tblGYpEKsV63NzRCT',
+      startFieldId: 'fldic4m4P8BVIieVv',
+      endFieldId: 'fld4Hg7iYvAgHTHeu',
+      linkFieldId: 'fldR0cD3vR4RE4pKY',
+    },
   },
 };
 
@@ -91,5 +103,15 @@ export async function loadMonths(token, target) {
   return records
     .map((r) => ({ id: r.id, start: r.fields?.[target.eomStartFieldId], end: r.fields?.[target.eomEndFieldId] }))
     .filter((m) => m.start && m.end)
+    .sort((a, b) => a.start.localeCompare(b.start));
+}
+
+/** Payroll periods as [{ id, start, end }] for a target's base. */
+export async function loadPeriods(token, target) {
+  const { tableId, startFieldId, endFieldId } = target.period;
+  const records = await fetchAll({ token, baseId: target.baseId, tableId, fieldIds: [startFieldId, endFieldId] });
+  return records
+    .map((r) => ({ id: r.id, start: r.fields?.[startFieldId], end: r.fields?.[endFieldId] }))
+    .filter((p) => p.start && p.end)
     .sort((a, b) => a.start.localeCompare(b.start));
 }
