@@ -150,6 +150,7 @@ export async function runChanges(ctx) {
   const usedRecs = new Set();
   const changes = [];
   let good = 0;
+  const mtekAhead = [];
   let newClasses = 0;
   let noMtekInstructor = 0;
   const newClassLabels = [];
@@ -202,6 +203,17 @@ export async function runChanges(ctx) {
       good++;
       continue;
     }
+
+    // Airtable has a sub (FINAL Sub) covering the regular instructor, and MTEK still shows the regular
+    // instructor: Airtable is ahead of MTEK. Nothing to change in Airtable - MTEK has to be updated.
+    const instrEmps = instrIds.map((id) => empById.get(id)).filter(Boolean);
+    const instrSet = new Set(instrEmps.flatMap((e) => [norm(e.mtek), norm(e.primary)]).filter(Boolean));
+    const mtekIsRegularInstructor = instrEmps.length > 0 && instrEmps.length === wanted.length && wanted.every((w) => instrSet.has(w));
+    if (finalIds.length > 0 && mtekIsRegularInstructor) {
+      const subLabel = finalIds.map((id) => empById.get(id)).filter(Boolean).map((e) => e.mtek || e.primary).join(", ");
+      mtekAhead.push({ rid: rec.id, t: label, c: "mtek", info: true, from: `Instructor ${instrEmps.map((e) => e.mtek || e.primary).join(", ")} · Sub ${subLabel}`, to: mtekName, emp: [], bad: "", cid: classId || "", sub: isSub });
+      continue;
+    }
     let cat = curIds.length === 0 ? "blank" : isSub ? "sub" : "instructor";
 
     // the employee(s) MTEK says teach it
@@ -213,7 +225,7 @@ export async function runChanges(ctx) {
       else if (m.length > 1) problem = `More than one employee has the MTEK Name "${w}"`;
       else empIds.push(m[0]);
     }
-    changes.push({ rid: rec.id, t: label, c: cat, from: curLabel, to: mtekName, emp: problem ? [] : empIds, bad: problem, cid: classId || "", sub: isSub });
+    changes.push({ rid: rec.id, t: label, c: cat, from: finalIds.length ? `Sub ${curLabel}` : curLabel, to: mtekName, emp: problem ? [] : empIds, bad: problem, cid: classId || "", sub: isSub });
   }
 
   const applicable = changes.filter((c) => !c.bad);
@@ -231,6 +243,9 @@ export async function runChanges(ctx) {
   } else {
     await note("✅", "No changes needed.");
   }
+  if (mtekAhead.length) {
+    await note("ℹ️", `${plural(mtekAhead.length, "class has", "classes have")} a substitute assigned in Airtable that MTEK does not show yet. Nothing to change in Airtable — update MTEK if needed.`);
+  }
   if (blocked.length) {
     await note("❌", `${plural(blocked.length, "change cannot", "changes cannot")} be applied because the MTEK name does not match an employee. Fix the MTEK Name in Active Employees, then check again:`);
     for (const b of blocked.slice(0, 8)) await note("   ", `- ${b.t}: ${b.bad}`);
@@ -241,7 +256,7 @@ export async function runChanges(ctx) {
   if (noMtekInstructor) await note("•", `${plural(noMtekInstructor, "class has", "classes have")} no instructor in MTEK yet, so nothing to compare.`);
   if (roomBooked) await note("•", `${plural(roomBooked, "room booking (ROOM BOOKED) was", "room bookings (ROOM BOOKED) were")} skipped.`);
 
-  const preview = changes.map((c) => ({ ...c })).slice(0, 700);
+  const preview = [...changes, ...mtekAhead].map((c) => ({ ...c })).slice(0, 700);
   const common = {
     "Classes found": rows.length,
     "Already in Airtable": good,
