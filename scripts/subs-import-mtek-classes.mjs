@@ -15,9 +15,9 @@
  *   - Existing classes are never updated. A class that already exists (same MTEK Class ID,
  *     or - when the existing row has no Class ID yet - same room + date + time + class) is
  *     skipped and counted as "already in Airtable".
- *   - Records are created with typecast=false so a select value that is not an existing option
- *     is rejected instead of silently creating a new option. Rows with such values are
- *     reported under "Needs fixing" and are NOT imported.
+ *   - Records are created with typecast=true: a select value that is not an existing option
+ *     (new studio / class type / ...) is created by Airtable so the class is not blocked.
+ *     Every new option is listed in the run notes (dry run and import).
  *   - Instructors are linked by the existing Airtable automations (Update Instructor /
  *     Assign Duo Instructors) from "Zingfit Official Name" - we only report the unmatched ones.
  *
@@ -350,6 +350,7 @@ async function main() {
 
   // 6. Validate each row --------------------------------------------------------
   await step("Checking every class…");
+  const newOptions = new Map(); // field label -> Map(value -> number of new classes using it)
   const problems = new Map(); // reason -> [examples]
   const addProblem = (reason, example) => {
     if (!problems.has(reason)) problems.set(reason, []);
@@ -388,15 +389,21 @@ async function main() {
     const sessionKey = keyOf(location, ymd, time, type);
     const dupKey = sessionKey;
 
-    // Select values must already exist in Airtable (typecast is OFF, so nothing is invented).
-    if (!roomChoices.has(location)) { fail(`The studio "${location}" is not set up in Airtable yet (add it as an option of the "room" field)`); continue; }
-    if (!classChoices.has(type)) { fail(`The class type "${type}" is not set up in Airtable yet (add it as an option of the "class" field)`); continue; }
+    // Select values: an option that does not exist yet is created by Airtable (typecast on).
+    // We list every new option in the notes so nothing is created silently.
+    const rowNew = []; // only counted if this class is actually going to be created
+    const newOption = (field, value) => rowNew.push([field, value]);
+    if (!roomChoices.has(location)) newOption("studio (room)", location);
+    if (!classChoices.has(type)) newOption("class type (class)", type);
     const subValue = String(col(row, "Has Substitute?") ?? "false").toLowerCase();
-    if (!subChoices.has(subValue)) { fail(`The substitute value "${subValue}" is not an option in Airtable`); continue; }
+    if (!subChoices.has(subValue)) newOption("substitute (Is Substitute?)", subValue);
     const rawDay = String(col(row, "Class Day of Week") ?? "");
     const dayCandidates = [rawDay, rawDay.trim(), rawDay.trim().padEnd(9, " "), rawDay.trim().padEnd(8, " ")];
-    const dayValue = dayCandidates.find((c) => c && dayChoices.has(c));
-    if (rawDay.trim() && !dayValue) { fail(`The day "${rawDay.trim()}" is not an option in Airtable`); continue; }
+    let dayValue = dayCandidates.find((c) => c && dayChoices.has(c));
+    if (!dayValue && rawDay.trim()) {
+      dayValue = rawDay;
+      newOption("day of week", rawDay.trim());
+    }
 
     // Class ID from MTEK
     const candidates = sessionByKey.get(sessionKey) || [];
@@ -451,6 +458,11 @@ async function main() {
     // Airtable rejects "" for some types; drop empty strings to leave the cell blank.
     for (const k of Object.keys(fields)) if (fields[k] === "") delete fields[k];
 
+    for (const [field, value] of rowNew) {
+      if (!newOptions.has(field)) newOptions.set(field, new Map());
+      const m = newOptions.get(field);
+      m.set(value, (m.get(value) || 0) + 1);
+    }
     toCreate.push({ fields, label });
     preview.push({ t: label, s: "new", i: instr, id: classId || "" });
     perStudio.set(location, (perStudio.get(location) || 0) + 1);
@@ -479,6 +491,10 @@ async function main() {
     }
   } else {
     await note("✅", "Nothing needs fixing.");
+  }
+  for (const [field, values] of newOptions) {
+    const list = [...values].map(([v, n]) => `"${v}" (${plural(n, "class", "classes")})`).join(", ");
+    await note("🆕", `New ${field} option${values.size === 1 ? "" : "s"} will be created in Airtable: ${list}.`);
   }
   if (noInstructorCount) {
     await note("⚠️", `${plural(noInstructorCount, "new class has", "new classes have")} no instructor in MTEK yet. ${noInstructorCount === 1 ? "It" : "They"} will show up on the Check Instructors page.`);
@@ -519,13 +535,13 @@ async function main() {
   for (let i = 0; i < toCreate.length; i += 10) {
     const chunk = toCreate.slice(i, i + 10);
     try {
-      const res = await at("POST", `${BASE_ID}/${CLASSES_TABLE}`, { typecast: false, records: chunk.map((c) => ({ fields: c.fields })) });
+      const res = await at("POST", `${BASE_ID}/${CLASSES_TABLE}`, { typecast: true, records: chunk.map((c) => ({ fields: c.fields })) });
       createdIds.push(...(res.records || []).map((r) => r.id));
     } catch (batchErr) {
       // isolate the bad record(s)
       for (const c of chunk) {
         try {
-          const res = await at("POST", `${BASE_ID}/${CLASSES_TABLE}`, { typecast: false, records: [{ fields: c.fields }] });
+          const res = await at("POST", `${BASE_ID}/${CLASSES_TABLE}`, { typecast: true, records: [{ fields: c.fields }] });
           createdIds.push(...(res.records || []).map((r) => r.id));
         } catch (e) {
           failed++;
