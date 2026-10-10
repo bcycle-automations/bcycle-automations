@@ -12,8 +12,9 @@
  *   - MTEK instructor = Airtable instructor-or-sub ... "good"        -> nothing
  *   - different and MTEK says it is a substitute ..... "sub"         -> set FINAL Sub
  *   - different otherwise ............................ "instructor"  -> set Instructor (+ Run Points)
- * Classes MTEK has that are not in Airtable are only counted ("new class"): they are added with the
- * "Import classes from MTEK" page. Nothing is ever deleted or cancelled here.
+ * - class is not in Airtable at all ............... "new"         -> create the class (same fields as the Import page,
+ *                                                                     Run Points on); the "Update Instructor" automation links the instructor
+ * Nothing is ever deleted or cancelled here.
  *
  * Differences from the old automation (safer): a change is NOT applied when no Active Employees
  * record has that MTEK Name (the old automation would have blanked the link), and nothing is
@@ -39,6 +40,16 @@ function prettyClass(ymd, time, room, cls) {
   return `${MONTHS[Number(m[1]) - 1]} ${Number(m[2])}, ${h}:${t[2]}${ap} · ${room} · ${cls}`;
 }
 const keyOf = (room, ymd, time, cls) => `${norm(room)}|${ymd}|${time}|${norm(cls)}`;
+
+// UTC ISO of local midnight in Toronto (how existing "date 2" values are stored)
+function torontoMidnightIso(ymd) {
+  const probe = new Date(`${ymd}T05:00:00Z`);
+  const part = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", timeZoneName: "shortOffset" })
+    .formatToParts(probe)
+    .find((p) => p.type === "timeZoneName").value;
+  const hrs = Number(part.replace("GMT", "") || 0);
+  return new Date(new Date(`${ymd}T00:00:00Z`).getTime() - hrs * 3600000).toISOString();
+}
 
 export async function runChanges(ctx) {
   const { at, atListAll, patchRun, note, step, notes, run, BASE_ID, CLASSES_TABLE, EMPLOYEES_TABLE, RUN_ID,
@@ -80,6 +91,10 @@ export async function runChanges(ctx) {
   const meta = await at("GET", `meta/bases/${BASE_ID}/tables`);
   const empTable = (meta.tables || []).find((t) => t.id === EMPLOYEES_TABLE);
   const primaryName = empTable?.fields?.find((f) => f.id === empTable.primaryFieldId)?.name;
+  const classesMeta = (meta.tables || []).find((t) => t.id === CLASSES_TABLE);
+  const choicesOf = (name) => new Set(((classesMeta?.fields || []).find((f) => f.name === name)?.options?.choices || []).map((c) => c.name));
+  const subChoices = choicesOf("Is Substitute?");
+  const dayChoices = choicesOf("Class Day Of Week");
   const empFields = ["MTEK Name", ...(primaryName && primaryName !== "MTEK Name" ? [primaryName] : [])];
   const employees = await atListAll(EMPLOYEES_TABLE, { "fields[]": empFields });
   const empById = new Map();
@@ -151,9 +166,9 @@ export async function runChanges(ctx) {
   const changes = [];
   let good = 0;
   const mtekAhead = [];
-  let newClasses = 0;
+  const newRows = new Map();
+  const newSeq = new Map();
   let noMtekInstructor = 0;
-  const newClassLabels = [];
 
   for (const row of rows) {
     const location = String(col(row, "Location") ?? "").trim();
@@ -182,8 +197,15 @@ export async function runChanges(ctx) {
     if (rec && usedRecs.has(rec.id)) rec = null;
     if (!rec) rec = (byKey.get(sessionKey) || []).find((r) => !usedRecs.has(r.id)) || null;
     if (!rec) {
-      newClasses++;
-      if (newClassLabels.length < 8) newClassLabels.push(label);
+      const seq = (newSeq.get(sessionKey) || 0) + 1;
+      newSeq.set(sessionKey, seq);
+      const rid = `new:${sessionKey}:${seq}`;
+      const missingNames = mtekName.split(",").map((x) => x.trim()).filter((w) => w && !(empByMtek.get(norm(w)) || []).length);
+      newRows.set(rid, { row, location, ymd, time, type, mtekName, isSub, classId });
+      changes.push({
+        rid, t: label, c: "new", from: "", to: mtekName, emp: [], bad: "", cid: classId || "", sub: isSub,
+        warn: missingNames.length ? `No employee has the MTEK Name "${missingNames.join('", "')}" yet, so the class will be added without an instructor` : "",
+      });
       continue;
     }
     usedRecs.add(rec.id);
@@ -240,6 +262,7 @@ export async function runChanges(ctx) {
     if (byCat("instructor")) await note("   ", `- ${plural(byCat("instructor"), "class has", "classes have")} a new instructor in MTEK.`);
     if (byCat("sub")) await note("   ", `- ${plural(byCat("sub"), "class has", "classes have")} a substitute in MTEK that is not assigned in Airtable.`);
     if (byCat("blank")) await note("   ", `- ${plural(byCat("blank"), "class has", "classes have")} no instructor in Airtable yet but MTEK has one.`);
+    if (byCat("new")) await note("   ", `- ${plural(byCat("new"), "class is", "classes are")} in MTEK but not in Airtable yet (new time slots). ${byCat("new") === 1 ? "It" : "They"} will be added.`);
   } else {
     await note("✅", "No changes needed.");
   }
@@ -250,8 +273,9 @@ export async function runChanges(ctx) {
     await note("❌", `${plural(blocked.length, "change cannot", "changes cannot")} be applied because the MTEK name does not match an employee. Fix the MTEK Name in Active Employees, then check again:`);
     for (const b of blocked.slice(0, 8)) await note("   ", `- ${b.t}: ${b.bad}`);
   }
-  if (newClasses) {
-    await note("➕", `${plural(newClasses, "class is", "classes are")} in MTEK but not in Airtable yet. Add ${newClasses === 1 ? "it" : "them"} with the "Import classes from MTEK" page. They are not handled here.`);
+  const warnNew = changes.filter((c) => c.c === "new" && c.warn);
+  if (warnNew.length) {
+    await note("⚠️", `${plural(warnNew.length, "new class has", "new classes have")} an instructor name that does not match an employee yet. ${warnNew.length === 1 ? "It" : "They"} will be added without an instructor and show on Check Instructors.`);
   }
   if (noMtekInstructor) await note("•", `${plural(noMtekInstructor, "class has", "classes have")} no instructor in MTEK yet, so nothing to compare.`);
   if (roomBooked) await note("•", `${plural(roomBooked, "room booking (ROOM BOOKED) was", "room bookings (ROOM BOOKED) were")} skipped.`);
@@ -262,7 +286,7 @@ export async function runChanges(ctx) {
     "Already in Airtable": good,
     "To create": applicable.length,
     "Needs fixing": blocked.length,
-    "No instructor match": newClasses,
+    "No instructor match": warnNew.length,
   };
 
   if (!apply) {
@@ -286,7 +310,7 @@ export async function runChanges(ctx) {
     await note("⚠️", `${plural(skippedStale.length, "selected change is", "selected changes are")} no longer needed or can no longer be applied (the data changed since the check) and ${skippedStale.length === 1 ? "was" : "were"} skipped.`);
   }
 
-  const patches = todo.map((c) => {
+  const patches = todo.filter((c) => c.c !== "new").map((c) => {
     const fields = {};
     if (c.c === "sub") {
       fields["FINAL Sub"] = c.emp.slice(0, 1);
@@ -317,8 +341,73 @@ export async function runChanges(ctx) {
     }
     await patchRun({ "Current step": `Applying changes… ${doneIds.length + failed.length} of ${patches.length}`, Created: doneIds.length, Failed: failed.length });
   }
-  await note(failed.length ? "⚠️" : "✅", `Applied ${doneIds.length} of ${plural(patches.length, "selected change", "selected changes")}.`);
+  if (patches.length) {
+    await note(failed.length ? "⚠️" : "✅", `Applied ${doneIds.length} of ${plural(patches.length, "instructor/sub change", "instructor/sub changes")}.`);
+  }
   for (const f of failed.slice(0, 10)) await note("❌", `Could not apply: ${f}`);
+
+  // New classes (same fields as the Import page)
+  const toAdd = todo.filter((c) => c.c === "new");
+  const createdIds = [];
+  const createFailed = [];
+  if (toAdd.length) {
+    await patchRun({ "Current step": `Adding ${plural(toAdd.length, "new class", "new classes")}…` });
+    const num = (v) => (v == null || v === "" ? "" : String(v));
+    const built = toAdd.map((c) => {
+      const n = newRows.get(c.rid);
+      const r = n.row;
+      const subValue = String(col(r, "Has Substitute?") ?? "false").toLowerCase();
+      const rawDay = String(col(r, "Class Day of Week") ?? "");
+      const dayValue = [rawDay, rawDay.trim(), rawDay.trim().padEnd(9, " "), rawDay.trim().padEnd(8, " ")].find((x) => x && dayChoices.has(x)) || rawDay;
+      const fields = {
+        room: n.location,
+        "date 2": torontoMidnightIso(n.ymd),
+        "time 2": n.time,
+        "Zingfit Official Name": n.mtekName,
+        "Is Substitute?": subChoices.has(subValue) || subValue ? subValue : "",
+        Classroom: num(col(r, "Classroom")),
+        "Class Tags": num(col(r, "Class Tags")),
+        "Class if Free": num(col(r, "Class Is Free?")),
+        class: n.type,
+        "Class Category": num(col(r, "Class Category")),
+        "Pending Standard Reservations": num(col(r, "Pending Standard Reservations")),
+        "Pending Standby Reservations": num(col(r, "Pending Standby Reservations")),
+        "Pending Waitlist Reservations": num(col(r, "Pending Waitlist Reservations")),
+        "Checked In Reservations": num(col(r, "Checked In Reservations")),
+        "Late Cancelled Reservations": num(col(r, "Late Cancelled Reservations")),
+        "No Showed Reservations": num(col(r, "No Showed Reservations")),
+        "Admin Holds": num(col(r, "Admin Holds")),
+        "Unavailable Holds": num(col(r, "Unavailable Holds")),
+        "Layout Capacity": num(col(r, "Layout Capacity")),
+        "Actual Capacity": num(col(r, "Actual Capacity")),
+        "% Utilization": num(col(r, "% Utilization")),
+        "Run Points": true,
+      };
+      if (dayValue.trim()) fields["Class Day Of Week"] = dayValue;
+      if (n.classId) fields["Class ID"] = Number(n.classId);
+      for (const k of Object.keys(fields)) if (fields[k] === "") delete fields[k];
+      return { c, fields };
+    });
+    for (let i = 0; i < built.length; i += 10) {
+      const chunk = built.slice(i, i + 10);
+      try {
+        const res = await at("POST", `${BASE_ID}/${CLASSES_TABLE}`, { typecast: true, records: chunk.map((b) => ({ fields: b.fields })) });
+        createdIds.push(...(res.records || []).map((r) => r.id));
+      } catch {
+        for (const b of chunk) {
+          try {
+            const res = await at("POST", `${BASE_ID}/${CLASSES_TABLE}`, { typecast: true, records: [{ fields: b.fields }] });
+            createdIds.push(...(res.records || []).map((r) => r.id));
+          } catch (e) {
+            createFailed.push(`${b.c.t} (${e.message.replace(/^Airtable POST [^:]+: /, "").slice(0, 120)})`);
+          }
+        }
+      }
+      await patchRun({ "Current step": `Adding new classes… ${createdIds.length + createFailed.length} of ${toAdd.length}`, Created: doneIds.length + createdIds.length, Failed: failed.length + createFailed.length });
+    }
+    await note(createFailed.length ? "⚠️" : "✅", `Added ${createdIds.length} of ${plural(toAdd.length, "new class", "new classes")} to Airtable.`);
+    for (const f of createFailed.slice(0, 10)) await note("❌", `Could not add: ${f}`);
+  }
 
   // Verify
   await patchRun({ "Current step": "Double-checking in Airtable…" });
@@ -338,18 +427,39 @@ export async function runChanges(ctx) {
       if (got === want) verified++;
     }
   }
+  let createdVerified = 0;
+  let createdNoInstructor = 0;
+  if (createdIds.length) {
+    await patchRun({ "Current step": "Double-checking the new classes (waiting for instructors to link)…" });
+    await new Promise((r) => setTimeout(r, 20000));
+    for (let i = 0; i < createdIds.length; i += 40) {
+      const ids = createdIds.slice(i, i + 40);
+      const recs = await atListAll(CLASSES_TABLE, {
+        filterByFormula: `OR(${ids.map((id) => `RECORD_ID()='${id}'`).join(",")})`,
+        "fields[]": ["Instructor"],
+      });
+      createdVerified += recs.length;
+      createdNoInstructor += recs.filter((r) => !r.fields["Instructor"] || r.fields["Instructor"].length === 0).length;
+    }
+    await note(createdVerified === createdIds.length ? "✅" : "❌", createdVerified === createdIds.length
+      ? `Double-checked: all ${createdIds.length} new classes are in Airtable.`
+      : `Only ${createdVerified} of ${createdIds.length} new classes could be found in Airtable. Please check the All Classes table.`);
+    if (createdNoInstructor) await note("⚠️", `${plural(createdNoInstructor, "new class has", "new classes have")} no instructor yet. Pick it on the Check Instructors page.`);
+    else await note("✅", "Every new class has an instructor.");
+  }
   if (doneIds.length) {
     await note(verified === doneIds.length ? "✅" : "❌", verified === doneIds.length
       ? `Double-checked: all ${doneIds.length} changes are in Airtable.`
       : `Only ${verified} of ${doneIds.length} changes could be confirmed in Airtable. Please check the All Classes table.`);
   }
-  const notApplied = applicable.length - doneIds.length;
-  const allGood = failed.length === 0 && verified === doneIds.length;
+  const totalDone = doneIds.length + createdIds.length;
+  const notApplied = applicable.length - totalDone;
+  const allGood = failed.length === 0 && createFailed.length === 0 && verified === doneIds.length && createdVerified === createdIds.length && createdNoInstructor === 0;
   await note(allGood ? "🎉" : "⚠️", allGood
-    ? `All done: ${plural(doneIds.length, "change", "changes")} applied.${notApplied > 0 ? ` ${notApplied} other change${notApplied === 1 ? " was" : "s were"} left for later.` : ""}`
-    : `Finished with things to look at: ${doneIds.length} applied, ${failed.length} failed.`);
+    ? `All done: ${plural(totalDone, "change", "changes")} applied.${notApplied > 0 ? ` ${notApplied} other change${notApplied === 1 ? " was" : "s were"} left for later.` : ""}`
+    : `Finished with things to look at: ${totalDone} applied, ${failed.length + createFailed.length} failed, ${createdNoInstructor} new classes without an instructor.`);
   await patchRun({
-    ...common, Created: doneIds.length, Failed: failed.length,
+    ...common, Created: totalDone, Failed: failed.length + createFailed.length,
     Status: allGood ? "Completed" : "Completed with warnings",
     "Current step": allGood ? "Done" : "Done - see the notes below",
     "Finished at": new Date().toISOString(), Notes: notes.join("\n"),
