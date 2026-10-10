@@ -359,6 +359,7 @@ async function main() {
   const toCreate = []; // { fields, label }
   const preview = [];
   let alreadyCount = 0;
+  let roomBookedCount = 0;
   let fixCount = 0;
   let noInstructorCount = 0;
   const seenKeys = new Map();
@@ -380,6 +381,12 @@ async function main() {
 
     if (!location || !/^\d{4}-\d{2}-\d{2}$/.test(ymd) || !time || !type) {
       fail("MTEK is missing the studio, date, time or class type for this class");
+      continue;
+    }
+    // "ROOM BOOKED" entries are room reservations, not classes: never imported.
+    if (norm(type) === "room booked") {
+      roomBookedCount++;
+      preview.push({ t: label, s: "skip", i: instr, n: "Room booking, not a class" });
       continue;
     }
     if (ymd < minYmd || ymd > maxYmd) {
@@ -478,6 +485,7 @@ async function main() {
   // Plain-language summary (what a studio manager needs to know)
   await note("📅", `MTEK has ${plural(rows.length, "class", "classes")} for ${studiosLabel}, ${rangeLabel}.`);
   if (alreadyCount) await note("•", `${alreadyCount} ${alreadyCount === 1 ? "is" : "are"} already in Airtable, so ${alreadyCount === 1 ? "it" : "they"} will be left alone.`);
+  if (roomBookedCount) await note("•", `${plural(roomBookedCount, "room booking (ROOM BOOKED) was", "room bookings (ROOM BOOKED) were")} skipped. ${roomBookedCount === 1 ? "It is" : "They are"} not a class.`);
   if (toCreate.length) {
     const studiosText = [...perStudio].map(([k, v]) => `${k} ${v}`).join(", ");
     await note("➕", `${plural(toCreate.length, "new class", "new classes")} to add (${first} to ${last}): ${studiosText}.`);
