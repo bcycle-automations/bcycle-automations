@@ -412,7 +412,7 @@ async function applyChanges(ctx) {
   const deadline = Date.now() + 4 * 60000;
   const q = (s) => String(s).replace(/'/g, "");
   const classOf = async (e) => {
-    const fields = ["Instructor", "FINAL Sub", "Zingfit Official Name"];
+    const fields = ["Instructor", "FINAL Sub", "Zingfit Official Name", "Class ID"];
     if (e.cls) return (await atListAll(CLASSES_TABLE, { filterByFormula: `RECORD_ID()='${e.cls}'`, "fields[]": fields }))[0] || null;
     if (e.cid) {
       const r = (await atListAll(CLASSES_TABLE, { filterByFormula: `{Class ID}=${Number(e.cid)}`, "fields[]": fields }))[0];
@@ -448,14 +448,27 @@ async function applyChanges(ctx) {
     await patchRun({ "Current step": `Double-checking All Classes… ${done.length} of ${want.length} confirmed`, Created: done.length });
   }
 
-  // new classes: the instructor is linked by the "Update Instructor" automation a moment after creation
+  // new classes: fill the MTEK Class ID (the automation does not always carry it over)
   const newDone = done.filter((d) => d.e.c === "new");
+  let idFilled = 0;
+  for (const d of newDone) {
+    if (d.e.cid && d.rec.fields["Class ID"] == null) {
+      try {
+        await at("PATCH", `${BASE_ID}/${CLASSES_TABLE}/${d.rec.id}`, { typecast: false, fields: { "Class ID": Number(d.e.cid) } });
+        idFilled++;
+      } catch {
+        /* the nightly Resolve Class ID job will fill it */
+      }
+    }
+  }
+  // the instructor is linked by the "Update Instructor" automation a moment after creation
   const noInstr = newDone.filter((d) => !(d.rec.fields["Instructor"] || []).length);
   await note(pending.length ? "⚠️" : "✅", pending.length
     ? `${done.length} of ${want.length} changes are confirmed in All Classes. ${pending.length} not confirmed yet:`
     : `Double-checked: all ${done.length} changes are in All Classes.`);
   for (const e of pending.slice(0, 10)) await note("   ", `- ${e.t} — open the run history of "Fix schedule (NEW)" in Airtable to see why.`);
   if (unknown) await note("•", `${plural(unknown, "row was", "rows were")} ticked but could not be double-checked automatically.`);
+  if (idFilled) await note("✅", `Filled the MTEK Class ID on ${plural(idFilled, "new class", "new classes")}.`);
   if (noInstr.length) await note("⚠️", `${plural(noInstr.length, "added class has", "added classes have")} no instructor yet. Pick it on the Check Instructors page.`);
 
   const allGood = pending.length === 0 && noInstr.length === 0;
