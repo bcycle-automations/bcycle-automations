@@ -242,6 +242,16 @@ function choiceSet(table, fieldName) {
 async function main() {
   requireEnv();
   const run = (await at("GET", `${BASE_ID}/${RUNS_TABLE}/${RUN_ID}`)).fields;
+
+  // "Check changes" / "Apply changes" runs (Subs - Schedule changes page) use the same Import Runs table.
+  if (/changes/i.test(String(run["Mode"] || ""))) {
+    const { runChanges } = await import("./subs-schedule-changes.mjs");
+    await runChanges({
+      at, atListAll, patchRun, note, step, notes, run, BASE_ID, CLASSES_TABLE, EMPLOYEES_TABLE, RUN_ID,
+      MTEK_BASE_URL, MTEK_TOKEN, fetchClassSessions, parseTitle, hhmm, ymdFromDate, addDays,
+    });
+    return;
+  }
   const mode = run["Mode"] === "Import" ? "Import" : "Dry run";
   const minYmd = run["Min date"];
   const maxYmd = run["Max date"];
