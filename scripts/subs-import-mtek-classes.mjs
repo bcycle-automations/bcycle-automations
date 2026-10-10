@@ -112,12 +112,16 @@ async function patchRun(fields) {
 }
 
 async function note(icon, text, extra = {}) {
-  const line = `${stamp()} ${icon} ${text}`;
+  const line = `${icon} ${text}`;
   notes.push(line);
-  console.log(line);
+  console.log(`${stamp()} ${line}`);
   await patchRun({ Notes: notes.join("\n"), ...extra });
 }
-const step = (text, extra) => note("▶", text, { "Current step": text, ...extra });
+// Steps only change the "Current step" line shown on the page (no tech log in the notes).
+async function step(text, extra = {}) {
+  console.log(`${stamp()} ▶ ${text}`);
+  await patchRun({ "Current step": text, ...extra });
+}
 
 /* ------------------------------------------------------------------ */
 /* Date helpers (America/Toronto)                                      */
@@ -160,9 +164,23 @@ function parseTitle(title) {
 const norm = (s) => String(s ?? "").trim().toLowerCase();
 const keyOf = (room, ymd, time, cls) => `${norm(room)}|${ymd}|${time}|${norm(cls)}`;
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function prettyDate(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return `${MONTHS[m - 1]} ${d}, ${y}`;
+}
+function prettyDateTime(s) {
+  const [ymd, t] = s.split(" ");
+  const [, m, d] = ymd.split("-").map(Number);
+  let [h, mi] = t.split(":").map(Number);
+  const ap = h >= 12 ? "pm" : "am";
+  h = h % 12 || 12;
+  return `${MONTHS[m - 1]} ${d}, ${h}:${String(mi).padStart(2, "0")}${ap}`;
+}
+
 function prettyClass(ymd, time, room, cls) {
-  const [y, m, d] = ymd.split("-");
-  return `${y.slice(2)}-${m}-${d} ${time} ${room} ${cls}`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd || "") || !/^\d{2}:\d{2}$/.test(time || "")) return [ymd, time, room, cls].filter(Boolean).join(" ");
+  return `${prettyDateTime(`${ymd} ${time}`)} · ${room} · ${cls}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -242,20 +260,18 @@ async function main() {
     "Classes found": null, "Already in Airtable": null, "To create": null, Created: null, Failed: null,
     "Needs fixing": null, "No instructor match": null, "First class": null, "Last class": null,
   });
-  await note("ℹ️", `${mode} for ${studiosLabel}, ${minYmd} to ${maxYmd}`);
-
+  
   // 1. Inputs -------------------------------------------------------------
-  await step("1/7 Checking your inputs");
+  await step("Step 1 of 5: Checking your dates and studios…");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(minYmd || "") || !/^\d{4}-\d{2}-\d{2}$/.test(maxYmd || "")) {
     throw new Error("Min date and Max date are required.");
   }
   if (minYmd > maxYmd) throw new Error("Min date is after Max date.");
   const rangeDays = Math.round((new Date(maxYmd) - new Date(minYmd)) / 86400000) + 1;
   if (rangeDays > MAX_RANGE_DAYS) throw new Error(`Date range is ${rangeDays} days; the maximum is ${MAX_RANGE_DAYS}. Split it into smaller imports.`);
-  await note("✅", `Inputs OK (${rangeDays} day${rangeDays === 1 ? "" : "s"})`);
-
+  
   // 2. Airtable schema (select options) -----------------------------------
-  await step("2/7 Reading All Classes field options");
+  await step("Step 2 of 5: Reading the Airtable settings…");
   const meta = await at("GET", `meta/bases/${BASE_ID}/tables`);
   const table = (meta.tables || []).find((t) => t.id === CLASSES_TABLE);
   if (!table) throw new Error("All Classes table not found in schema");
@@ -267,7 +283,7 @@ async function main() {
   if (!classIdField) throw new Error('Field "Class ID" not found');
 
   // 3. MTEK report ----------------------------------------------------------
-  await step("3/7 Fetching the MTEK Class Session Utilization report");
+  await step("Step 3 of 5: Getting the classes from MTEK (this can take a minute)…");
   const report = await fetchMtekReport({
     baseUrl: MTEK_BASE_URL,
     token: MTEK_TOKEN,
@@ -284,15 +300,13 @@ async function main() {
   const col = (row, name) => (name in H ? row[H[name]] : undefined);
   const allRows = report.rows;
   const locations = [...new Set(allRows.map((r) => String(col(r, "Location") ?? "").trim()))].sort();
-  await note("✅", `MTEK returned ${allRows.length} classes in ${locations.length} location(s): ${locations.join(", ") || "none"}`);
 
   let rows = allRows;
   if (!allStudios) {
     const wanted = new Set(studios.map(norm));
     rows = allRows.filter((r) => wanted.has(norm(col(r, "Location"))));
     const unknown = studios.filter((s) => !locations.some((l) => norm(l) === norm(s)));
-    if (unknown.length) await note("⚠️", `No classes returned for: ${unknown.join(", ")} (check the studio name)`);
-    await note("✅", `${rows.length} of ${allRows.length} classes are in the selected studio(s)`);
+    if (unknown.length) await note("⚠️", `MTEK has no classes for: ${unknown.join(", ")}.`);
   }
   if (rows.length === 0) {
     await patchRun({
@@ -300,13 +314,13 @@ async function main() {
       "Already in Airtable": 0, "Needs fixing": 0, "Finished at": new Date().toISOString(),
       "Current step": "Nothing to import",
     });
-    await note("⚠️", "MTEK returned no classes for this selection, nothing to import.");
+    await note("⚠️", `MTEK has no classes for ${studiosLabel} between ${minYmd} and ${maxYmd}, so there is nothing to import.`);
     await patchRun({ Notes: notes.join("\n"), "Current step": "Nothing to import" });
     return;
   }
 
   // 4. MTEK class IDs ---------------------------------------------------------
-  await step("4/7 Looking up MTEK Class IDs");
+  await step("Step 4 of 5: Matching MTEK class numbers…");
   const sessions = await fetchClassSessions(minYmd, maxYmd);
   const sessionByKey = new Map();
   for (const s of sessions) {
@@ -315,10 +329,9 @@ async function main() {
     const k = keyOf(a.location_display, a.start_date, hhmm(a.start_time), a.class_type_display);
     (sessionByKey.get(k) || sessionByKey.set(k, []).get(k)).push({ id: String(s.id), classroom: a.classroom_display });
   }
-  await note("✅", `${sessions.length} MTEK class sessions loaded for Class IDs`);
-
+  
   // 5. What is already in Airtable -------------------------------------------
-  await step("5/7 Checking which classes already exist in Airtable");
+  await step("Step 5 of 5: Comparing with what is already in Airtable…");
   const existing = await atListAll(CLASSES_TABLE, {
     filterByFormula: `AND(IS_AFTER({date 2},'${addDays(minYmd, -2)}'),IS_BEFORE({date 2},'${addDays(maxYmd, 2)}'))`,
     "fields[]": ["Class ID", "Class!", "date 2", "time 2", "room", "class"],
@@ -334,25 +347,19 @@ async function main() {
     else if (f["date 2"] && f["room"] && f["class"]) k = keyOf(f["room"], ymdFromDate(new Date(f["date 2"])), hhmm(f["time 2"]), f["class"]);
     if (k) existingKeyCount.set(k, (existingKeyCount.get(k) || 0) + 1);
   }
-  await note("✅", `${existing.length} classes already in Airtable around these dates`);
-
-  // Active employees' MTEK names (for the instructor pre-check)
-  const employees = await atListAll(EMPLOYEES_TABLE, { "fields[]": ["MTEK Name"] });
-  const mtekNames = new Set(employees.map((e) => norm(e.fields["MTEK Name"])).filter(Boolean));
 
   // 6. Validate each row --------------------------------------------------------
-  await step("6/7 Validating every class");
+  await step("Checking every class…");
   const problems = new Map(); // reason -> [examples]
   const addProblem = (reason, example) => {
     if (!problems.has(reason)) problems.set(reason, []);
     problems.get(reason).push(example);
   };
-  const toCreate = []; // { fields, label, instructors, noMatch }
+  const toCreate = []; // { fields, label }
   const preview = [];
   let alreadyCount = 0;
   let fixCount = 0;
   let noInstructorCount = 0;
-  const unmatchedNames = new Map();
   const seenKeys = new Map();
   const perStudio = new Map();
   const times = [];
@@ -371,25 +378,25 @@ async function main() {
     };
 
     if (!location || !/^\d{4}-\d{2}-\d{2}$/.test(ymd) || !time || !type) {
-      fail("Row is missing a location, date, time or class type");
+      fail("MTEK is missing the studio, date, time or class type for this class");
       continue;
     }
     if (ymd < minYmd || ymd > maxYmd) {
-      fail(`Class date outside the requested range (${ymd})`);
+      fail(`The class date (${ymd}) is outside the dates you picked`);
       continue;
     }
     const sessionKey = keyOf(location, ymd, time, type);
     const dupKey = sessionKey;
 
-    // Select values must already exist (typecast is OFF).
-    if (!roomChoices.has(location)) { fail(`Location "${location}" is not an option of the "room" field`); continue; }
-    if (!classChoices.has(type)) { fail(`Class type "${type}" is not an option of the "class" field`); continue; }
+    // Select values must already exist in Airtable (typecast is OFF, so nothing is invented).
+    if (!roomChoices.has(location)) { fail(`The studio "${location}" is not set up in Airtable yet (add it as an option of the "room" field)`); continue; }
+    if (!classChoices.has(type)) { fail(`The class type "${type}" is not set up in Airtable yet (add it as an option of the "class" field)`); continue; }
     const subValue = String(col(row, "Has Substitute?") ?? "false").toLowerCase();
-    if (!subChoices.has(subValue)) { fail(`"Is Substitute?" value "${subValue}" is not an option`); continue; }
+    if (!subChoices.has(subValue)) { fail(`The substitute value "${subValue}" is not an option in Airtable`); continue; }
     const rawDay = String(col(row, "Class Day of Week") ?? "");
     const dayCandidates = [rawDay, rawDay.trim(), rawDay.trim().padEnd(9, " "), rawDay.trim().padEnd(8, " ")];
     const dayValue = dayCandidates.find((c) => c && dayChoices.has(c));
-    if (rawDay.trim() && !dayValue) { fail(`Day of week "${rawDay.trim()}" is not an option`); continue; }
+    if (rawDay.trim() && !dayValue) { fail(`The day "${rawDay.trim()}" is not an option in Airtable`); continue; }
 
     // Class ID from MTEK
     const candidates = sessionByKey.get(sessionKey) || [];
@@ -404,36 +411,16 @@ async function main() {
     const batchCount = (seenKeys.get(dupKey) || 0) + 1;
     seenKeys.set(dupKey, batchCount);
     let isDuplicate = false;
-    let dupReason = "";
-    if (classId && existingIds.has(classId)) {
-      isDuplicate = true;
-      dupReason = `Class ID ${classId} already in Airtable`;
-    } else if ((existingKeyCount.get(dupKey) || 0) >= batchCount) {
-      isDuplicate = true;
-      dupReason = "Same room/date/time/class already in Airtable";
-    }
+    if (classId && existingIds.has(classId)) isDuplicate = true;
+    else if ((existingKeyCount.get(dupKey) || 0) >= batchCount) isDuplicate = true;
     if (isDuplicate) {
       alreadyCount++;
-      preview.push({ t: label, s: "exists", i: instr, n: dupReason });
+      preview.push({ t: label, s: "exists", i: instr, n: "Already in Airtable" });
       continue;
     }
     if (classId) existingIds.add(classId); // never create the same Class ID twice in one run
 
-    // Instructor pre-check (the Airtable automations do the real linking on create)
-    let noMatch = false;
-    if (instr) {
-      const parts = instr.split(",").map((s) => s.trim()).filter(Boolean);
-      const missing = parts.filter((p) => !mtekNames.has(norm(p)));
-      if (missing.length) {
-        noMatch = true;
-        noInstructorCount++;
-        for (const m of missing) unmatchedNames.set(m, (unmatchedNames.get(m) || 0) + 1);
-      }
-    } else {
-      noMatch = true;
-      noInstructorCount++;
-      unmatchedNames.set("(no instructor in MTEK)", (unmatchedNames.get("(no instructor in MTEK)") || 0) + 1);
-    }
+    if (!instr) noInstructorCount++;
 
     const num = (v) => (v == null || v === "" ? "" : String(v));
     const fields = {
@@ -464,28 +451,37 @@ async function main() {
     // Airtable rejects "" for some types; drop empty strings to leave the cell blank.
     for (const k of Object.keys(fields)) if (fields[k] === "") delete fields[k];
 
-    toCreate.push({ fields, label, noMatch, instr });
-    preview.push({ t: label, s: "new", i: instr, m: noMatch ? 0 : 1, id: classId || "" });
+    toCreate.push({ fields, label });
+    preview.push({ t: label, s: "new", i: instr, id: classId || "" });
     perStudio.set(location, (perStudio.get(location) || 0) + 1);
     times.push(`${ymd} ${time}`);
   }
 
   times.sort();
-  const first = times[0] ? `${times[0]}` : "";
-  const last = times.length ? times[times.length - 1] : "";
-  const withoutId = toCreate.filter((c) => c.fields["Class ID"] == null).length;
+  const first = times.length ? prettyDateTime(times[0]) : "";
+  const last = times.length ? prettyDateTime(times[times.length - 1]) : "";
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const rangeLabel = minYmd === maxYmd ? prettyDate(minYmd) : `${prettyDate(minYmd)} to ${prettyDate(maxYmd)}`;
 
-  await note("✅", `${rows.length} classes checked: ${toCreate.length} new, ${alreadyCount} already in Airtable (skipped), ${fixCount} need fixing`);
+  // Plain-language summary (what a studio manager needs to know)
+  await note("📅", `MTEK has ${plural(rows.length, "class", "classes")} for ${studiosLabel}, ${rangeLabel}.`);
+  if (alreadyCount) await note("•", `${alreadyCount} ${alreadyCount === 1 ? "is" : "are"} already in Airtable, so ${alreadyCount === 1 ? "it" : "they"} will be left alone.`);
   if (toCreate.length) {
-    await note("ℹ️", `New classes run from ${first} to ${last}. By studio: ${[...perStudio].map(([k, v]) => `${k} ${v}`).join(", ")}`);
+    const studiosText = [...perStudio].map(([k, v]) => `${k} ${v}`).join(", ");
+    await note("➕", `${plural(toCreate.length, "new class", "new classes")} to add (${first} to ${last}): ${studiosText}.`);
+  } else {
+    await note("•", "There are no new classes to add.");
   }
-  if (withoutId) await note("⚠️", `${withoutId} new class(es) have no MTEK Class ID yet (it will be filled by the nightly Resolve Class ID job)`);
-  for (const [reason, examples] of problems) {
-    await note("❌", `Needs fixing - ${reason}: ${examples.length} class(es), e.g. ${examples.slice(0, 5).join("; ")}`);
+  if (fixCount) {
+    await note("❌", `${plural(fixCount, "class", "classes")} cannot be added until this is fixed:`);
+    for (const [reason, examples] of problems) {
+      await note("   ", `- ${reason}. Affects ${plural(examples.length, "class", "classes")}, for example: ${examples.slice(0, 3).join("; ")}.`);
+    }
+  } else {
+    await note("✅", "Nothing needs fixing.");
   }
   if (noInstructorCount) {
-    const top = [...unmatchedNames].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([n, c]) => `${n} (${c})`).join(", ");
-    await note("⚠️", `${noInstructorCount} new class(es) have an instructor name with no match in Active Employees "MTEK Name": ${top}. They will appear on the Check Instructors page.`);
+    await note("⚠️", `${plural(noInstructorCount, "new class has", "new classes have")} no instructor in MTEK yet. ${noInstructorCount === 1 ? "It" : "They"} will show up on the Check Instructors page.`);
   }
 
   const common = {
@@ -501,14 +497,22 @@ async function main() {
 
   // Dry run ends here.
   if (mode === "Dry run") {
-    await step("7/7 Dry run finished - nothing was written to Airtable", common);
-    await note("✅", `DRY RUN: ${toCreate.length} class(es) would be created, ${alreadyCount} skipped as duplicates, ${fixCount} need fixing.`);
-    await patchRun({ ...common, Status: "Ready (dry run done)", "Finished at": new Date().toISOString(), Notes: notes.join("\n") });
+    const ending = toCreate.length
+      ? `Nothing has been added yet. Click "Import" to add the ${plural(toCreate.length, "new class", "new classes")}.`
+      : "Nothing to import for this selection.";
+    await note("✅", ending);
+    await patchRun({
+      ...common,
+      Status: "Ready (dry run done)",
+      "Current step": toCreate.length ? "Check finished. Nothing was added yet." : "Check finished. Nothing new to import.",
+      "Finished at": new Date().toISOString(),
+      Notes: notes.join("\n"),
+    });
     return;
   }
 
   // 7. Import ------------------------------------------------------------------
-  await step(`7/7 Creating ${toCreate.length} class(es) in Airtable`, common);
+  await step(`Adding ${plural(toCreate.length, "class", "classes")} to Airtable…`, common);
   const createdIds = [];
   let failed = 0;
   const failedLabels = [];
@@ -525,19 +529,19 @@ async function main() {
           createdIds.push(...(res.records || []).map((r) => r.id));
         } catch (e) {
           failed++;
-          failedLabels.push(`${c.label} (${e.message.replace(/^Airtable POST [^:]+: /, "").slice(0, 120)})`);
+          failedLabels.push(`${c.label} (${e.message.replace(/^Airtable POST [^:]+: /, "").slice(0, 140)})`);
         }
         await sleep(220);
       }
     }
-    await patchRun({ "Current step": `Creating classes: ${createdIds.length + failed}/${toCreate.length}`, Created: createdIds.length, Failed: failed });
+    await patchRun({ "Current step": `Adding classes… ${createdIds.length + failed} of ${toCreate.length}`, Created: createdIds.length, Failed: failed });
     await sleep(250);
   }
-  await note("✅", `Created ${createdIds.length} of ${toCreate.length} class(es)`);
-  for (const f of failedLabels.slice(0, 15)) await note("❌", `Not created: ${f}`);
+  await note(failed ? "⚠️" : "✅", `Added ${createdIds.length} of ${plural(toCreate.length, "new class", "new classes")} to Airtable.`);
+  for (const f of failedLabels.slice(0, 15)) await note("❌", `Could not add: ${f}`);
 
   // Verify what actually landed + wait for the instructor automations.
-  await patchRun({ "Current step": "Verifying the import" });
+  await patchRun({ "Current step": "Double-checking everything landed in Airtable…" });
   await sleep(20000);
   let verified = 0;
   let noInstructorNow = 0;
@@ -552,21 +556,25 @@ async function main() {
     for (const r of recs) {
       if (!r.fields["Instructor"] || r.fields["Instructor"].length === 0) {
         noInstructorNow++;
-        noInstructorLabels.push(`${Array.isArray(r.fields["Class!"]) ? r.fields["Class!"][0] : r.fields["Class!"]} [${r.fields["Zingfit Official Name"] || "-"}]`);
+        noInstructorLabels.push(`${Array.isArray(r.fields["Class!"]) ? r.fields["Class!"][0] : r.fields["Class!"]}`);
       }
     }
   }
-  await note(verified === createdIds.length ? "✅" : "❌", `Verified ${verified} of ${createdIds.length} created class(es) are in Airtable`);
+  if (createdIds.length) {
+    await note(verified === createdIds.length ? "✅" : "❌", verified === createdIds.length
+      ? `Double-checked: all ${createdIds.length} added classes are in Airtable.`
+      : `Only ${verified} of ${createdIds.length} added classes could be found in Airtable. Please check the All Classes table.`);
+  }
   if (noInstructorNow) {
-    await note("⚠️", `${noInstructorNow} imported class(es) have no instructor linked yet - fix them on the Check Instructors page: ${noInstructorLabels.slice(0, 8).join("; ")}${noInstructorLabels.length > 8 ? "; ..." : ""}`);
+    await note("⚠️", `${plural(noInstructorNow, "added class has", "added classes have")} no instructor yet. Pick the instructor on the Check Instructors page: ${noInstructorLabels.slice(0, 6).join("; ")}${noInstructorLabels.length > 6 ? "; …" : ""}`);
   } else if (createdIds.length) {
-    await note("✅", "All imported classes have an instructor linked");
+    await note("✅", "Every added class has an instructor.");
   }
 
   const allGood = failed === 0 && fixCount === 0 && verified === createdIds.length && noInstructorNow === 0;
-  const summary =
-    `Imported ${createdIds.length} of ${rows.length} class(es) found in MTEK for ${studiosLabel}, ${minYmd} to ${maxYmd}. ` +
-    `${alreadyCount} already existed (skipped), ${fixCount} need fixing, ${failed} failed, ${noInstructorNow} without instructor.`;
+  const summary = allGood
+    ? `All done: ${plural(createdIds.length, "new class", "new classes")} added. ${alreadyCount} ${alreadyCount === 1 ? "was" : "were"} already in Airtable.`
+    : `Finished with things to look at: ${createdIds.length} added, ${alreadyCount} already there, ${fixCount} could not be added, ${failed} failed, ${noInstructorNow} without an instructor.`;
   await note(allGood ? "🎉" : "⚠️", summary);
   await patchRun({
     ...common,
@@ -574,7 +582,7 @@ async function main() {
     Failed: failed,
     "No instructor match": noInstructorNow,
     Status: allGood ? "Completed" : "Completed with warnings",
-    "Current step": allGood ? "Done" : "Done - see notes",
+    "Current step": allGood ? "Done" : "Done - see the notes below",
     "Finished at": new Date().toISOString(),
     Notes: notes.join("\n"),
   });
@@ -583,10 +591,10 @@ async function main() {
 main().catch(async (err) => {
   console.error(err);
   if (AIRTABLE_TOKEN && RUN_ID) {
-    notes.push(`${stamp()} ❌ ${err.message}`);
+    notes.push(`❌ Something went wrong and the run stopped: ${err.message}\nNothing else was changed. Try again, and tell Jonathan if it keeps failing.`);
     await patchRun({
       Status: "Failed",
-      "Current step": "Failed",
+      "Current step": "Stopped — something went wrong",
       Notes: notes.join("\n"),
       "Finished at": new Date().toISOString(),
     });
