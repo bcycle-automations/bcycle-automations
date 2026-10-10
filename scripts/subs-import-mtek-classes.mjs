@@ -247,7 +247,7 @@ async function main() {
   if (/changes/i.test(String(run["Mode"] || ""))) {
     const { runChanges } = await import("./subs-schedule-changes.mjs");
     await runChanges({
-      at, atListAll, patchRun, note, step, notes, run, BASE_ID, CLASSES_TABLE, EMPLOYEES_TABLE, RUN_ID,
+      at, atListAll, patchRun, note, step, notes, run, BASE_ID, CLASSES_TABLE, EMPLOYEES_TABLE, RUN_ID, RUNS_TABLE,
       MTEK_BASE_URL, MTEK_TOKEN, fetchClassSessions, parseTitle, hhmm, ymdFromDate, addDays,
     });
     return;
