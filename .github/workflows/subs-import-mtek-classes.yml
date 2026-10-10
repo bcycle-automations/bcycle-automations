@@ -1,0 +1,54 @@
+name: Subs - Import classes from MTEK
+
+# Started from the Softr page /subs-import-mtek:
+#   Softr creates a row in Airtable "Import Runs" (Instructors - Subs base) -> Make webhook ->
+#   repository_dispatch (event_type: subs-import-mtek-classes, client_payload.record_id).
+on:
+  workflow_dispatch:
+    inputs:
+      record_id:
+        description: "Airtable record ID in Import Runs (recXXXX)"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [subs-import-mtek-classes]
+
+permissions:
+  contents: read
+
+# One import at a time so two people can't create duplicate classes.
+concurrency:
+  group: subs-import-mtek-classes
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Resolve run record id
+        id: rid
+        shell: bash
+        run: |
+          RID="${{ github.event.inputs.record_id || github.event.client_payload.record_id }}"
+          if [ -z "$RID" ]; then
+            echo "record_id is required" >&2
+            exit 1
+          fi
+          echo "record_id=$RID" >> "$GITHUB_OUTPUT"
+
+      - name: Import classes from MTEK
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.INSTRUCTOR_SUBS_BASE_ID }}
+          AIRTABLE_RUN_RECORD_ID: ${{ steps.rid.outputs.record_id }}
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          MTEK_BASE_URL: https://bcycle.marianatek.com
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/subs-import-mtek-classes.mjs
