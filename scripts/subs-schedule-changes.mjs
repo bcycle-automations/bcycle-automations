@@ -179,9 +179,13 @@ export async function runChanges(ctx) {
       const cr = norm(col(row, "Classroom"));
       classId = (cands.find((c) => norm(c.classroom) === cr) || {}).id || null;
     }
-    let rec = classId ? byId.get(classId) : null;
-    if (rec && usedRecs.has(rec.id)) rec = null;
-    if (!rec) rec = (byKey.get(sessionKey) || []).find((r) => !usedRecs.has(r.id)) || null;
+    // Exact studio + date + time + class first: Airtable can hold two records with the same MTEK
+    // Class ID when a class was moved (the old time stays behind), so the Class ID alone is not enough.
+    let rec = (byKey.get(sessionKey) || []).find((r) => !usedRecs.has(r.id)) || null;
+    if (!rec && classId) {
+      const byIdRec = byId.get(classId);
+      if (byIdRec && !usedRecs.has(byIdRec.id)) rec = byIdRec;
+    }
 
     if (!rec) {
       stage.push({ row, location, ymd, time, type, mtekName, isSub, label, classId, rec: null });
