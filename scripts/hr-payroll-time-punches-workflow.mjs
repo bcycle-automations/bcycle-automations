@@ -470,6 +470,24 @@ async function run() {
       throw new Error(`Studio "${getField(studioRecord, 'Studio name') || studioLinks[0]}" has no MTEK Location ID.`);
     }
 
+    // A second run record for the same studio-week (made by hand or by an
+    // automation) would import the same punches again, and the budget — which sums
+    // every record — would count the week twice. Refuse rather than double payroll.
+    const sameWeek = (
+      await fetchAllRecords(CONFIG.airtable.runsTableId, ['Start Date', 'Studio', 'Time Punch for payroll'])
+    ).filter(
+      (rec) =>
+        rec.id !== CONFIG.recordId &&
+        firstValue(getField(rec, 'Start Date')) === startDate &&
+        (getField(rec, 'Studio') || [])[0] === studioLinks[0] &&
+        (getField(rec, 'Time Punch for payroll') || []).length > 0,
+    );
+    if (sameWeek.length) {
+      throw new Error(
+        `Duplicate Budget week - Studio: ${sameWeek.map((rec) => rec.id).join(', ')} already holds time punches for this studio and week (${startDate}). Fetching here would count the week twice in the budget. Delete the duplicate record (and its punches) and re-run the fetch on the one you keep.`,
+      );
+    }
+
     // MTEK's min/max_start_datetime bounds are applied loosely, so the window is
     // padded by a day on each side and the exact range is enforced locally below.
     const { results: shifts, included } = await fetchPaginatedMtek(CONFIG.mtek.punchesPath, {
