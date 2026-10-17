@@ -286,10 +286,20 @@ function instructorNameFromSession(session) {
   const names = sessionAttributes(session).instructor_names;
   if (Array.isArray(names)) {
     if (names.length === 0) return '';
-    return names[0] || names.join(', ');
+    // Keep every instructor so duos arrive as "A, B" and the Duo Needs fixing check can see them.
+    return names.filter(Boolean).join(', ');
   }
 
   return typeof names === 'string' ? names : '';
+}
+
+// Lower-case and strip accents so MTEK's "Élizabeth Fortin" matches Airtable's "Elizabeth Fortin".
+function normalizeName(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toLowerCase();
 }
 
 function locationIdFromSession(session) {
@@ -360,7 +370,7 @@ async function run() {
     instructorRecords.sort((a, b) => Date.parse(a.createdTime) - Date.parse(b.createdTime));
     const instructorMap = new Map();
     for (const rec of instructorRecords) {
-      const name = String(getField(rec, 'Name') || '').trim().toLowerCase();
+      const name = normalizeName(getField(rec, 'Name'));
       if (name && !instructorMap.has(name)) instructorMap.set(name, rec.id);
     }
 
@@ -377,9 +387,7 @@ async function run() {
 
     let instructorNotFound = 0;
     for (const classRecord of createdClassRecords) {
-      const mtekInstructor = String(getField(classRecord, 'MTEK Instructor') || '')
-        .trim()
-        .toLowerCase();
+      const mtekInstructor = normalizeName(getField(classRecord, 'MTEK Instructor'));
       const instructorId = instructorMap.get(mtekInstructor);
       if (instructorId) {
         await patchClassRecord(classRecord.id, { Instructor: [instructorId] });
