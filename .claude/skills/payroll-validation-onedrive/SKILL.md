@@ -1,11 +1,23 @@
 ---
 name: payroll-validation-onedrive
-description: Paused plan to move the Make "AI PDF to Excel" payroll validation scenario (ID 6571143) from Google Drive to OneDrive — pull the newest Desjardins payroll PDF from a OneDrive folder and write the validation CSV back to a OneDrive folder. Read this when the user picks the OneDrive work back up, or before editing that scenario.
+description: How (and status of) moving the Make "AI PDF to Excel" payroll validation scenario (ID 6571143) from Google Drive to OneDrive — pull the newest Desjardins payroll PDF from a OneDrive folder and write the validation CSV back to a OneDrive folder. Read this when the user picks the OneDrive work back up, or before editing that scenario.
 ---
 
-# Payroll validation scenario → OneDrive (PAUSED)
+# Payroll validation scenario → OneDrive
 
-Status: paused by the user on 2026-10-27. Nothing has been changed in Make for OneDrive yet.
+Status (2026-10-27): DONE in Make, not yet test-run (both folders were empty).
+
+## Current OneDrive setup
+
+- Connection **11986923** "OneDrive - Jonathan (payroll validation)" (azure, Files/Sites ReadWrite.All), user jonathan@bcyclespin.com.
+- Folder **Payroll validations** is SHARED WITH JONATHAN by Bijan (temporary). Item id `0146ZSOL4SCJDNKYJH6VEY3QEPOBWSBAT3`.
+  - Import subfolder **Validation document**: `0146ZSOL3PIA2REYOYSNFK4BA7FCWG4E2O`
+  - Export subfolder **Validation export**: `0146ZSOLZTBDNJRP2HDBH2BN332ZWYPP5R`
+- Drive id is looked up at run time from `GET /v1.0/me/drive/sharedWithMe` (item named "Payroll validations" → `remoteItem.parentReference.driveId`). Make's listFolders RPC cannot browse inside shared items, so use Graph via `onedrive:makeApiCall`.
+- New first modules: 30 makeApiCall sharedWithMe → 31 makeApiCall `/drives/{drive}/items/{import}/children` → 32 `onedrive:downloadAFile` (enter=id, select=my, select1=yes, drive, file = newest `application/pdf` by `lastModifiedDateTime`; filter stops the run if no PDF). Module 2 now reads `{{32.data}}`/`{{32.filename}}`. Last module 33 `onedrive:uploadAFile` to the export folder, conflictBehavior=rename.
+- If Bijan removes sharing, modules 30–33 break: move to a folder Jonathan owns or a SharePoint site drive and swap ids.
+
+## History (original plan below kept for reference)
 
 ## The scenario today
 
