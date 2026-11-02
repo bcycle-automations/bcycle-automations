@@ -5,7 +5,7 @@ description: How (and status of) moving the Make "AI PDF to Excel" payroll valid
 
 # Payroll validation scenario → OneDrive
 
-Status (2026-10-27): DONE in Make, not yet test-run (both folders were empty).
+Status (2026-11-02): LIVE. First full run via the run link on 2026-11-02 (~7.7 min, 79 ops).
 
 ## Current OneDrive setup
 
@@ -13,8 +13,9 @@ Status (2026-10-27): DONE in Make, not yet test-run (both folders were empty).
 - Folder **Payroll validations** is SHARED WITH JONATHAN by Bijan (temporary). Item id `0146ZSOL4SCJDNKYJH6VEY3QEPOBWSBAT3`.
   - Import subfolder **Validation document**: `0146ZSOL3PIA2REYOYSNFK4BA7FCWG4E2O`
   - Export subfolder **Validation export**: `0146ZSOLZTBDNJRP2HDBH2BN332ZWYPP5R`
-- Drive id is looked up at run time from `GET /v1.0/me/drive/sharedWithMe` (item named "Payroll validations" → `remoteItem.parentReference.driveId`). Make's listFolders RPC cannot browse inside shared items, so use Graph via `onedrive:makeApiCall`.
-- New first modules: 30 makeApiCall sharedWithMe → 31 makeApiCall `/drives/{drive}/items/{import}/children` → 32 `onedrive:downloadAFile` (enter=id, select=my, select1=yes, drive, file = newest `application/pdf` by `lastModifiedDateTime`; filter stops the run if no PDF). Module 2 now reads `{{32.data}}`/`{{32.filename}}`. Last module 33 `onedrive:uploadAFile` to the export folder, conflictBehavior=rename.
+- Drive id is HARD-CODED: `b!MhQUqxEg_0-ErwL4gFevraDkKipvlDhKsw4Ttgl1Q-EN0ok5l4tnTYMkPnFy1I-3` (the `/me/drive/sharedWithMe` lookup came back empty on a run, so it was removed). Make's listFolders RPC cannot browse inside shared items, so use Graph via `onedrive:makeApiCall`.
+- Run link: webhook **2995017** `https://hook.us2.make.com/e2b6erpyd619jp4hp6fi7txves84jbjd` (module 40 `gateway:CustomWebHook`). Scenario scheduling = immediately, sequential. No WebhookRespond module: it caused "Response can't be processed when scenario is not executed immediately" warnings, so the browser just shows "Accepted".
+- Modules: 40 webhook → 31 makeApiCall `/drives/{drive}/items/{import}/children` → 32 `onedrive:downloadAFile` (enter=id, select=my, select1=yes, drive, file = newest `application/pdf` by `lastModifiedDateTime`; filter stops the run if no PDF). Module 2 now reads `{{32.data}}`/`{{32.filename}}`. Last module 33 `onedrive:uploadAFile` to the export folder, conflictBehavior=rename.
 - If Bijan removes sharing, modules 30–33 break: move to a folder Jonathan owns or a SharePoint site drive and swap ids.
 
 ## History (original plan below kept for reference)
