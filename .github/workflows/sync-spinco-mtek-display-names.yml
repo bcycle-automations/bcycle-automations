@@ -1,0 +1,30 @@
+name: Sync SPINCO MTEK Display Names (HR)
+
+on:
+  schedule:
+    - cron: "15 11 * * *" # daily
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (log only, no writes)"
+        type: boolean
+        default: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Fill missing MTEK Display Names
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          MTEK_SPINCO_BASE_URL: https://spinco.marianatek.com
+          MTEK_SPINCO_API_TOKEN: ${{ secrets.MTEK_SPINCO_API_TOKEN }}
+          # Scheduled runs write; manual runs follow the input (default dry run).
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
+        run: node scripts/sync-spinco-mtek-display-names.mjs
