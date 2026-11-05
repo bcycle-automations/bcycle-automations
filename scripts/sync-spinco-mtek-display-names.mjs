@@ -54,13 +54,20 @@ async function loadHr() {
 
 async function loadMtekEmployees() {
   const out = [];
-  let url = `${MTEK_BASE}/api/employees?include=user,public_profile&page_size=100`;
-  while (url) {
+  const seen = new Set();
+  let url = `${MTEK_BASE}/api/employees?include=user,public_profile&page_size=100&page=1`;
+  for (let page = 1; url && page <= 100; page++) {
     const r = await fetch(url, { headers: { Authorization: `Bearer ${MTEK_TOKEN}`, Accept: "application/vnd.api+json" } });
     if (!r.ok) throw new Error(`MTEK ${r.status}: ${await r.text()}`);
     const j = await r.json();
+    if (page === 1) console.log(`MTEK response keys: ${Object.keys(j).join(",")}; links: ${JSON.stringify(j.links || {})}; meta: ${JSON.stringify(j.meta || {})}`);
     const inc = new Map((j.included || []).map((i) => [`${i.type}:${i.id}`, i]));
-    for (const e of j.results || j.data || []) {
+    const items = j.results || j.data || [];
+    let added = 0;
+    for (const e of items) {
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
+      added++;
       const rel = e.relationships || {};
       const user = inc.get(`${rel.user?.data?.type}:${rel.user?.data?.id}`);
       const prof = inc.get(`${rel.public_profile?.data?.type}:${rel.public_profile?.data?.id}`);
@@ -73,7 +80,15 @@ async function loadMtekEmployees() {
         display: (pa.schedule_display_name || "").trim(),
       });
     }
-    url = j.links?.next || j.next || null;
+    if (!added) break;
+    // Prefer the server's next link; otherwise step the page number.
+    const next = j.links?.next || j.next || null;
+    if (next) url = next;
+    else {
+      const u = new URL(url);
+      u.searchParams.set("page", String(page + 1));
+      url = u.toString();
+    }
   }
   return out;
 }
