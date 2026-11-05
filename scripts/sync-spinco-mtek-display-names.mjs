@@ -58,8 +58,10 @@ async function loadMtekEmployees() {
   let url = `${MTEK_BASE}/api/employees?include=user,public_profile&page_size=100&page=1`;
   for (let page = 1; url && page <= 100; page++) {
     const r = await fetch(url, { headers: { Authorization: `Bearer ${MTEK_TOKEN}`, Accept: "application/vnd.api+json" } });
+    if (r.status === 404 && page > 1) break; // ran past the last page
     if (!r.ok) throw new Error(`MTEK ${r.status}: ${await r.text()}`);
     const j = await r.json();
+    const totalPages = j.meta?.pagination?.pages;
     if (page === 1) console.log(`MTEK response keys: ${Object.keys(j).join(",")}; links: ${JSON.stringify(j.links || {})}; meta: ${JSON.stringify(j.meta || {})}`);
     const inc = new Map((j.included || []).map((i) => [`${i.type}:${i.id}`, i]));
     const items = j.results || j.data || [];
@@ -80,7 +82,7 @@ async function loadMtekEmployees() {
         display: (pa.schedule_display_name || "").trim(),
       });
     }
-    if (!added) break;
+    if (!added || (totalPages && page >= totalPages)) break;
     // Prefer the server's next link; otherwise step the page number.
     const next = j.links?.next || j.next || null;
     if (next) url = next;
