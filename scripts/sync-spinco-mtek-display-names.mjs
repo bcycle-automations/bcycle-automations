@@ -56,7 +56,7 @@ async function loadMtekEmployees() {
   const out = [];
   let url = `${MTEK_BASE}/api/employees?include=user,public_profile&page_size=100`;
   while (url) {
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${MTEK_TOKEN}`, Accept: "application/json" } });
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${MTEK_TOKEN}`, Accept: "application/vnd.api+json" } });
     if (!r.ok) throw new Error(`MTEK ${r.status}: ${await r.text()}`);
     const j = await r.json();
     const inc = new Map((j.included || []).map((i) => [`${i.type}:${i.id}`, i]));
