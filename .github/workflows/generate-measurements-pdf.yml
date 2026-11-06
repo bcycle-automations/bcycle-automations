@@ -8,6 +8,12 @@ on:
         required: true
         type: string
 
+# All classes share ONE working sheet, so runs must never overlap (they used to
+# overwrite each other's rows and PDFs). Queue them instead.
+concurrency:
+  group: measurements-pdf-working-sheet
+  cancel-in-progress: false
+
 jobs:
   generate:
     runs-on: ubuntu-latest
