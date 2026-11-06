@@ -96,11 +96,64 @@ async function getSheetsClient() {
 
   const auth = new google.auth.GoogleAuth({
     credentials: creds,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    scopes: [
+      "https://www.googleapis.com/auth/spreadsheets",
+      // needed to export the sheet as a PDF with the service account's own access
+      "https://www.googleapis.com/auth/drive.readonly",
+    ],
   });
 
-  await auth.getClient();
-  return google.sheets({ version: "v4", auth });
+  const authClient = await auth.getClient();
+  return { sheets: google.sheets({ version: "v4", auth }), authClient };
+}
+
+// Exports ONE page of the working sheet (A1:I53 = title, headers, spots 1-50) as a real
+// PDF file (a snapshot, so the next class generated can't change it).
+async function exportSheetPdfBuffer(authClient, spreadsheetId) {
+  const { token } = await authClient.getAccessToken();
+  const params = new URLSearchParams({
+    format: "pdf",
+    gid: "0",
+    portrait: "true",
+    size: "letter",
+    fitw: "true",
+    gridlines: "false",
+    printtitle: "false",
+    sheetnames: "false",
+    pagenum: "UNDEFINED",
+    range: "A1:I53",
+  });
+  const res = await fetch(
+    `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?${params}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const type = res.headers.get("content-type") || "";
+  if (!res.ok || !type.includes("pdf")) {
+    throw new Error(`PDF export failed: ${res.status} ${type}`);
+  }
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// Uploads the PDF bytes straight into the Airtable attachment field (replaces older files).
+async function airtableUploadAttachment(recordId, fieldName, filename, buffer) {
+  const url = `https://content.airtable.com/v0/${AIRTABLE_BASE_ID}/${recordId}/${encodeURIComponent(
+    fieldName
+  )}/uploadAttachment`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      contentType: "application/pdf",
+      file: buffer.toString("base64"),
+      filename,
+    }),
+  });
+  const txt = await res.text();
+  if (!res.ok) throw new Error(`Airtable uploadAttachment failed: ${res.status} ${txt}`);
+  return txt;
 }
 
 // -------------------------------
@@ -224,7 +277,7 @@ async function main() {
 
   console.log("Processing class:", recordId);
 
-  const sheets = await getSheetsClient();
+  const { sheets, authClient } = await getSheetsClient();
 
   // 1) CLEAR PREVIOUS RUN AT START (A1 and B4:I...)
   console.log("Clearing previous run data (start of run)...");
@@ -337,15 +390,44 @@ async function main() {
   const sheetUrl = sheetEditLink(WORKING_SPREADSHEET_ID);
 
   console.log("Updating Airtable...");
-  const updated = await airtableUpdateRecord(AIRTABLE_CLASSES_TABLE, recordId, {
-    [CLASS_FIELDS.DOWNLOAD_PDF]: [{ url: pdfUrl }],
-    [CLASS_FIELDS.PDF_LINK]: sheetUrl,
-  });
 
-  // Debug visibility: show what Airtable says it stored
-  const downloadField = updated?.fields?.[CLASS_FIELDS.DOWNLOAD_PDF];
-  console.log("Airtable returned Download PDF:", downloadField);
-  console.log("PDF export URL:", pdfUrl);
+  // Preferred: a real snapshot PDF (one page, filename = class name) uploaded into Airtable.
+  let uploaded = false;
+  try {
+    // let Sheets finish applying the writes before exporting
+    await sleep(2000);
+    const pdfBuffer = await withRetry(() =>
+      exportSheetPdfBuffer(authClient, WORKING_SPREADSHEET_ID)
+    );
+    const safeName = className.replace(/[^\w\-. ]+/g, " ").replace(/\s+/g, " ").trim();
+    // replace the old attachment list first so only the new file is there
+    await airtableUpdateRecord(AIRTABLE_CLASSES_TABLE, recordId, {
+      [CLASS_FIELDS.DOWNLOAD_PDF]: [],
+      [CLASS_FIELDS.PDF_LINK]: sheetUrl,
+    });
+    await withRetry(() =>
+      airtableUploadAttachment(
+        recordId,
+        CLASS_FIELDS.DOWNLOAD_PDF,
+        `${safeName || recordId}.pdf`,
+        pdfBuffer
+      )
+    );
+    uploaded = true;
+    console.log(`Uploaded snapshot PDF (${pdfBuffer.length} bytes).`);
+  } catch (err) {
+    console.warn("Snapshot upload failed, falling back to live export link:", err?.message || err);
+  }
+
+  if (!uploaded) {
+    // Fallback (old behaviour): live export link of the working sheet
+    const updated = await airtableUpdateRecord(AIRTABLE_CLASSES_TABLE, recordId, {
+      [CLASS_FIELDS.DOWNLOAD_PDF]: [{ url: pdfUrl }],
+      [CLASS_FIELDS.PDF_LINK]: sheetUrl,
+    });
+    console.log("Airtable returned Download PDF:", updated?.fields?.[CLASS_FIELDS.DOWNLOAD_PDF]);
+    console.log("PDF export URL:", pdfUrl);
+  }
   console.log("Done (no end-of-run cleanup).");
 }
 
