@@ -170,7 +170,7 @@ const TABS: { key: string; label: string; kind: "punch" | "item"; how: string }[
     key: "No rate",
     label: "No rate",
     kind: "punch",
-    how: "No rate record is attached to the punch. Pick the person's rate for this shift type (matching names are listed first). If it doesn't exist, add it in Rates (HR) first, then come back and pick it.",
+    how: "No rate record is attached to the punch. Pick the person's rate for this shift type (matching names are listed first). If it doesn't exist yet, press Create rate to add it; it is attached to the punch for you (if it doesn't attach, pick it from the list).",
   },
   {
     key: "$0 wages",
