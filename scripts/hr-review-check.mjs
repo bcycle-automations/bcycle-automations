@@ -41,7 +41,7 @@ const ITEM = {
 };
 const PUNCH = {
   date: 'fldwxo5JqKNOf4KvY', employee: 'fld19AyljflWBAFH0', rateType: 'fldPfC30I2xFuDbPT',
-  hours: 'fldSxDiBejz7REwpX', remove: 'fldFTCN6GKZNk5MkR',
+  hours: 'fldSxDiBejz7REwpX', remove: 'fldFTCN6GKZNk5MkR', issues: 'fldQGFi71K3gNUTTm',
 };
 const CR = {
   mentor: 'fld1I0hc2cj97bXjQ', classDate: 'fldo22jFhbWwYT9on', reviewIn: 'flds95Ttaerz5iQnP',
@@ -97,7 +97,9 @@ export function matchItems(punches, records, tolerance = CONFIG.hoursTolerance) 
       if (r.ignore) {
         items.push({ result: 'Ignored', type: r.type, name: r.name, date: r.date, punchHours: p?.hours ?? null, reviewHours: r.hours, punchId: p?.id ?? null, source: r.source, detail: 'Marked IGNORE/DO NOT PAY' + (p ? ' (a punch exists for it)' : '') });
       } else if (!p) {
-        items.push({ result: 'Review without punch', type: r.type, name: r.name, date: r.date, punchHours: null, reviewHours: r.hours, punchId: null, source: r.source, detail: r.mtekDone ? 'Pushed to MTEK but no punch found' : 'Not pushed to MTEK yet' });
+        // A review with no punch is never an issue (the check verifies the hours MTEK holds), whether or
+        // not it was pushed. It is kept as an informational row.
+        items.push({ result: 'Ignored', type: r.type, name: r.name, date: r.date, punchHours: null, reviewHours: r.hours, punchId: null, source: r.source, detail: r.mtekDone ? 'No punch for this review in MTEK' : 'Not pushed to MTEK yet' });
       } else {
         const diff = Math.abs(p.hours - r.hours) > tolerance;
         items.push({ result: diff ? 'Hours differ' : 'Matched', type: r.type, name: r.name, date: r.date, punchHours: p.hours, reviewHours: r.hours, punchId: p.id, source: r.source, detail: diff ? `Punch ${p.hours} h vs review ${r.hours} h` : '' });
@@ -157,7 +159,7 @@ function pad(dateStr, days) {
 async function loadPunches(start, end) {
   const recs = await listAll(CONFIG.hrBase, T.punches, {
     formula: `AND(IS_AFTER({${PUNCH.date}},'${pad(start, -1)}'),IS_BEFORE({${PUNCH.date}},'${pad(end, 1)}'),OR(${TYPES.map((t) => `{${PUNCH.rateType}}='${t}'`).join(',')}))`,
-    fields: [PUNCH.date, PUNCH.employee, PUNCH.rateType, PUNCH.hours, PUNCH.remove],
+    fields: [PUNCH.date, PUNCH.employee, PUNCH.rateType, PUNCH.hours, PUNCH.remove, PUNCH.issues],
   });
   return recs
     .filter((r) => !r.fields[PUNCH.remove])
@@ -167,6 +169,7 @@ async function loadPunches(start, end) {
       name: r.fields[PUNCH.employee] || '',
       date: r.fields[PUNCH.date],
       hours: Number(r.fields[PUNCH.hours]) || 0,
+      issues: String(r.fields[PUNCH.issues] || ''),
     }))
     .filter((p) => TYPES.includes(p.type) && p.date >= start && p.date <= end);
 }
@@ -242,7 +245,10 @@ async function run() {
     const records = await loadRecords(start, end);
     const items = matchItems(punches, records);
     const count = (r) => items.filter((i) => i.result === r).length;
-    const summary = `${start} -> ${end}: ${punches.length} punches, ${records.length} reviews/coaching/evals. Matched ${count('Matched')}, hours differ ${count('Hours differ')}, punch without review ${count('Punch without review')}, review without punch ${count('Review without punch')}, ignored ${count('Ignored')}.`;
+    // Payroll issues per punch (no employee / rate / Desjardins ID / clock out, $0 wages) come from the
+    // punch's own `Payroll issues` formula; the page lists them live and fixes them in place.
+    const punchIssues = punches.filter((p) => p.issues).length;
+    const summary = `${start} -> ${end}: ${punches.length} punches, ${records.length} reviews/coaching/evals. Matched ${count('Matched')}, hours differ ${count('Hours differ')}, punch without review ${count('Punch without review')}, ignored ${count('Ignored')}, punches with payroll issues ${punchIssues}.`;
     if (CONFIG.dryRun) {
       console.log(summary);
       return;
@@ -276,7 +282,7 @@ async function run() {
         },
       });
     }
-    const problems = count('Hours differ') + count('Punch without review') + count('Review without punch');
+    const problems = count('Hours differ') + count('Punch without review') + punchIssues;
     await writeRun({ [RUN.status]: problems ? 'PROBLEM' : 'COMPLETE' }, summary);
     console.log(summary);
   } catch (err) {
