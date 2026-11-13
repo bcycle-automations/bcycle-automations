@@ -1,0 +1,32 @@
+name: HR Backfill class rate lock
+run-name: HR Backfill class rate lock
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report only, write nothing'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Lock rates on existing classes
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          # HR - Instructors base.
+          AIRTABLE_BASE_ID: appBC0Ja4B5LKbZLW
+          AIRTABLE_CLASSES_TABLE_ID: tbl8RbWysEFdNuz37
+        run: node scripts/hr-backfill-class-rate-lock.mjs

@@ -140,6 +140,25 @@ async function patchClassRecord(recordId, fields) {
   });
 }
 
+// [Employee field, Classes (for Payroll) locked field]
+const RATE_SNAPSHOT = [
+  ['Base Rate', 'Base Rate (locked)'],
+  ['Spin Bonus Rate', 'Spin Bonus Rate (locked)'],
+  ['Barre Bonus Rate', 'Barre Bonus Rate (locked)'],
+  ['Strength Bonus Rate', 'Strength Bonus Rate (locked)'],
+];
+
+// A blank rate is stored as 0 and "Rates locked" is ticked, so the class formulas
+// never fall back to the live Employee rate (a bonus added later must not touch it).
+function rateSnapshot(instructorRecord) {
+  const out = { 'Rates locked': true };
+  for (const [source, target] of RATE_SNAPSHOT) {
+    const value = getField(instructorRecord, source);
+    out[target] = typeof value === 'number' ? value : 0;
+  }
+  return out;
+}
+
 function localDateTimeString(input, timeZone) {
   const date = new Date(input);
   if (Number.isNaN(date.getTime())) return null;
@@ -365,7 +384,10 @@ async function run() {
     await updateRunRecord({ 'Classes Status': 'COMPLETE - Classes found' });
 
     await updateRunRecord({ 'Instructors Status': 'Started' });
-    const instructorRecords = await fetchAllRecords(CONFIG.airtable.instructorsTableId, ['Name']);
+    const instructorRecords = await fetchAllRecords(CONFIG.airtable.instructorsTableId, [
+      'Name',
+      ...RATE_SNAPSHOT.map(([source]) => source),
+    ]);
     // If a name appears more than once, keep the earliest-created instructor record.
     instructorRecords.sort((a, b) => Date.parse(a.createdTime) - Date.parse(b.createdTime));
     const instructorMap = new Map();
@@ -373,6 +395,10 @@ async function run() {
       const name = normalizeName(getField(rec, 'Name'));
       if (name && !instructorMap.has(name)) instructorMap.set(name, rec.id);
     }
+    // Rates as of THIS import. Written onto each class so a later raise never
+    // changes a class that has already been imported.
+    const rateSnapshotById = new Map();
+    for (const rec of instructorRecords) rateSnapshotById.set(rec.id, rateSnapshot(rec));
 
     const mtekInstructorSample = sessions
       .map((session) => instructorNameFromSession(session))
@@ -390,7 +416,10 @@ async function run() {
       const mtekInstructor = normalizeName(getField(classRecord, 'MTEK Instructor'));
       const instructorId = instructorMap.get(mtekInstructor);
       if (instructorId) {
-        await patchClassRecord(classRecord.id, { Instructor: [instructorId] });
+        await patchClassRecord(classRecord.id, {
+          Instructor: [instructorId],
+          ...rateSnapshotById.get(instructorId),
+        });
       } else {
         instructorNotFound += 1;
       }
