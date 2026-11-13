@@ -12,6 +12,12 @@ on:
     types:
       - airtable-hr-review-check
 
+# One run per Review Check record at a time: a second click queues behind the first and then
+# dedupes against it, instead of racing it and creating duplicates.
+concurrency:
+  group: hr-review-check-${{ github.event.inputs.record_id || github.event.client_payload.record_id }}
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest

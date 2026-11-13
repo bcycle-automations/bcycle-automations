@@ -85,8 +85,10 @@ const punchSel = q.select({
   hourly: "Hourly rate",
   hours: "Total Hours",
   remove: "REMOVE/DO NOT PAY?",
+  ok: "Review not required (OK)",
 });
-const punchUpd = q.select({ employee: "Employee", rate: "Rate", timeOut: "Time Out", remove: "REMOVE/DO NOT PAY?" });
+const punchUpd = q.select({ employee: "Employee", rate: "Rate", timeOut: "Time Out", remove: "REMOVE/DO NOT PAY?", ok: "Review not required (OK)" });
+const itemUpd = q.select({ result: "Result", detail: "Detail" });
 const employeeUpd = q.select({ desjardins: "DESJARDINS ID" });
 
 type Rec = { id: string; fields: Record<string, any> };
@@ -186,7 +188,7 @@ const TABS: { key: string; label: string; kind: "punch" | "item"; how: string }[
     key: "Punch without review",
     label: "Punch without review",
     kind: "item",
-    how: "A punch exists but there is no review, coaching session or evaluation for that person on that date. Check name and date: add the missing review/coaching/eval in HR - Instructors, or if the punch is a mistake use the button to set it to REMOVE / DO NOT PAY (staff will not be paid). Then Run check again.",
+    how: "A punch exists but there is no review, coaching session or evaluation for that person on that date. Check name and date: add the missing review/coaching/eval in HR - Instructors, or if the punch is a mistake press OK if the punch is fine without a review (it is then accepted and no longer flagged), or set it to REMOVE / DO NOT PAY if it is a mistake (staff will not be paid).",
   },
 ];
 
@@ -201,6 +203,7 @@ function IssueTabs({
   fetched,
   progress,
   onProgress,
+  onItemsChanged,
 }: {
   start: string;
   end: string;
@@ -209,6 +212,7 @@ function IssueTabs({
   fetched: boolean;
   progress: string;
   onProgress: (v: "Started" | "COMPLETE") => void;
+  onItemsChanged: () => void;
 }) {
   const from = useMemo(() => {
     const d = new Date(`${start}T12:00:00Z`);
@@ -257,6 +261,17 @@ function IssueTabs({
     onSuccess: async () => { await punchesQ.refetch(); toast.success("Desjardins ID saved on the employee"); },
     onError: (e: any) => toast.error(e?.message ?? "Could not save"),
   });
+  const itemUpdate = useRecordUpdate({
+    from: ds.runItem,
+    fields: itemUpd,
+    onSuccess: async () => { onItemsChanged(); },
+    onError: (e: any) => toast.error(e?.message ?? "Could not save"),
+  });
+  // OK: accept a punch that has no review. Remembered on the punch (so a re-run keeps it) and on the item (so it clears now).
+  const acceptPunch = (punchId: string, itemId: string) => {
+    upd.mutate({ recordId: punchId, fields: { ok: true } });
+    itemUpdate.mutate({ recordId: itemId, fields: { result: "Ignored", detail: "Accepted without review (OK)" } });
+  };
   const removePunch = (id: string, name: string) => {
     if (window.confirm(`Set ${name || "this punch"} to REMOVE / DO NOT PAY? Staff will NOT be paid for it.`)) {
       upd.mutate({ recordId: id, fields: { remove: "REMOVE/DO NOT PAY" } });
@@ -389,9 +404,14 @@ function IssueTabs({
                             <td className={cn(TD, "text-muted-foreground")}>{labelOf(i.fields.detail)}</td>
                             <td className={TD}>
                               {current.key === "Punch without review" && punchId ? (
-                                <Button size="sm" variant="outline" className="h-7" onClick={() => removePunch(punchId, labelOf(i.fields.employee))}>
-                                  REMOVE / DO NOT PAY
-                                </Button>
+                                <div className="flex items-center gap-2">
+                                  <Button size="sm" className="h-7" onClick={() => acceptPunch(punchId, i.id)}>
+                                    OK
+                                  </Button>
+                                  <Button size="sm" variant="outline" className="h-7" onClick={() => removePunch(punchId, labelOf(i.fields.employee))}>
+                                    REMOVE / DO NOT PAY
+                                  </Button>
+                                </div>
                               ) : (
                                 <span className="text-xs text-muted-foreground">See instructions</span>
                               )}
@@ -546,9 +566,9 @@ export default function Block() {
       await fetch(`${FETCH_WEBHOOK}?recordId=${encodeURIComponent(runId)}`, { method: "POST", mode: "no-cors" });
       toast.success("Fetching the hours - refresh in about a minute.");
       [45000, 90000].forEach((ms) => setTimeout(() => { runsQ.refetch(); }, ms));
+      setTimeout(() => setFetching(false), 60000); // stay locked until the run shows Started
     } catch (e: any) {
       toast.error(e?.message ?? "Could not start the fetch");
-    } finally {
       setFetching(false);
     }
   };
@@ -564,9 +584,9 @@ export default function Block() {
         runsQ.refetch();
         itemsQ.refetch();
       }, 60000);
+      setTimeout(() => setRunning(false), 60000); // stay locked until the run shows Started
     } catch (e: any) {
       toast.error(e?.message ?? "Could not start the check");
-    } finally {
       setRunning(false);
     }
   };
@@ -635,7 +655,7 @@ export default function Block() {
               <div className="text-sm font-medium">Step 2: run the check (matches the punch hours to the reviews pushed to MTEK)</div>
               <div className="flex items-center gap-2">
                 {run && <Badge variant="outline">{labelOf(f.status) || "Not started"}</Badge>}
-                <Button size="sm" disabled={!run || !fetched || running} onClick={() => run && trigger(run.id, weekId, progress)}>
+                <Button size="sm" disabled={!run || !fetched || running || labelOf(f.status) === "Started"} onClick={() => run && trigger(run.id, weekId, progress)}>
                   {running ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Play className="mr-1 h-4 w-4" />}
                   Run check
                 </Button>
@@ -671,6 +691,7 @@ export default function Block() {
           fetched={fetched}
           progress={progress}
           onProgress={(v) => setProgress(weekId, v)}
+          onItemsChanged={() => itemsQ.refetch()}
         />
       </div>
     );

@@ -41,7 +41,7 @@ const ITEM = {
 };
 const PUNCH = {
   date: 'fldwxo5JqKNOf4KvY', employee: 'fld19AyljflWBAFH0', rateType: 'fldPfC30I2xFuDbPT',
-  hours: 'fldSxDiBejz7REwpX', remove: 'fldFTCN6GKZNk5MkR', issues: 'fldQGFi71K3gNUTTm',
+  hours: 'fldSxDiBejz7REwpX', remove: 'fldFTCN6GKZNk5MkR', issues: 'fldQGFi71K3gNUTTm', ok: 'fldvaUwPOWgpo4TjL',
 };
 const CR = {
   mentor: 'fld1I0hc2cj97bXjQ', classDate: 'fldo22jFhbWwYT9on', reviewIn: 'flds95Ttaerz5iQnP',
@@ -106,6 +106,11 @@ export function matchItems(punches, records, tolerance = CONFIG.hoursTolerance) 
       }
     }
     for (const p of ps) {
+      // Accepted with the OK button on the Review Check page: no review is needed for this punch.
+      if (p.ok) {
+        items.push({ result: 'Ignored', type: p.type, name: p.name, date: p.date, punchHours: p.hours, reviewHours: null, punchId: p.id, source: '', detail: 'Accepted without review (OK)' });
+        continue;
+      }
       items.push({ result: 'Punch without review', type: p.type, name: p.name, date: p.date, punchHours: p.hours, reviewHours: null, punchId: p.id, source: '', detail: 'No review, coaching session or evaluation on this date' });
     }
   }
@@ -159,7 +164,7 @@ function pad(dateStr, days) {
 async function loadPunches(start, end) {
   const recs = await listAll(CONFIG.hrBase, T.punches, {
     formula: `AND(IS_AFTER({${PUNCH.date}},'${pad(start, -1)}'),IS_BEFORE({${PUNCH.date}},'${pad(end, 1)}'),OR(${TYPES.map((t) => `{${PUNCH.rateType}}='${t}'`).join(',')}))`,
-    fields: [PUNCH.date, PUNCH.employee, PUNCH.rateType, PUNCH.hours, PUNCH.remove, PUNCH.issues],
+    fields: [PUNCH.date, PUNCH.employee, PUNCH.rateType, PUNCH.hours, PUNCH.remove, PUNCH.issues, PUNCH.ok],
   });
   return recs
     .filter((r) => !r.fields[PUNCH.remove])
@@ -170,6 +175,7 @@ async function loadPunches(start, end) {
       date: r.fields[PUNCH.date],
       hours: Number(r.fields[PUNCH.hours]) || 0,
       issues: String(r.fields[PUNCH.issues] || ''),
+      ok: Boolean(r.fields[PUNCH.ok]),
     }))
     .filter((p) => TYPES.includes(p.type) && p.date >= start && p.date <= end);
 }
