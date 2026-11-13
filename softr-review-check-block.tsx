@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { ArrowLeft, CheckCircle2, Download, Info, Loader2, Play, RefreshCw } from "lucide-react";
@@ -41,6 +42,7 @@ const ds = datasource.define({
   runItem: "0446af12-2cd9-4088-9d17-0be1b85ac4d9",
   punch: "3d1b6a52-8f0e-4c7d-9a41-2b7e5c6d8f10", // Time Punches
   employee: "9e4c7a13-5b2d-4f86-8a3c-1d0e6b7f2a59", // Employees
+  rate: "fd37266e-971a-4b88-822e-ea715c405c59", // Rates
 });
 
 const TYPES = ["Coaching 1-on-1 (HQ)", "Coaching 1-on-1 (SPINCO HQ)", "Class Review", "Instructor Eval"];
@@ -90,6 +92,16 @@ const punchSel = q.select({
 const punchUpd = q.select({ employee: "Employee", rate: "Rate", timeOut: "Time Out", remove: "REMOVE/DO NOT PAY?", ok: "Review not required (OK)" });
 const itemUpd = q.select({ result: "Result", detail: "Detail" });
 const employeeUpd = q.select({ desjardins: "DESJARDINS ID" });
+const rateSel = q.select({
+  kind: "Employee or Instructor?",
+  employee: "Employee",
+  instructor: "Instructor",
+  shiftType: "Shift Type",
+  rate: "Rate",
+  ftPay: "Include in FT Pay",
+  minHours: "Min hours",
+  ftOrAt: "FT Rate or AT Rate",
+});
 
 type Rec = { id: string; fields: Record<string, any> };
 type Opt = { id: string; title: string };
@@ -195,6 +207,127 @@ const TABS: { key: string; label: string; kind: "punch" | "item"; how: string }[
 const TH = "border-b px-2 py-1.5 text-left text-xs font-medium text-muted-foreground";
 const TD = "border-b px-2 py-1.5 align-middle";
 
+const SHIFT_TYPES = ["MC/SC", "Bike Rental", "Bike Rental TD", "EE", "b.home", "Filming b.home", "Team Lead", "Master Trainer (per location)", "Coaching 1-on-1 (HQ)", "Coaching 1-on-1 (SPINCO HQ)", "Evaluation", "Reception & Clean", "Admin Hours", "Studio Maintenance", "MC/SC Training", "EE Training", "Marketing Event - HQ", "Marketing Event - Studio", "Class Review", "Instructor Eval"];
+const selectCls = "h-8 w-full rounded-md border bg-background px-2 text-sm";
+
+/* "Add a rate" - same fields and wording as the Airtable form (the Airtable page itself can't be embedded: it refuses to load inside another site). */
+function RateModal({ punch, onClose, onCreated }: { punch: Rec; onClose: () => void; onCreated: (rateId: string | null) => void }) {
+  const f = punch.fields;
+  const punchEmployee = idsOf(f.employee)[0] ?? "";
+  const punchInstructor = idsOf(f.instructor)[0] ?? "";
+  const [kind, setKind] = useState(punchInstructor && !punchEmployee ? "Instructor" : "Employee");
+  const [employeeId, setEmployeeId] = useState(punchEmployee);
+  const [instructorId, setInstructorId] = useState(punchInstructor);
+  const [shiftType, setShiftType] = useState(SHIFT_TYPES.includes(labelOf(f.rateType)) ? labelOf(f.rateType) : "");
+  const [rate, setRate] = useState("");
+  const [ftPay, setFtPay] = useState("");
+  const [minHours, setMinHours] = useState("");
+  const [ftOrAt, setFtOrAt] = useState("");
+
+  const empQ = useLinkedRecords({ from: ds.rate, select: rateSel, field: "employee", sortOrder: "ASC", count: 1000 });
+  const insQ = useLinkedRecords({ from: ds.rate, select: rateSel, field: "instructor", sortOrder: "ASC", count: 1000 });
+  useLoadAll(empQ as any);
+  useLoadAll(insQ as any);
+  const empOpts = useMemo(() => toOpts(empQ.data), [empQ.data]);
+  const insOpts = useMemo(() => toOpts(insQ.data), [insQ.data]);
+  const chosenId = kind === "Employee" ? employeeId : instructorId;
+  const chosen = (kind === "Employee" ? empOpts : insOpts).find((o) => o.id === chosenId)?.title;
+
+  const create = useRecordCreate({
+    from: ds.rate,
+    fields: rateSel,
+    onSuccess: (rec: any) => {
+      toast.success("Rate created");
+      onCreated(String(rec?.id ?? rec?.record?.id ?? rec?.recordId ?? "") || null);
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Could not create the rate"),
+  });
+  const valid = Boolean(chosenId && shiftType);
+  const submit = () => {
+    const fields: Record<string, any> = { kind, shiftType };
+    if (kind === "Employee") fields.employee = [employeeId];
+    else fields.instructor = [instructorId];
+    if (rate) fields.rate = Number(rate);
+    if (ftPay) fields.ftPay = ftPay;
+    if (minHours) fields.minHours = Number(minHours);
+    if (ftOrAt) fields.ftOrAt = ftOrAt;
+    create.mutate(fields);
+  };
+  const Label = ({ children, hint }: { children: React.ReactNode; hint?: string }) => (
+    <div className="mb-1">
+      <div className="text-sm font-medium">{children}</div>
+      {hint && <div className="whitespace-pre-line text-xs text-muted-foreground">{hint}</div>}
+    </div>
+  );
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Add a rate</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label>Employee or Instructor? *</Label>
+            <select className={selectCls} value={kind} onChange={(e) => setKind(e.target.value)}>
+              <option value="Employee">Employee</option>
+              <option value="Instructor">Instructor</option>
+            </select>
+          </div>
+          <div>
+            <Label>{kind} *</Label>
+            {chosen && <div className="mb-1 text-sm text-green-700">Selected: {chosen}</div>}
+            <Picker
+              options={kind === "Employee" ? empOpts : insOpts}
+              placeholder={`Search ${kind.toLowerCase()} (MTEK: ${labelOf(f.name) || "?"})`}
+              onPick={(id) => (kind === "Employee" ? setEmployeeId(id) : setInstructorId(id))}
+            />
+          </div>
+          <div>
+            <Label hint="The same as what is on MTEK">Shift Type *</Label>
+            <select className={selectCls} value={shiftType} onChange={(e) => setShiftType(e.target.value)}>
+              <option value="">Select...</option>
+              {SHIFT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <Label hint="$ amount per hour">Rate</Label>
+            <Input className="h-8" type="number" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
+          </div>
+          <div>
+            <Label hint={"Only change this if the employee is Full Time.\nNo: All of their hours will be paid regardless.\nYes - with minimum: If they are Full Time and have a minimum hours to do per week to be paid.\nYes - ALL: If they are Full Time and all of their hours should NOT be paid for this shift type."}>Include in FT Pay</Label>
+            <select className={selectCls} value={ftPay} onChange={(e) => setFtPay(e.target.value)}>
+              <option value="">Select...</option>
+              <option value="No">No</option>
+              <option value="Yes - with minimum">Yes - with minimum</option>
+              <option value="Yes - ALL">Yes - ALL</option>
+            </select>
+          </div>
+          <div>
+            <Label hint="Minimum hours an employee has to work to get paid extra above this.">Min hours</Label>
+            <Input className="h-8" type="number" step="0.25" value={minHours} onChange={(e) => setMinHours(e.target.value)} />
+          </div>
+          <div>
+            <Label hint={'This is only changed from "Full Time" to "Airtable", only if the Full Time employee should be paid the hours above their minimum at the rate in Airtable rather than their Full Time rate'}>FT Rate or AT Rate</Label>
+            <select className={selectCls} value={ftOrAt} onChange={(e) => setFtOrAt(e.target.value)}>
+              <option value="">Select...</option>
+              <option value="Full Time">Full Time</option>
+              <option value="Airtable">Airtable</option>
+            </select>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button disabled={!valid || create.isPending} onClick={submit}>
+              {create.isPending ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              Create rate
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function IssueTabs({
   start,
   end,
@@ -245,6 +378,7 @@ function IssueTabs({
   const totalIssues = TABS.reduce((n, t) => n + countFor(t.key, t.kind), 0);
 
   const [tab, setTab] = useState<string>("");
+  const [rateFor, setRateFor] = useState<Rec | null>(null);
   const firstWithIssues = TABS.find((t) => countFor(t.key, t.kind) > 0)?.key;
   const active = tab || firstWithIssues || TABS[0].key;
   const current = TABS.find((t) => t.key === active);
@@ -459,6 +593,9 @@ function IssueTabs({
                               {(current.key === "No rate" || current.key === "$0 wages") && (
                                 <div className="flex items-center gap-2">
                                   <Picker options={ratesFor(name, type)} placeholder="Search rate" onPick={(id) => upd.mutate({ recordId: r.id, fields: { rate: [id] } })} />
+                                  {current.key === "No rate" && (
+                                    <Button size="sm" variant="outline" className="h-7" onClick={() => setRateFor(r)}>Create rate</Button>
+                                  )}
                                   {current.key === "$0 wages" && (
                                     <TextFix placeholder="Clock out 17:30" label="Save" onSave={(v) => upd.mutate({ recordId: r.id, fields: { timeOut: v } })} />
                                   )}
@@ -517,6 +654,19 @@ function IssueTabs({
           )}
         </CardContent>
       </Card>
+
+      {rateFor && (
+        <RateModal
+          punch={rateFor}
+          onClose={() => setRateFor(null)}
+          onCreated={(id) => {
+            if (id) upd.mutate({ recordId: rateFor.id, fields: { rate: [id] } });
+            else toast.success("Rate created - pick it from the list");
+            rateOptsQ.refetch();
+            setRateFor(null);
+          }}
+        />
+      )}
     </div>
   );
 }
