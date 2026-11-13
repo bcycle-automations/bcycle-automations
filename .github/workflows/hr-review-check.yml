@@ -1,0 +1,31 @@
+name: HR Review Check
+run-name: HR Review Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      record_id:
+        description: 'Airtable "Review Check - Week" record ID from tblicI8oQqE4GjzBa (example: recXXXX)'
+        required: true
+        type: string
+  repository_dispatch:
+    types:
+      - airtable-hr-review-check
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run HR Review Check
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_RECORD_ID: ${{ github.event.inputs.record_id || github.event.client_payload.record_id }}
+        run: node scripts/hr-review-check.mjs
