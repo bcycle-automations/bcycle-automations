@@ -151,7 +151,12 @@ const RATE_SNAPSHOT = [
 // A blank rate is stored as 0 and "Rates locked" is ticked, so the class formulas
 // never fall back to the live Employee rate (a bonus added later must not touch it).
 function rateSnapshot(instructorRecord) {
-  const out = { 'Rates locked': true };
+  // "Rates locked for" must equal the class's "Instructor (text)" (the linked
+  // record's name), or the Airtable automation would see a change and re-run.
+  const out = {
+    'Rates locked': true,
+    'Rates locked for': String(getField(instructorRecord, 'Name') ?? ''),
+  };
   for (const [source, target] of RATE_SNAPSHOT) {
     const value = getField(instructorRecord, source);
     out[target] = typeof value === 'number' ? value : 0;

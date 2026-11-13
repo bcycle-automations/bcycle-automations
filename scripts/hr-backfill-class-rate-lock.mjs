@@ -21,6 +21,8 @@ const CONFIG = {
 const FIELD = {
   instructor: 'fldHYrp33qRYiQTqJ',
   locked: 'fldBKpxm5CUh0Umhc',
+  lockedFor: 'fldEDuCv3s018YYzF',
+  instructorText: 'fldAXIvzdb9qC9LNs',
   // [live lookup on the class, locked snapshot field]
   rates: [
     ['fldZC5hNJMyOA2HNf', 'fldIL5ulkomlGWE5I'], // Base
@@ -44,13 +46,13 @@ async function airtableRequest({ method = 'GET', body, query = '' }) {
 }
 
 async function fetchUnlocked() {
-  const fieldIds = [FIELD.instructor, FIELD.locked, ...FIELD.rates.map(([live]) => live)];
+  const fieldIds = [FIELD.instructor, FIELD.locked, FIELD.lockedFor, FIELD.instructorText, ...FIELD.rates.map(([live]) => live)];
   const records = [];
   let offset = '';
   do {
     const params = new URLSearchParams({ returnFieldsByFieldId: 'true', pageSize: '100' });
     fieldIds.forEach((id) => params.append('fields[]', id));
-    params.set('filterByFormula', `AND({${FIELD.instructor}}, NOT({${FIELD.locked}}))`);
+    params.set('filterByFormula', `AND({${FIELD.instructor}}, OR(NOT({${FIELD.locked}}), NOT({${FIELD.lockedFor}})))`);
     if (offset) params.set('offset', offset);
     const page = await airtableRequest({ query: params.toString() });
     records.push(...(page.records || []));
@@ -70,13 +72,17 @@ async function run() {
 
   const classes = await fetchUnlocked();
   const updates = classes.map((record) => {
-    const fields = { [FIELD.locked]: true };
-    for (const [live, snapshot] of FIELD.rates) fields[snapshot] = numberFrom(record.fields?.[live]);
+    const fields = { [FIELD.lockedFor]: record.fields?.[FIELD.instructorText] ?? '' };
+    // Already-locked classes only get the "locked for" name: their snapshot must not be re-taken.
+    if (!record.fields?.[FIELD.locked]) {
+      fields[FIELD.locked] = true;
+      for (const [live, snapshot] of FIELD.rates) fields[snapshot] = numberFrom(record.fields?.[live]);
+    }
     return { id: record.id, fields };
   });
   const noBase = classes.filter((record) => numberFrom(record.fields?.[FIELD.rates[0][0]]) === 0).length;
 
-  console.log(`Classes with an instructor and not yet locked: ${updates.length} | of those with no Base Rate: ${noBase}`);
+  console.log(`Classes needing a lock or a locked-for name: ${updates.length} | of those with no Base Rate: ${noBase}`);
 
   if (CONFIG.dryRun) {
     console.log('DRY_RUN: nothing was written. Set DRY_RUN=false to apply.');
