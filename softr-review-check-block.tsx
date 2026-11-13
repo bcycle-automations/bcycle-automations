@@ -1,23 +1,22 @@
 /*
  * Softr "Review Check (Budget)" vibe-coding block.
  *
- * Coaching 1-on-1 (HQ / SPINCO HQ), Class Review and Instructor Eval hours,
- * checked per Budget week. Uses the SAME Budget week records as the studio
- * staff-hours flow. Read-only for Budget week / Budget week - Studio.
+ * Coaching 1-on-1 (HQ / SPINCO HQ), Class Review and Instructor Eval hours, checked per
+ * Budget week. Uses the SAME Budget week records as the studio staff-hours flow.
+ * The per-studio fetch ignores these four shift types; this page fetches them itself.
  *
- *   List view ... Budget weeks (newest first), one chip per studio showing whether it has
- *                 finished its staff-hours fetch ("Completed studio"). b.home is ignored.
- *                 No "Add record".
- *   Week view ... Step 1 studios fetched, Step 2 run the check (matches punch hours to the
- *                 reviews pushed to MTEK), Step 3 one tab per issue type with instructions
- *                 and in-place fixes. A tab empties out when its count is 0.
+ *   List view ... Budget weeks (newest first) with fetch / check / Program clock in status.
+ *   Week view ... Step 1 Fetch hours (all studios, these four shift types only),
+ *                 Step 2 Run check (punch hours vs. the reviews pushed to MTEK),
+ *                 Step 3 one tab per issue type with instructions and in-place fixes,
+ *                 Step 4 Confirm to payroll (sets Budget week "Program clock in status").
  *
- * Payroll issue tabs are LIVE (read from Time Punches' `Payroll issues` formula, same as the
- * studio flow). "Hours differ" / "Punch without review" come from the last Run check.
- * A review that was never pushed to MTEK, or has no punch, is NOT an issue.
+ * Payroll issue tabs are LIVE (Time Punches `Payroll issues` formula, same as the studio flow);
+ * "Hours differ" / "Punch without review" come from the last Run check. A review that was never
+ * pushed to MTEK, or has no punch, is NOT an issue.
  *
- * Data sources (HR base appiwfeujJzUZPPBx): Budget week, Budget week - Studio,
- * Review Check - Week, Review Check - Item, Time Punches, Employees.
+ * Data sources (HR base appiwfeujJzUZPPBx): Budget week, Review Check - Week,
+ * Review Check - Item, Time Punches, Employees.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -26,18 +25,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Download, Info, Loader2, Play, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 // Make webhook -> GitHub repository_dispatch "airtable-hr-review-check".
 const RUN_CHECK_WEBHOOK = "https://hook.us2.make.com/7o12uchu91c7sehjy0qhy9n5eq3c15w9";
+// Make webhook -> GitHub repository_dispatch "airtable-hr-review-fetch" (Step 1).
+const FETCH_WEBHOOK = "https://hook.us2.make.com/s9cn8uxzj5x3tq0s5kgrif49r2ug7vlt";
 
 const ds = datasource.define({
   budgetWeek: "ac6cd17d-4051-4139-b97e-1318975c30e4",
-  studioWeek: "7596a7af-3f34-4fdc-93cf-ab74fe1f9f00",
   runWeek: "5cb24d23-a1be-4400-95ec-d6db1fd9c74f",
   runItem: "0446af12-2cd9-4088-9d17-0be1b85ac4d9",
   punch: "3d1b6a52-8f0e-4c7d-9a41-2b7e5c6d8f10", // Time Punches
@@ -46,12 +45,13 @@ const ds = datasource.define({
 
 const TYPES = ["Coaching 1-on-1 (HQ)", "Coaching 1-on-1 (SPINCO HQ)", "Class Review", "Instructor Eval"];
 
-const weekSel = q.select({ start: "Start Date", end: "End Date" });
-const studioSel = q.select({ studio: "Studio", week: "Budget week", completed: "Completed studio", overall: "Overall Status" });
+const weekSel = q.select({ start: "Start Date", end: "End Date", progress: "Program clock in status" });
+const weekUpd = q.select({ progress: "Program clock in status" });
 const runSel = q.select({
   name: "Name",
   week: "Budget week",
   status: "Overall Status",
+  fetchStatus: "Fetch Status",
   notes: "Notes",
   punchNoReview: "Punch without review",
   hoursDiffer: "Hours differ",
@@ -97,7 +97,6 @@ const labelOf = (v: any): string =>
 const idsOf = (v: any): string[] => asArray(v).map((x) => String(x?.id ?? x)).filter(Boolean);
 const day = (v: any) => String(v ?? "").slice(0, 10);
 const num = (v: any) => (typeof v === "number" ? v : Number(v) || 0);
-const shortStudio = (s: string) => s.replace(/^b\.cycle - /i, "");
 
 function useLoadAll(r: { hasNextPage?: boolean; isFetchingNextPage?: boolean; fetchNextPage: () => unknown }) {
   useEffect(() => {
@@ -115,22 +114,13 @@ const RESULT_STYLE: Record<string, string> = {
   Ignored: "bg-gray-100 text-gray-700",
 };
 
-function Chip({ ok, children }: { ok: boolean; children: React.ReactNode }) {
-  return (
-    <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium", ok ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800")}>
-      {ok ? <CheckCircle2 className="h-3 w-3" /> : <Clock className="h-3 w-3" />}
-      {children}
-    </span>
-  );
-}
-
 function Picker({ options, placeholder, onPick }: { options: Opt[]; placeholder: string; onPick: (id: string) => void }) {
   const [text, setText] = useState("");
   const [open, setOpen] = useState(false);
   const shown = options.filter((o) => o.title.toLowerCase().includes(text.toLowerCase())).slice(0, 8);
   return (
-    <div className="relative w-72">
-      <Input value={text} placeholder={placeholder} onFocus={() => setOpen(true)} onChange={(e) => { setText(e.target.value); setOpen(true); }} />
+    <div className="relative w-56">
+      <Input className="h-8" value={text} placeholder={placeholder} onFocus={() => setOpen(true)} onChange={(e) => { setText(e.target.value); setOpen(true); }} />
       {open && shown.length > 0 && (
         <div className="absolute z-20 mt-1 w-full rounded-md border bg-background shadow">
           {shown.map((o) => (
@@ -148,7 +138,7 @@ function TextFix({ placeholder, label, onSave }: { placeholder: string; label: s
   const [v, setV] = useState("");
   return (
     <div className="flex items-center gap-2">
-      <Input className="w-44" value={v} placeholder={placeholder} onChange={(e) => setV(e.target.value)} />
+      <Input className="h-8 w-36" value={v} placeholder={placeholder} onChange={(e) => setV(e.target.value)} />
       <Button size="sm" disabled={!v.trim()} onClick={() => onSave(v.trim())}>{label}</Button>
     </div>
   );
@@ -190,7 +180,7 @@ const TABS: { key: string; label: string; kind: "punch" | "item"; how: string }[
     key: "Hours differ",
     label: "Hours differ",
     kind: "item",
-    how: "The punch hours in MTEK don't match the review/coaching record in HR - Instructors. Decide which is right: if the review hours are wrong, fix the Mentor Review in HR - Instructors; if the punch is wrong, correct the shift in MTEK, re-run that studio's fetch, then Run check again.",
+    how: "The punch hours in MTEK don't match the review/coaching record in HR - Instructors. Decide which is right: if the review hours are wrong, fix the Mentor Review in HR - Instructors; if the punch is wrong, correct the shift in MTEK, fetch again (Step 1), then Run check again.",
   },
   {
     key: "Punch without review",
@@ -200,7 +190,26 @@ const TABS: { key: string; label: string; kind: "punch" | "item"; how: string }[
   },
 ];
 
-function IssueTabs({ start, end, items, hasRun }: { start: string; end: string; items: Rec[]; hasRun: boolean }) {
+const TH = "border-b px-2 py-1.5 text-left text-xs font-medium text-muted-foreground";
+const TD = "border-b px-2 py-1.5 align-middle";
+
+function IssueTabs({
+  start,
+  end,
+  items,
+  hasRun,
+  fetched,
+  progress,
+  onProgress,
+}: {
+  start: string;
+  end: string;
+  items: Rec[];
+  hasRun: boolean;
+  fetched: boolean;
+  progress: string;
+  onProgress: (v: "Started" | "COMPLETE") => void;
+}) {
   const from = useMemo(() => {
     const d = new Date(`${start}T12:00:00Z`);
     d.setUTCDate(d.getUTCDate() - 1);
@@ -215,17 +224,21 @@ function IssueTabs({ start, end, items, hasRun }: { start: string; end: string; 
   const empOpts = useMemo(() => toOpts(empOptsQ.data), [empOptsQ.data]);
   const rateOpts = useMemo(() => toOpts(rateOptsQ.data), [rateOptsQ.data]);
 
-  const punches = useMemo(
-    () => rowsOf(punchesQ.data).filter((r) => day(r.fields.date) >= start && day(r.fields.date) <= end && !labelOf(r.fields.remove)),
-    [punchesQ.data, start, end],
-  );
+  const allPunches = useMemo(() => rowsOf(punchesQ.data).filter((r) => day(r.fields.date) >= start && day(r.fields.date) <= end), [punchesQ.data, start, end]);
+  const punches = useMemo(() => allPunches.filter((r) => !labelOf(r.fields.remove)), [allPunches]);
   const issueRows = useMemo(
     () => punches.map((r) => ({ r, issues: labelOf(r.fields.issues).split(",").map((s) => s.trim()).filter(Boolean) })).filter((x) => x.issues.length),
     [punches],
   );
+  const itemByPunch = useMemo(() => {
+    const m = new Map<string, Rec>();
+    items.forEach((i) => idsOf(i.fields.punch).forEach((id) => m.set(id, i)));
+    return m;
+  }, [items]);
 
   const countFor = (key: string, kind: string) =>
     kind === "punch" ? issueRows.filter((x) => x.issues.includes(key)).length : items.filter((i) => labelOf(i.fields.result) === key).length;
+  const totalIssues = TABS.reduce((n, t) => n + countFor(t.key, t.kind), 0);
 
   const [tab, setTab] = useState<string>("");
   const firstWithIssues = TABS.find((t) => countFor(t.key, t.kind) > 0)?.key;
@@ -257,152 +270,233 @@ function IssueTabs({ start, end, items, hasRun }: { start: string; end: string; 
     return [...pool].sort((a, b) => Number(b.title.includes(type)) - Number(a.title.includes(type)));
   };
 
-  const list = current?.kind === "punch" ? issueRows.filter((x) => x.issues.includes(current.key)) : items.filter((i) => labelOf(i.fields.result) === current?.key);
+  const punchRows = current?.kind === "punch" ? issueRows.filter((x) => x.issues.includes(current.key)) : [];
+  const itemRows = current?.kind === "item" ? items.filter((i) => labelOf(i.fields.result) === current.key) : [];
+
+  // Status of every punch for the All results tab: payroll issues first, else the match result.
+  const statusOf = (r: Rec): { text: string; cls: string } => {
+    if (labelOf(r.fields.remove)) return { text: "Removed / do not pay", cls: "bg-gray-100 text-gray-700" };
+    const issues = labelOf(r.fields.issues);
+    if (issues) return { text: issues, cls: "bg-amber-100 text-amber-800" };
+    const it = itemByPunch.get(r.id);
+    if (it) return { text: labelOf(it.fields.result), cls: RESULT_STYLE[labelOf(it.fields.result)] ?? "bg-gray-100 text-gray-700" };
+    return { text: hasRun ? "Good" : "No payroll issues", cls: "bg-green-100 text-green-800" };
+  };
+
+  const confirmBlockers = [
+    !fetched && "Fetch the hours (Step 1).",
+    !hasRun && "Run the check (Step 2).",
+    totalIssues > 0 && `${totalIssues} issue${totalIssues === 1 ? "" : "s"} left in Step 3.`,
+  ].filter(Boolean) as string[];
 
   return (
-    <div className="space-y-4">
-      <div className="text-sm font-medium">Step 3: fix the issues ({punches.length} punches this week)</div>
-      <Tabs value={active} onValueChange={setTab}>
-        <TabsList className="h-auto flex-wrap justify-start">
-          {TABS.map((t) => {
-            const c = countFor(t.key, t.kind);
-            return (
-              <TabsTrigger key={t.key} value={t.key} className="gap-2">
-                {t.label}
-                <span className={cn("rounded-full px-1.5 text-xs font-semibold", c ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-800")}>{c}</span>
-              </TabsTrigger>
-            );
-          })}
-          <TabsTrigger value="all">All results</TabsTrigger>
-        </TabsList>
-      </Tabs>
+    <div className="space-y-6">
+      <div className="space-y-4">
+        <div className="text-sm font-medium">Step 3: fix the issues ({punches.length} punches this week)</div>
+        <Tabs value={active} onValueChange={setTab}>
+          <TabsList className="h-auto flex-wrap justify-start">
+            {TABS.map((t) => {
+              const c = countFor(t.key, t.kind);
+              return (
+                <TabsTrigger key={t.key} value={t.key} className="gap-2">
+                  {t.label}
+                  <span className={cn("rounded-full px-1.5 text-xs font-semibold", c ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-800")}>{c}</span>
+                </TabsTrigger>
+              );
+            })}
+            <TabsTrigger value="all" className="gap-2">
+              All time punches
+              <span className="rounded-full bg-gray-100 px-1.5 text-xs font-semibold text-gray-700">{allPunches.length}</span>
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
 
-      {punchesQ.isLoading && <Loader2 className="h-5 w-5 animate-spin" />}
+        {punchesQ.isLoading && <Loader2 className="h-5 w-5 animate-spin" />}
 
-      {active === "all" ? (
-        <div className="rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Employee</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead className="text-right">Punch h</TableHead>
-                <TableHead className="text-right">Review h</TableHead>
-                <TableHead>Result</TableHead>
-                <TableHead>Detail</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {items.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">No results yet - run the check.</TableCell>
-                </TableRow>
-              )}
-              {items.map((i) => (
-                <TableRow key={i.id}>
-                  <TableCell>{day(i.fields.date)}</TableCell>
-                  <TableCell>{labelOf(i.fields.employee)}</TableCell>
-                  <TableCell>{labelOf(i.fields.type)}</TableCell>
-                  <TableCell className="text-right">{i.fields.punchHours ?? ""}</TableCell>
-                  <TableCell className="text-right">{i.fields.reviewHours ?? ""}</TableCell>
-                  <TableCell>
-                    <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", RESULT_STYLE[labelOf(i.fields.result)])}>{labelOf(i.fields.result)}</span>
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{labelOf(i.fields.detail)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      ) : (
-        current && (
-          <div className="space-y-3">
-            <div className="flex gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
-              <Info className="mt-0.5 h-4 w-4 shrink-0" />
-              <div>
-                <div className="font-medium">How to fix: {current.label}</div>
-                <div>{current.how}</div>
-              </div>
-            </div>
-            {current.kind === "item" && !hasRun ? (
-              <p className="text-sm text-muted-foreground">Run the check (Step 2) to see these.</p>
-            ) : list.length === 0 ? (
-              <p className="flex items-center gap-1 text-sm font-medium text-green-700"><CheckCircle2 className="h-4 w-4" /> Nothing to fix here.</p>
-            ) : current.kind === "item" ? (
-              (list as Rec[]).map((i) => {
-                const punchId = idsOf(i.fields.punch)[0];
-                return (
-                  <Card key={i.id}>
-                    <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
-                      <div>
-                        <div className="font-medium">{labelOf(i.fields.employee)} - {labelOf(i.fields.type)}</div>
-                        <div className="text-sm text-muted-foreground">
-                          {day(i.fields.date)} · punch {i.fields.punchHours ?? "-"} h · review {i.fields.reviewHours ?? "-"} h
-                        </div>
-                        {labelOf(i.fields.detail) && <div className="text-sm text-amber-700">{labelOf(i.fields.detail)}</div>}
-                      </div>
-                      {current.key === "Punch without review" && punchId && (
-                        <Button size="sm" variant="outline" onClick={() => removePunch(punchId, labelOf(i.fields.employee))}>
-                          Set to REMOVE / DO NOT PAY
-                        </Button>
-                      )}
-                    </CardContent>
-                  </Card>
-                );
-              })
-            ) : (
-              (list as { r: Rec; issues: string[] }[]).map(({ r, issues }) => {
-                const f = r.fields;
-                const name = labelOf(f.name);
-                const type = labelOf(f.rateType);
-                const employeeId = idsOf(f.employee)[0];
-                return (
-                  <Card key={r.id}>
-                    <CardContent className="space-y-3 p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <div className="font-medium">{name || "(no name)"} - {type}</div>
-                          <div className="text-sm text-muted-foreground">
-                            {day(f.date)} · {labelOf(f.timeIn) || "?"} to {labelOf(f.timeOut) || "?"} · {f.hours ?? 0} h · rate {labelOf(f.hourly) || "none"}
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-1">
-                          {issues.map((i) => (
-                            <span key={i} className={cn("rounded-full px-2 py-0.5 text-xs font-medium", i === current.key ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-600")}>{i}</span>
-                          ))}
-                        </div>
-                      </div>
-                      {current.key === "No employee" && (
-                        <Picker options={empOpts} placeholder={`Search employee (MTEK: ${name || "?"})`} onPick={(id) => upd.mutate({ recordId: r.id, fields: { employee: [id] } })} />
-                      )}
-                      {(current.key === "No rate" || current.key === "$0 wages") && (
-                        <Picker options={ratesFor(name, type)} placeholder="Search rate" onPick={(id) => upd.mutate({ recordId: r.id, fields: { rate: [id] } })} />
-                      )}
-                      {current.key === "No Desjardins ID" &&
-                        (employeeId ? (
-                          <TextFix placeholder="Desjardins ID" label="Save ID" onSave={(v) => empUpd.mutate({ recordId: employeeId, fields: { desjardins: v } })} />
-                        ) : (
-                          <span className="text-sm text-amber-700">
-                            {idsOf(f.instructor)[0] ? "Linked to an instructor, not an employee - add the ID on the instructor record." : "Select the employee first (see the No employee tab)."}
-                          </span>
-                        ))}
-                      {(current.key === "No clock out" || current.key === "$0 wages") && (
-                        <div className="flex flex-wrap items-center gap-3">
-                          <TextFix placeholder="Clock out e.g. 17:30" label="Save clock out" onSave={(v) => upd.mutate({ recordId: r.id, fields: { timeOut: v } })} />
-                          {current.key === "No clock out" && (
-                            <Button size="sm" variant="outline" onClick={() => removePunch(r.id, name)}>Set to REMOVE / DO NOT PAY</Button>
-                          )}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                );
-              })
-            )}
+        {active === "all" ? (
+          <div className="rounded-lg border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr>
+                  <th className={TH}>Date</th>
+                  <th className={TH}>Employee</th>
+                  <th className={TH}>Type</th>
+                  <th className={TH}>In - Out</th>
+                  <th className={cn(TH, "text-right")}>Hours</th>
+                  <th className={TH}>Rate</th>
+                  <th className={TH}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allPunches.length === 0 && (
+                  <tr><td colSpan={7} className="px-2 py-6 text-center text-muted-foreground">No time punches of these types this week.</td></tr>
+                )}
+                {allPunches.map((r) => {
+                  const st = statusOf(r);
+                  return (
+                    <tr key={r.id}>
+                      <td className={TD}>{day(r.fields.date)}</td>
+                      <td className={TD}>{labelOf(r.fields.name)}</td>
+                      <td className={TD}>{labelOf(r.fields.rateType)}</td>
+                      <td className={TD}>{labelOf(r.fields.timeIn) || "?"} - {labelOf(r.fields.timeOut) || "?"}</td>
+                      <td className={cn(TD, "text-right")}>{r.fields.hours ?? ""}</td>
+                      <td className={TD}>{labelOf(r.fields.hourly)}</td>
+                      <td className={TD}><span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", st.cls)}>{st.text}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        )
-      )}
+        ) : (
+          current && (
+            <div className="space-y-3">
+              <div className="flex gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+                <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <span className="font-medium">How to fix {current.label}: </span>
+                  {current.how}
+                </div>
+              </div>
+              {current.kind === "item" && !hasRun ? (
+                <p className="text-sm text-muted-foreground">Run the check (Step 2) to see these.</p>
+              ) : (current.kind === "punch" ? punchRows.length : itemRows.length) === 0 ? (
+                <p className="flex items-center gap-1 text-sm font-medium text-green-700"><CheckCircle2 className="h-4 w-4" /> Nothing to fix here.</p>
+              ) : current.kind === "item" ? (
+                <div className="rounded-lg border">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr>
+                        <th className={TH}>Date</th>
+                        <th className={TH}>Employee</th>
+                        <th className={TH}>Type</th>
+                        <th className={cn(TH, "text-right")}>Punch h</th>
+                        <th className={cn(TH, "text-right")}>Review h</th>
+                        <th className={TH}>Detail</th>
+                        <th className={TH}>Fix</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {itemRows.map((i) => {
+                        const punchId = idsOf(i.fields.punch)[0];
+                        return (
+                          <tr key={i.id}>
+                            <td className={TD}>{day(i.fields.date)}</td>
+                            <td className={TD}>{labelOf(i.fields.employee)}</td>
+                            <td className={TD}>{labelOf(i.fields.type)}</td>
+                            <td className={cn(TD, "text-right")}>{i.fields.punchHours ?? "-"}</td>
+                            <td className={cn(TD, "text-right")}>{i.fields.reviewHours ?? "-"}</td>
+                            <td className={cn(TD, "text-muted-foreground")}>{labelOf(i.fields.detail)}</td>
+                            <td className={TD}>
+                              {current.key === "Punch without review" && punchId ? (
+                                <Button size="sm" variant="outline" className="h-7" onClick={() => removePunch(punchId, labelOf(i.fields.employee))}>
+                                  REMOVE / DO NOT PAY
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">See instructions</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="rounded-lg border">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr>
+                        <th className={TH}>Date</th>
+                        <th className={TH}>Employee</th>
+                        <th className={TH}>Type</th>
+                        <th className={TH}>In - Out</th>
+                        <th className={cn(TH, "text-right")}>Hours</th>
+                        <th className={TH}>Rate</th>
+                        <th className={TH}>Other issues</th>
+                        <th className={TH}>Fix</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {punchRows.map(({ r, issues }) => {
+                        const f = r.fields;
+                        const name = labelOf(f.name);
+                        const type = labelOf(f.rateType);
+                        const employeeId = idsOf(f.employee)[0];
+                        return (
+                          <tr key={r.id}>
+                            <td className={TD}>{day(f.date)}</td>
+                            <td className={TD}>{name || "(no name)"}</td>
+                            <td className={TD}>{type}</td>
+                            <td className={TD}>{labelOf(f.timeIn) || "?"} - {labelOf(f.timeOut) || "?"}</td>
+                            <td className={cn(TD, "text-right")}>{f.hours ?? 0}</td>
+                            <td className={TD}>{labelOf(f.hourly) || "none"}</td>
+                            <td className={cn(TD, "text-xs text-muted-foreground")}>{issues.filter((i) => i !== current.key).join(", ")}</td>
+                            <td className={TD}>
+                              {current.key === "No employee" && (
+                                <Picker options={empOpts} placeholder={`Employee (MTEK: ${name || "?"})`} onPick={(id) => upd.mutate({ recordId: r.id, fields: { employee: [id] } })} />
+                              )}
+                              {(current.key === "No rate" || current.key === "$0 wages") && (
+                                <div className="flex items-center gap-2">
+                                  <Picker options={ratesFor(name, type)} placeholder="Search rate" onPick={(id) => upd.mutate({ recordId: r.id, fields: { rate: [id] } })} />
+                                  {current.key === "$0 wages" && (
+                                    <TextFix placeholder="Clock out 17:30" label="Save" onSave={(v) => upd.mutate({ recordId: r.id, fields: { timeOut: v } })} />
+                                  )}
+                                </div>
+                              )}
+                              {current.key === "No Desjardins ID" &&
+                                (employeeId ? (
+                                  <TextFix placeholder="Desjardins ID" label="Save ID" onSave={(v) => empUpd.mutate({ recordId: employeeId, fields: { desjardins: v } })} />
+                                ) : (
+                                  <span className="text-xs text-amber-700">
+                                    {idsOf(f.instructor)[0] ? "Instructor punch: add the ID on the instructor record" : "Select the employee first"}
+                                  </span>
+                                ))}
+                              {current.key === "No clock out" && (
+                                <div className="flex items-center gap-2">
+                                  <TextFix placeholder="Clock out 17:30" label="Save" onSave={(v) => upd.mutate({ recordId: r.id, fields: { timeOut: v } })} />
+                                  <Button size="sm" variant="outline" className="h-7" onClick={() => removePunch(r.id, name)}>REMOVE / DO NOT PAY</Button>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )
+        )}
+      </div>
+
+      <Card>
+        <CardContent className="space-y-2 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-medium">Step 4: confirm to payroll</div>
+            <div className="flex items-center gap-3">
+              <Badge variant="outline">Program clock in status: {progress || "Not started"}</Badge>
+              {progress === "COMPLETE" ? (
+                <Button size="sm" variant="outline" onClick={() => onProgress("Started")}>Reopen</Button>
+              ) : (
+                <Button size="sm" disabled={confirmBlockers.length > 0} onClick={() => window.confirm("Confirm these Coaching / Class Review / Instructor Eval hours to payroll?") && onProgress("COMPLETE")}>
+                  <CheckCircle2 className="mr-1 h-4 w-4" /> Confirm to payroll
+                </Button>
+              )}
+            </div>
+          </div>
+          {progress === "COMPLETE" ? (
+            <p className="text-sm text-green-700">Confirmed. This week's coaching, class review and instructor eval hours are marked COMPLETE on the Budget week.</p>
+          ) : confirmBlockers.length > 0 ? (
+            <ul className="list-disc pl-5 text-sm text-amber-700">
+              {confirmBlockers.map((b) => <li key={b}>{b}</li>)}
+            </ul>
+          ) : (
+            <p className="text-sm text-green-700">All checks pass. Confirm to mark this week COMPLETE.</p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -410,39 +504,29 @@ function IssueTabs({ start, end, items, hasRun }: { start: string; end: string; 
 export default function Block() {
   const [weekId, setWeekId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [fetching, setFetching] = useState(false);
 
   const weeksQ = useRecords({ from: ds.budgetWeek, select: weekSel, count: 12, orderBy: q.desc("start") });
-  const studiosQ = useRecords({ from: ds.studioWeek, select: studioSel, count: 200 });
   const runsQ = useRecords({ from: ds.runWeek, select: runSel, count: 100 });
   const itemsQ = useRecords({ from: ds.runItem, select: itemSel, count: 200, orderBy: q.desc("date") });
-  useLoadAll(studiosQ as any);
   useLoadAll(itemsQ as any);
 
   const weeks = useMemo(() => rowsOf(weeksQ.data), [weeksQ.data]);
-  const studioRows = useMemo(() => rowsOf(studiosQ.data), [studiosQ.data]);
   const runs = useMemo(() => rowsOf(runsQ.data), [runsQ.data]);
   const items = useMemo(() => rowsOf(itemsQ.data), [itemsQ.data]);
 
-  // Every studio that has ever had a Budget week - Studio row is expected in every week (b.home is not required).
-  const studioNames = useMemo(() => {
-    const names = new Set<string>();
-    studioRows.forEach((r) => {
-      const n = labelOf(r.fields.studio);
-      if (n && !/b\.home/i.test(n)) names.add(n);
-    });
-    return [...names].sort();
-  }, [studioRows]);
-
-  const studioStatus = (wid: string) => {
-    const rows = studioRows.filter((r) => idsOf(r.fields.week).includes(wid));
-    return studioNames.map((name) => {
-      const rec = rows.find((r) => labelOf(r.fields.studio) === name);
-      const done = Boolean(rec && labelOf(rec.fields.completed));
-      return { name, done, exists: Boolean(rec), overall: rec ? labelOf(rec.fields.overall) : "" };
-    });
-  };
-
   const runFor = (wid: string) => runs.find((r) => idsOf(r.fields.week).includes(wid));
+
+  const weekUpdate = useRecordUpdate({
+    from: ds.budgetWeek,
+    fields: weekUpd,
+    onSuccess: async () => {
+      await weeksQ.refetch();
+      toast.success("Program clock in status updated");
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Could not update the status"),
+  });
+  const setProgress = (wid: string, v: "Started" | "COMPLETE") => weekUpdate.mutate({ recordId: wid, fields: { progress: v } });
 
   const createRun = useRecordCreate({
     from: ds.runWeek,
@@ -454,8 +538,25 @@ export default function Block() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const trigger = async (runId: string) => {
+  const triggerFetch = async (runId: string, wid: string, progress: string) => {
+    setFetching(true);
+    // Fetching again reopens the week: Started until it is confirmed to payroll again.
+    if (progress !== "Started") setProgress(wid, "Started");
+    try {
+      await fetch(`${FETCH_WEBHOOK}?recordId=${encodeURIComponent(runId)}`, { method: "POST", mode: "no-cors" });
+      toast.success("Fetching the hours - refresh in about a minute.");
+      [45000, 90000].forEach((ms) => setTimeout(() => { runsQ.refetch(); }, ms));
+    } catch (e: any) {
+      toast.error(e?.message ?? "Could not start the fetch");
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  const trigger = async (runId: string, wid: string, progress: string) => {
     setRunning(true);
+    // Re-checking reopens the week: Started until it is confirmed to payroll again.
+    if (progress !== "Started") setProgress(wid, "Started");
     try {
       await fetch(`${RUN_CHECK_WEBHOOK}?recordId=${encodeURIComponent(runId)}`, { method: "POST", mode: "no-cors" });
       toast.success("Check started - refresh in about a minute.");
@@ -470,16 +571,18 @@ export default function Block() {
     }
   };
 
-  const loading = weeksQ.isLoading || studiosQ.isLoading || runsQ.isLoading;
+  const loading = weeksQ.isLoading || runsQ.isLoading;
 
   /* ---------------- week view ---------------- */
   if (weekId) {
     const week = weeks.find((w) => w.id === weekId);
-    const status = studioStatus(weekId);
-    const allDone = status.length > 0 && status.every((s) => s.done);
     const run = runFor(weekId);
     const weekItems = run ? items.filter((i) => idsOf(i.fields.run).includes(run.id)) : [];
     const f = run?.fields ?? {};
+    const progress = labelOf(week?.fields.progress);
+    const fetchStatus = labelOf(f.fetchStatus);
+    const fetched = fetchStatus === "COMPLETE";
+    const lastNote = labelOf(f.notes).split("\n")[0];
 
     return (
       <div className="mx-auto max-w-6xl space-y-6 p-4">
@@ -494,35 +597,24 @@ export default function Block() {
         </div>
 
         <Card>
-          <CardContent className="space-y-3 p-4">
-            <div className="text-sm font-medium">Step 1: every studio has fetched its staff hours</div>
-            <div className="flex flex-wrap gap-2">
-              {status.map((s) => (
-                <Chip key={s.name} ok={s.done}>
-                  {shortStudio(s.name)}: {s.done ? "fetched" : s.exists ? s.overall || "in progress" : "not started"}
-                </Chip>
-              ))}
-            </div>
-            {!allDone && <p className="text-sm text-amber-700">The check unlocks once all studios are done.</p>}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="space-y-4 p-4">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-medium">Step 2: run the check (matches the punch hours to the reviews pushed to MTEK)</div>
+          <CardContent className="space-y-2 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-medium">Step 1: fetch the hours (every studio; Coaching 1-on-1, Class Review and Instructor Eval only)</div>
               <div className="flex items-center gap-2">
-                {run && <Badge variant="outline">{labelOf(f.status) || "Not started"}</Badge>}
+                {run && <Badge variant="outline">Fetch: {fetchStatus || "Not started"}</Badge>}
                 {run ? (
-                  <Button size="sm" disabled={!allDone || running} onClick={() => trigger(run.id)}>
-                    {running ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Play className="mr-1 h-4 w-4" />}
-                    Run check
+                  <Button size="sm" disabled={fetching || fetchStatus === "Started"} onClick={() => triggerFetch(run.id, weekId, progress)}>
+                    {fetching || fetchStatus === "Started" ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Download className="mr-1 h-4 w-4" />}
+                    Fetch hours
                   </Button>
                 ) : (
                   <Button
                     size="sm"
-                    disabled={!allDone || createRun.isPending}
-                    onClick={() => createRun.mutate({ name: `${day(week?.fields.start)} - ${day(week?.fields.end)}`, week: [weekId], status: "Not started" })}
+                    disabled={createRun.isPending}
+                    onClick={() => {
+                      createRun.mutate({ name: `${day(week?.fields.start)} - ${day(week?.fields.end)}`, week: [weekId], status: "Not started" });
+                      if (!progress) setProgress(weekId, "Started");
+                    }}
                   >
                     Create run
                   </Button>
@@ -532,20 +624,38 @@ export default function Block() {
                 </Button>
               </div>
             </div>
+            {!run && <p className="text-sm text-muted-foreground">Create the run for this week first, then fetch.</p>}
+            {run && lastNote && <p className="text-xs text-muted-foreground">{lastNote}</p>}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="space-y-3 p-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium">Step 2: run the check (matches the punch hours to the reviews pushed to MTEK)</div>
+              <div className="flex items-center gap-2">
+                {run && <Badge variant="outline">{labelOf(f.status) || "Not started"}</Badge>}
+                <Button size="sm" disabled={!run || !fetched || running} onClick={() => run && trigger(run.id, weekId, progress)}>
+                  {running ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Play className="mr-1 h-4 w-4" />}
+                  Run check
+                </Button>
+              </div>
+            </div>
+            {!fetched && <p className="text-sm text-amber-700">Fetch the hours first (Step 1).</p>}
             {run && (
               <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-lg border p-3">
+                <div className="rounded-lg border p-2">
                   <div className="text-xs text-muted-foreground">Matched</div>
-                  <div className="text-2xl font-semibold">{num(f.matched)}</div>
+                  <div className="text-xl font-semibold">{num(f.matched)}</div>
                 </div>
-                <div className="rounded-lg border p-3">
+                <div className="rounded-lg border p-2">
                   <div className="text-xs text-muted-foreground">Hours differ</div>
-                  <div className="text-2xl font-semibold">{num(f.hoursDiffer)}</div>
+                  <div className="text-xl font-semibold">{num(f.hoursDiffer)}</div>
                   <span className={cn("text-xs font-medium", labelOf(f.hoursDifferCheck) === "ALL GOOD" ? "text-green-700" : "text-amber-700")}>{labelOf(f.hoursDifferCheck)}</span>
                 </div>
-                <div className="rounded-lg border p-3">
+                <div className="rounded-lg border p-2">
                   <div className="text-xs text-muted-foreground">Punch without review</div>
-                  <div className="text-2xl font-semibold">{num(f.punchNoReview)}</div>
+                  <div className="text-xl font-semibold">{num(f.punchNoReview)}</div>
                   <span className={cn("text-xs font-medium", labelOf(f.punchNoReviewCheck) === "ALL GOOD" ? "text-green-700" : "text-amber-700")}>{labelOf(f.punchNoReviewCheck)}</span>
                 </div>
               </div>
@@ -553,47 +663,61 @@ export default function Block() {
           </CardContent>
         </Card>
 
-        <IssueTabs start={day(week?.fields.start)} end={day(week?.fields.end)} items={weekItems} hasRun={Boolean(run)} />
+        <IssueTabs
+          start={day(week?.fields.start)}
+          end={day(week?.fields.end)}
+          items={weekItems}
+          hasRun={Boolean(run)}
+          fetched={fetched}
+          progress={progress}
+          onProgress={(v) => setProgress(weekId, v)}
+        />
       </div>
     );
   }
 
   /* ---------------- list view ---------------- */
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-4">
+    <div className="mx-auto max-w-6xl space-y-3 p-4">
       <div>
         <h1 className="text-2xl font-semibold">Coaching & Review Hours</h1>
-        <p className="text-sm text-muted-foreground">Open a week once every studio has fetched its staff hours.</p>
+        <p className="text-sm text-muted-foreground">Open a week, fetch the hours, run the check, fix the issues, then confirm to payroll.</p>
       </div>
       {loading && <Loader2 className="h-5 w-5 animate-spin" />}
-      {weeks.map((w) => {
-        const status = studioStatus(w.id);
-        const done = status.filter((s) => s.done).length;
-        const allDone = status.length > 0 && done === status.length;
-        const run = runFor(w.id);
-        return (
-          <Card key={w.id}>
-            <CardContent className="flex flex-wrap items-center justify-between gap-4 p-4">
-              <div className="min-w-[200px]">
-                <div className="text-lg font-semibold">{day(w.fields.start)}</div>
-                <div className="text-sm text-muted-foreground">{day(w.fields.end)}</div>
-              </div>
-              <div className="flex flex-1 flex-wrap gap-2">
-                {status.map((s) => (
-                  <Chip key={s.name} ok={s.done}>
-                    {shortStudio(s.name)}
-                  </Chip>
-                ))}
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-sm text-muted-foreground">{allDone ? "All studios fetched" : `${done}/${status.length} studios`}</span>
-                {run && <Badge variant="outline">{labelOf(run.fields.status)}</Badge>}
-                <Button onClick={() => setWeekId(w.id)}>Open</Button>
-              </div>
-            </CardContent>
-          </Card>
-        );
-      })}
+      <div className="rounded-lg border">
+        <table className="w-full text-sm">
+          <thead>
+            <tr>
+              <th className={TH}>Week</th>
+              <th className={TH}>Fetch</th>
+              <th className={TH}>Check</th>
+              <th className={TH}>Program clock in status</th>
+              <th className={TH}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {weeks.map((w) => {
+              const run = runFor(w.id);
+              const progress = labelOf(w.fields.progress);
+              return (
+                <tr key={w.id}>
+                  <td className={cn(TD, "whitespace-nowrap font-medium")}>{day(w.fields.start)} → {day(w.fields.end)}</td>
+                  <td className={TD}>{labelOf(run?.fields.fetchStatus) || "Not started"}</td>
+                  <td className={TD}>{labelOf(run?.fields.status) || "Not started"}</td>
+                  <td className={TD}>
+                    <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", progress === "COMPLETE" ? "bg-green-100 text-green-800" : progress ? "bg-yellow-100 text-yellow-800" : "bg-gray-100 text-gray-600")}>
+                      {progress || "Not started"}
+                    </span>
+                  </td>
+                  <td className={cn(TD, "text-right")}>
+                    <Button size="sm" className="h-7" onClick={() => setWeekId(w.id)}>Open</Button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

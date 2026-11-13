@@ -49,6 +49,16 @@ const CONFIG = {
   recordId: process.env.AIRTABLE_RECORD_ID,
 };
 
+// Coaching / Class Review / Instructor Eval shifts are fetched once for ALL studios by
+// HR Review Fetch (hr-review-fetch.mjs), so this per-studio fetch ignores exactly these
+// four shift types and still takes in everything else (including any new shift type).
+export const REVIEW_SHIFT_TYPES = new Set([
+  'Coaching 1-on-1 (HQ)',
+  'Coaching 1-on-1 (SPINCO HQ)',
+  'Class Review',
+  'Instructor Eval',
+]);
+
 function requireConfig() {
   const missing = [];
   if (!CONFIG.airtable.token) missing.push('AIRTABLE_TOKEN');
@@ -406,7 +416,7 @@ async function fetchExistingPunches(punchRecordIds) {
       filterByFormula: `OR(${chunk.map((id) => `RECORD_ID()='${id}'`).join(',')})`,
       pageSize: '50',
     });
-    ['MTEK ID', 'Date', 'Time In', 'Time Out', 'Employee Name', 'Hourly rate'].forEach((field) =>
+    ['MTEK ID', 'Date', 'Time In', 'Time Out', 'Employee Name', 'Hourly rate', 'Rate Type'].forEach((field) =>
       params.append('fields[]', field),
     );
 
@@ -416,6 +426,8 @@ async function fetchExistingPunches(punchRecordIds) {
     });
 
     for (const record of page.records || []) {
+      // Review-type punches belong to HR Review Fetch, not to this studio row's checks.
+      if (REVIEW_SHIFT_TYPES.has(String(getField(record, 'Rate Type') || '').trim())) continue;
       const punch = {
         id: record.id,
         mtekId: String(getField(record, 'MTEK ID') || '').trim(),
@@ -509,6 +521,9 @@ async function run() {
       }
       if (start.date < startDate || start.date > endDate) continue;
 
+      const rateType = shiftTypeNameFromShift(shift, included);
+      if (REVIEW_SHIFT_TYPES.has(rateType)) continue;
+
       const end = attributes.end_datetime ? localParts(attributes.end_datetime) : null;
       mtekPunches.push({
         mtekId: String(shift?.id ?? '').trim(),
@@ -517,7 +532,7 @@ async function run() {
         timeOut: end ? end.time : '',
         locationId: String(relationshipId(shift, 'location') ?? ''),
         employeeName: employeeNameFromShift(shift, included),
-        rateType: shiftTypeNameFromShift(shift, included),
+        rateType,
       });
     }
 
@@ -797,4 +812,20 @@ if (process.env.HR_PUNCHES_SKIP_RUN !== '1') {
   });
 }
 
-export { fetchPaginatedMtek };
+export {
+  CONFIG,
+  airtableRequest,
+  createPunchRecords,
+  patchPunchRecords,
+  fetchAllRecords,
+  fetchPaginatedMtek,
+  fetchWindows,
+  getField,
+  loadInstructorMap,
+  localParts,
+  normalise,
+  paddedBound,
+  relationshipId,
+  employeeNameFromShift,
+  shiftTypeNameFromShift,
+};
