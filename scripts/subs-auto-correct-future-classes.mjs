@@ -204,10 +204,14 @@ async function slackPost(channel, text, blocks, attachments) {
 
 const mrk = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+const classLink = (c) => {
+  const id = c.recId || c.rec?.id;
+  return id ? `${ALL_CLASSES_URL}?class=${id}&date=${c.ymd}` : "";
+};
 const EMOJI = { instructor: "🔄", sub: "🤝", blank: "🆕", new: "➕" };
 
 /**
- * Block Kit message for one studio. Layout: header + one-line summary on top, then (inside an amber attachment)
+ * Block Kit message for one studio (each class time links to that class's details in ALL CLASSES). Layout: header + one-line summary on top, then (inside an amber attachment)
  * a native Slack table (Class / Type / Was / Now / Change), then how to revert + a button.
  * `variant: "list"` is the fallback when Slack refuses the table block: same info, grouped by day.
  */
@@ -230,7 +234,12 @@ function studioMessage(studio, items, { dry, variant = "table" } = {}) {
     const cell = (t, bold) => (bold ? { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text: String(t) || " ", style: { bold: true } }] }] } : { type: "raw_text", text: String(t) || " " });
     const rows = [[cell("Class", true), cell("Type", true), cell("Was", true), cell("Now (MTEK)", true), cell("Change", true)]];
     for (const c of items.slice(0, 95)) {
-      rows.push([cell(prettyWhen(c.ymd, c.time)), cell(c.type), cell(c.from || "nobody"), cell(c.to, true), cell(`${EMOJI[c.cat] || ""} ${c.kindLabel}${c.warn ? " ⚠️" : ""}`)]);
+      const url = classLink(c);
+      const when = prettyWhen(c.ymd, c.time);
+      const whenCell = url
+        ? { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "link", url, text: when }] }] }
+        : cell(when);
+      rows.push([whenCell, cell(c.type), cell(c.from || "nobody"), cell(c.to, true), cell(`${EMOJI[c.cat] || ""} ${c.kindLabel}${c.warn ? " ⚠️" : ""}`)]);
     }
     body = [{ type: "table", rows, column_settings: [{ is_wrapped: false }, { is_wrapped: true }, { is_wrapped: true }, { is_wrapped: true }, { is_wrapped: true }] }];
     if (items.length > 95) body.push({ type: "context", elements: [{ type: "mrkdwn", text: `…and ${items.length - 95} more.` }] });
@@ -239,7 +248,7 @@ function studioMessage(studio, items, { dry, variant = "table" } = {}) {
     for (const c of items) byDay.set(c.ymd, [...(byDay.get(c.ymd) || []), c]);
     const lines = [...byDay].map(([ymd, list]) => {
       const head = `*${mrk(prettyWhen(ymd, "00:00").replace(/, 12:00am$/, ""))}*`;
-      return `${head}\n${list.map((c) => `${EMOJI[c.cat] || "•"} ${mrk(prettyWhen(c.ymd, c.time).split(", ").pop())} · ${mrk(c.type)}: ${c.from ? `~${mrk(c.from)}~` : "_nobody_"} → *${mrk(c.to)}*${c.warn ? " ⚠️" : ""}`).join("\n")}`;
+      return `${head}\n${list.map((c) => `${EMOJI[c.cat] || "•"} ${classLink(c) ? `<${classLink(c)}|${mrk(prettyWhen(c.ymd, c.time).split(", ").pop())}>` : mrk(prettyWhen(c.ymd, c.time).split(", ").pop())} · ${mrk(c.type)}: ${c.from ? `~${mrk(c.from)}~` : "_nobody_"} → *${mrk(c.to)}*${c.warn ? " ⚠️" : ""}`).join("\n")}`;
     });
     const chunks = [];
     let cur = "";
@@ -721,6 +730,7 @@ async function applyViaStaging(toApply, { col, empById, today }) {
     for (const c of pending) {
       const rec = c.rec ? found.get(c.rec.id) : found.get(`new:${c.key}`);
       if (isDone(c, rec)) {
+        c.recId = rec.id;
         confirmed.push(c);
         confirmedRecs.set(c.key, rec);
       } else still.push(c);
