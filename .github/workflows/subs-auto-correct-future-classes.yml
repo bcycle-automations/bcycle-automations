@@ -1,0 +1,69 @@
+name: Subs - Auto-correct future classes (Mon/Wed/Fri)
+
+# Applies the MTEK -> Airtable schedule changes (what /subs-schedule-changes does by hand) for
+# today + 60 days, never past the last date imported for each studio on /subs-import-mtek,
+# then posts to each studio's Slack channel the classes that were updated. See scripts/subs-auto-correct-future-classes.mjs.
+on:
+  schedule:
+    # 10:00 UTC = 6:00 am Toronto (summer) / 5:00 am (winter), Monday, Wednesday, Friday
+    - cron: "0 10 * * 1,3,5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: read only, print what would be applied, no changes; the messages that would be posted are DM'd to Jon"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      only_studio:
+        description: "Optional: only this studio (e.g. Westmount) - for tests"
+        required: false
+        type: string
+
+# Needed so the workflow can commit the state file
+permissions:
+  contents: write
+
+# Same group as the manual import: they share the staging table and must not overlap.
+concurrency:
+  group: subs-import-mtek-classes
+  cancel-in-progress: false
+
+jobs:
+  auto-correct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Auto-correct future classes
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.INSTRUCTOR_SUBS_BASE_ID }}
+          MTEK_API_TOKEN: ${{ secrets.MTEK_API_TOKEN }}
+          MTEK_BASE_URL: https://bcycle.marianatek.com
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ADMIN_USER_ID: U03EM1SNFGS # Jon: gets problems, and the whole dry run, as a DM
+          # scheduled runs are always real; manual runs default to a dry run
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
+          ONLY_STUDIO: ${{ github.event.inputs.only_studio }}
+        run: node scripts/subs-auto-correct-future-classes.mjs
+
+      - name: Commit updated state file
+        run: |
+          if git status --porcelain | grep "state/subs-auto-correct-state.json"; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/subs-auto-correct-state.json
+            git commit -m "Update subs auto-correct state [skip ci]" || echo "Nothing to commit"
+            git pull --rebase origin ${{ github.ref_name }}
+            git push
+          else
+            echo "No state changes to commit."
+          fi
