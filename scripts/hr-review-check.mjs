@@ -41,7 +41,7 @@ const ITEM = {
 };
 const PUNCH = {
   date: 'fldwxo5JqKNOf4KvY', employee: 'fld19AyljflWBAFH0', rateType: 'fldPfC30I2xFuDbPT',
-  hours: 'fldSxDiBejz7REwpX', remove: 'fldFTCN6GKZNk5MkR', issues: 'fldQGFi71K3gNUTTm', ok: 'fldvaUwPOWgpo4TjL',
+  hours: 'fldSxDiBejz7REwpX', remove: 'fldFTCN6GKZNk5MkR', issues: 'fldQGFi71K3gNUTTm', ok: 'fldvaUwPOWgpo4TjL', mtekId: 'fldmvjHVL8Q1BMLez',
 };
 const CR = {
   mentor: 'fld1I0hc2cj97bXjQ', classDate: 'fldo22jFhbWwYT9on', reviewIn: 'flds95Ttaerz5iQnP',
@@ -69,49 +69,44 @@ export function localDate(iso, timeZone = CONFIG.timeZone) {
   return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 }
 
+/** "MTEK done - 2026-11-13 - In 00:00 - Out 01:00 - Coaching 1-on-1 (HQ) (MTEK shift 10541)" -> "10541" */
+export function shiftIdOf(text) {
+  const m = String(text ?? '').match(/MTEK shift\s+(\d+)/i);
+  return m ? m[1] : '';
+}
+
 /**
- * punches: [{id, type, name, date, hours}]; records: [{source, type, name, date, hours, ignore}]
- * Returns items: [{result, type, name, date, punchHours, reviewHours, punchId, source, detail}]
+ * Pairs each punch with the review / coaching session / evaluation that created it, by MTEK shift ID.
+ * (The push creates the MTEK shift on the day it is pushed, with a placeholder start time, so neither the
+ * session date nor the employee name can be used to match: only the shift ID the push writes back.)
+ *
+ * punches: [{id, mtekId, type, name, date, hours, ok}]
+ * records: [{source, type, name, shiftId, hours, ignore, sessionDate}]
  */
 export function matchItems(punches, records, tolerance = CONFIG.hoursTolerance) {
-  const key = (x) => `${x.type}|${normName(x.name)}|${x.date}`;
-  const groups = new Map();
-  const slot = (k) => {
-    if (!groups.has(k)) groups.set(k, { punches: [], records: [] });
-    return groups.get(k);
-  };
-  for (const p of punches) slot(key(p)).punches.push(p);
-  for (const r of records) slot(key(r)).records.push(r);
-
+  const byShift = new Map(records.filter((r) => r.shiftId).map((r) => [r.shiftId, r]));
   const items = [];
-  for (const g of groups.values()) {
-    const ps = [...g.punches];
-    const rs = [...g.records];
-    // Pair each record with the unused punch of closest hours.
-    for (const r of rs) {
-      let best = -1;
-      for (let i = 0; i < ps.length; i += 1) {
-        if (best < 0 || Math.abs(ps[i].hours - r.hours) < Math.abs(ps[best].hours - r.hours)) best = i;
-      }
-      const p = best >= 0 ? ps.splice(best, 1)[0] : null;
-      if (r.ignore) {
-        items.push({ result: 'Ignored', type: r.type, name: r.name, date: r.date, punchHours: p?.hours ?? null, reviewHours: r.hours, punchId: p?.id ?? null, source: r.source, detail: 'Marked IGNORE/DO NOT PAY' + (p ? ' (a punch exists for it)' : '') });
-      } else if (!p) {
-        // A review with no punch is never an issue (the check verifies the hours MTEK holds), whether or
-        // not it was pushed. It is kept as an informational row.
-        items.push({ result: 'Ignored', type: r.type, name: r.name, date: r.date, punchHours: null, reviewHours: r.hours, punchId: null, source: r.source, detail: r.mtekDone ? 'No punch for this review in MTEK' : 'Not pushed to MTEK yet' });
-      } else {
-        const diff = Math.abs(p.hours - r.hours) > tolerance;
-        items.push({ result: diff ? 'Hours differ' : 'Matched', type: r.type, name: r.name, date: r.date, punchHours: p.hours, reviewHours: r.hours, punchId: p.id, source: r.source, detail: diff ? `Punch ${p.hours} h vs review ${r.hours} h` : '' });
-      }
-    }
-    for (const p of ps) {
+  for (const p of punches) {
+    const r = p.mtekId ? byShift.get(p.mtekId) : undefined;
+    const base = { type: p.type, name: p.name, date: p.date, punchHours: p.hours, punchId: p.id };
+    if (!r) {
       // Accepted with the OK button on the Review Check page: no review is needed for this punch.
-      if (p.ok) {
-        items.push({ result: 'Ignored', type: p.type, name: p.name, date: p.date, punchHours: p.hours, reviewHours: null, punchId: p.id, source: '', detail: 'Accepted without review (OK)' });
-        continue;
-      }
-      items.push({ result: 'Punch without review', type: p.type, name: p.name, date: p.date, punchHours: p.hours, reviewHours: null, punchId: p.id, source: '', detail: 'No review, coaching session or evaluation on this date' });
+      items.push(
+        p.ok
+          ? { ...base, result: 'Ignored', reviewHours: null, source: '', detail: 'Accepted without review (OK)' }
+          : { ...base, result: 'Punch without review', reviewHours: null, source: '', detail: 'This MTEK shift was not pushed from a review, coaching session or evaluation' },
+      );
+    } else if (r.ignore) {
+      items.push({ ...base, result: 'Ignored', reviewHours: r.hours, source: r.source, detail: 'Review is marked IGNORE/DO NOT PAY' });
+    } else {
+      const diff = Math.abs(p.hours - r.hours) > tolerance;
+      items.push({
+        ...base,
+        result: diff ? 'Hours differ' : 'Matched',
+        reviewHours: r.hours,
+        source: r.source,
+        detail: diff ? `Punch ${p.hours} h vs review ${r.hours} h` : r.sessionDate ? `Session ${r.sessionDate}` : '',
+      });
     }
   }
   return items.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
@@ -164,7 +159,7 @@ function pad(dateStr, days) {
 async function loadPunches(start, end) {
   const recs = await listAll(CONFIG.hrBase, T.punches, {
     formula: `AND(IS_AFTER({${PUNCH.date}},'${pad(start, -1)}'),IS_BEFORE({${PUNCH.date}},'${pad(end, 1)}'),OR(${TYPES.map((t) => `{${PUNCH.rateType}}='${t}'`).join(',')}))`,
-    fields: [PUNCH.date, PUNCH.employee, PUNCH.rateType, PUNCH.hours, PUNCH.remove, PUNCH.issues, PUNCH.ok],
+    fields: [PUNCH.date, PUNCH.employee, PUNCH.rateType, PUNCH.hours, PUNCH.remove, PUNCH.issues, PUNCH.ok, PUNCH.mtekId],
   });
   return recs
     .filter((r) => !r.fields[PUNCH.remove])
@@ -174,52 +169,49 @@ async function loadPunches(start, end) {
       name: r.fields[PUNCH.employee] || '',
       date: r.fields[PUNCH.date],
       hours: Number(r.fields[PUNCH.hours]) || 0,
+      mtekId: String(r.fields[PUNCH.mtekId] || '').trim(),
       issues: String(r.fields[PUNCH.issues] || ''),
       ok: Boolean(r.fields[PUNCH.ok]),
     }))
     .filter((p) => TYPES.includes(p.type) && p.date >= start && p.date <= end);
 }
 
-async function loadRecords(start, end) {
+// Every review / coaching session / evaluation that was pushed to MTEK carries "(MTEK shift N)" in its
+// "MTEK done" text. Those few records are all that is needed: punches are matched by shift ID.
+async function loadRecords() {
   const out = [];
-  const from = pad(start, -3);
-  const to = pad(end, 4);
   const reviews = await listAll(CONFIG.instBase, T.classReviews, {
-    formula: `AND(IS_AFTER({${CR.classDate}},'${pad(from, -1)}'),IS_BEFORE({${CR.classDate}},'${pad(to, 1)}'))`,
+    formula: `{${CR.mtekDone}}!=''`,
     fields: [CR.mentor, CR.classDate, CR.reviewIn, CR.ignore, CR.shiftType, CR.hours, CR.mtekDone],
   });
   for (const r of reviews) {
-    const type = r.fields[CR.shiftType];
-    if (!TYPES.includes(type)) continue;
-    const date = localDate(first(r.fields[CR.reviewIn]) || r.fields[CR.classDate]);
-    if (date < start || date > end) continue;
+    const shiftId = shiftIdOf(r.fields[CR.mtekDone]);
+    if (!shiftId) continue;
     out.push({
       source: `Class Reviews ${r.id}`,
-      type,
+      type: r.fields[CR.shiftType],
       name: linkName(r.fields[CR.mentor]),
-      date,
+      shiftId,
       hours: Number(r.fields[CR.hours]) || 0,
       ignore: Boolean(r.fields[CR.ignore]),
-      mtekDone: Boolean(r.fields[CR.mtekDone]),
+      sessionDate: localDate(first(r.fields[CR.reviewIn]) || r.fields[CR.classDate]),
     });
   }
   const evals = await listAll(CONFIG.instBase, T.evals, {
-    formula: `AND(IS_AFTER(CREATED_TIME(),'${pad(from, -1)}'),IS_BEFORE(CREATED_TIME(),'${pad(to, 1)}'))`,
+    formula: `{${EV.mtekDone}}!=''`,
     fields: [EV.employee, EV.created, EV.hours, EV.mtekDone],
   });
   for (const r of evals) {
-    const hours = Number(r.fields[EV.hours]) || 0;
-    if (!(hours > 0) && !r.fields[EV.mtekDone]) continue;
-    const date = localDate(r.fields[EV.created]);
-    if (date < start || date > end) continue;
+    const shiftId = shiftIdOf(r.fields[EV.mtekDone]);
+    if (!shiftId) continue;
     out.push({
       source: `Employee Evaluations ${r.id}`,
       type: 'Instructor Eval',
       name: linkName(r.fields[EV.employee]),
-      date,
-      hours,
+      shiftId,
+      hours: Number(r.fields[EV.hours]) || 0,
       ignore: false,
-      mtekDone: Boolean(r.fields[EV.mtekDone]),
+      sessionDate: localDate(r.fields[EV.created]),
     });
   }
   return out;
@@ -248,7 +240,7 @@ async function run() {
     if (!start || !end) throw new Error('Budget week has no start/end date');
 
     const punches = await loadPunches(start, end);
-    const records = await loadRecords(start, end);
+    const records = await loadRecords();
     const items = matchItems(punches, records);
     const count = (r) => items.filter((i) => i.result === r).length;
     // Payroll issues per punch (no employee / rate / Desjardins ID / clock out, $0 wages) come from the
