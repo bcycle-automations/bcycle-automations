@@ -192,11 +192,11 @@ async function fetchClassSessions(minYmd, maxYmd) {
 /* Slack (Block Kit)                                                   */
 /* ------------------------------------------------------------------ */
 
-async function slackPost(channel, text, blocks) {
+async function slackPost(channel, text, blocks, attachments) {
   const res = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
     headers: { Authorization: `Bearer ${SLACK_TOKEN}`, "Content-Type": "application/json; charset=utf-8" },
-    body: JSON.stringify({ channel, text, blocks, unfurl_links: false }),
+    body: JSON.stringify({ channel, text, blocks, attachments, unfurl_links: false }),
   });
   const j = await res.json().catch(() => ({}));
   if (!res.ok || !j.ok) throw new Error(`Slack chat.postMessage to ${channel} failed: ${j.error || res.status}`);
@@ -204,36 +204,82 @@ async function slackPost(channel, text, blocks) {
 
 const mrk = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** Block Kit message for one studio: header, one line per class (what it was -> what it is now), how to revert. */
-function studioBlocks(studio, items, { dry } = {}) {
-  const lines = items.map((c) => {
-    const was = c.from ? `~${mrk(c.from)}~` : "_nobody_";
-    return `*${mrk(prettyWhen(c.ymd, c.time))}* · ${mrk(c.type)}\n      ${was}  →  *${mrk(c.to)}*   _${mrk(c.kindLabel)}_${c.warn ? `\n      ⚠️ ${mrk(c.warn)}` : ""}`;
-  });
-  // Slack: max 3000 chars per section, max 50 blocks per message
-  const chunks = [];
-  let cur = "";
-  for (const l of lines) {
-    if (cur && cur.length + l.length + 2 > 2800) {
-      chunks.push(cur);
-      cur = "";
-    }
-    cur += (cur ? "\n\n" : "") + l;
-  }
-  if (cur) chunks.push(cur);
-  const blocks = [
+const EMOJI = { instructor: "🔄", sub: "🤝", blank: "🆕", new: "➕" };
+
+/**
+ * Block Kit message for one studio. Layout: header + one-line summary on top, then (inside an amber attachment)
+ * a native Slack table (Class / Type / Was / Now / Change), then how to revert + a button.
+ * `variant: "list"` is the fallback when Slack refuses the table block: same info, grouped by day.
+ */
+function studioMessage(studio, items, { dry, variant = "table" } = {}) {
+  const counts = {};
+  for (const c of items) counts[c.cat] = (counts[c.cat] || 0) + 1;
+  const summary = Object.entries(counts)
+    .map(([k, n]) => `${EMOJI[k] || "•"} ${n} ${KIND_LABEL[k].toLowerCase()}`)
+    .join("  ·  ");
+  const top = [
     { type: "header", text: { type: "plain_text", text: `📅 Schedule auto-update · ${studio}`.slice(0, 150), emoji: true } },
-    { type: "section", text: { type: "mrkdwn", text: `${dry ? "*(DRY RUN – nothing was changed)* " : ""}*${plural(items.length, "class was", "classes were")}* ${dry ? "going to be " : ""}updated in Airtable to match MTEK:` } },
-    { type: "divider" },
-    ...chunks.slice(0, 40).map((t) => ({ type: "section", text: { type: "mrkdwn", text: t } })),
-    { type: "divider" },
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `${dry ? "🧪 *DRY RUN – nothing was changed.* " : ""}*${plural(items.length, "class", "classes")}* ${dry ? "would be" : "were"} updated in Airtable to match MTEK.\n${summary}` },
+    },
+  ];
+
+  let body;
+  if (variant === "table") {
+    const cell = (t, bold) => (bold ? { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text: String(t) || " ", style: { bold: true } }] }] } : { type: "raw_text", text: String(t) || " " });
+    const rows = [[cell("Class", true), cell("Type", true), cell("Was", true), cell("Now (MTEK)", true), cell("Change", true)]];
+    for (const c of items.slice(0, 95)) {
+      rows.push([cell(prettyWhen(c.ymd, c.time)), cell(c.type), cell(c.from || "nobody"), cell(c.to, true), cell(`${EMOJI[c.cat] || ""} ${c.kindLabel}${c.warn ? " ⚠️" : ""}`)]);
+    }
+    body = [{ type: "table", rows, column_settings: [{ is_wrapped: false }, { is_wrapped: true }, { is_wrapped: true }, { is_wrapped: true }, { is_wrapped: true }] }];
+    if (items.length > 95) body.push({ type: "context", elements: [{ type: "mrkdwn", text: `…and ${items.length - 95} more.` }] });
+  } else {
+    const byDay = new Map();
+    for (const c of items) byDay.set(c.ymd, [...(byDay.get(c.ymd) || []), c]);
+    const lines = [...byDay].map(([ymd, list]) => {
+      const head = `*${mrk(prettyWhen(ymd, "00:00").replace(/, 12:00am$/, ""))}*`;
+      return `${head}\n${list.map((c) => `${EMOJI[c.cat] || "•"} ${mrk(prettyWhen(c.ymd, c.time).split(", ").pop())} · ${mrk(c.type)}: ${c.from ? `~${mrk(c.from)}~` : "_nobody_"} → *${mrk(c.to)}*${c.warn ? " ⚠️" : ""}`).join("\n")}`;
+    });
+    const chunks = [];
+    let cur = "";
+    for (const l of lines) {
+      if (cur && cur.length + l.length + 2 > 2800) {
+        chunks.push(cur);
+        cur = "";
+      }
+      cur += (cur ? "\n\n" : "") + l;
+    }
+    if (cur) chunks.push(cur);
+    body = chunks.slice(0, 40).map((t) => ({ type: "section", text: { type: "mrkdwn", text: t } }));
+  }
+
+  const foot = [
     {
       type: "context",
-      elements: [{ type: "mrkdwn", text: `Should this *not* have been done? Put the right instructor / FINAL Sub back in ALL CLASSES. The auto-update then leaves that class alone unless MTEK changes it again. Runs every Mon / Wed / Fri for the next ${WINDOW_DAYS} days.` }],
+      elements: [{ type: "mrkdwn", text: `Should this *not* have been done? Put the right instructor / FINAL Sub back in ALL CLASSES; the auto-update then leaves that class alone unless MTEK changes it again. Runs every Mon / Wed / Fri for the next ${WINDOW_DAYS} days.` }],
     },
-    { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Open ALL CLASSES" }, url: ALL_CLASSES_URL }] },
+    { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Open ALL CLASSES" }, url: ALL_CLASSES_URL, style: "primary" }] },
   ];
-  return blocks;
+  return {
+    text: `Schedule auto-update – ${studio} – ${plural(items.length, "class", "classes")} updated`,
+    blocks: top,
+    attachments: [{ color: "#F2A900", blocks: [...body, ...foot] }],
+  };
+}
+
+/** Post a studio message; if Slack refuses the table block, post the list variant instead. */
+async function postStudio(channel, studio, items, opts, prefixBlocks = []) {
+  for (const variant of ["table", "list"]) {
+    const m = studioMessage(studio, items, { ...opts, variant });
+    try {
+      await slackPost(channel, m.text, [...prefixBlocks, ...m.blocks], m.attachments);
+      return variant;
+    } catch (e) {
+      if (variant === "list" || !/invalid_blocks|invalid_attachments|invalid_arguments/.test(e.message)) throw e;
+      log(`Slack refused the table layout (${e.message}); using the list layout`);
+    }
+  }
 }
 
 async function dmAdmin(text, blocks) {
@@ -512,19 +558,15 @@ async function run() {
   for (const [studio, items] of byStudio) {
     items.sort((a, b) => `${a.ymd} ${a.time}`.localeCompare(`${b.ymd} ${b.time}`));
     const channel = channelByStudio.get(norm(studio)) || "";
-    const text = `Schedule auto-update – ${studio} – ${plural(items.length, "class", "classes")} updated`;
-    const blocks = studioBlocks(studio, items, { dry: DRY_RUN });
+    const where = channel ? (/^[CG]/.test(channel) ? `<#${channel}>` : `#${channel}`) : "_no Slack channel set for this studio_";
     if (DRY_RUN) {
-      await dmAdmin(`DRY RUN – would post to ${channel ? (/^[CG]/.test(channel) ? `<#${channel}>` : `#${channel}`) : "NO CHANNEL"}: ${text}`, [
-        { type: "context", elements: [{ type: "mrkdwn", text: `🧪 *DRY RUN* – this is what would be posted in ${channel ? (/^[CG]/.test(channel) ? `<#${channel}>` : `#${channel}`) : "_no Slack channel set for this studio_"}` }] },
-        ...blocks,
-      ]);
-      log(`DM'd the dry-run preview for ${studio} (${items.length})`);
+      const v = await postStudio(ADMIN_USER, studio, items, { dry: true }, [{ type: "context", elements: [{ type: "mrkdwn", text: `🧪 *DRY RUN* – this is what would be posted in ${where}` }] }]);
+      log(`DM'd the dry-run preview for ${studio} (${items.length}, ${v} layout)`);
     } else if (channel) {
-      await slackPost(channel, text, blocks);
-      log(`Posted to Slack for ${studio} (${items.length})`);
+      const v = await postStudio(channel, studio, items, {});
+      log(`Posted to Slack for ${studio} (${items.length}, ${v} layout)`);
     } else {
-      await dmAdmin(`No Slack channel for ${studio}, so this was DM'd to you instead: ${text}`, blocks);
+      await postStudio(ADMIN_USER, studio, items, {}, [{ type: "context", elements: [{ type: "mrkdwn", text: `⚠️ No Slack channel for ${studio}: sent to you instead.` }] }]);
       log(`No Slack channel for ${studio}: sent to admin`);
     }
     await sleep(1100); // Slack: ~1 message per second per channel
