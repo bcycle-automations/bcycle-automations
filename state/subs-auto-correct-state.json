@@ -1,1 +1,160 @@
-{ "applied": {} }
+{
+  "applied": {
+    "vieux-port|2026-11-16|16:15|barre": {
+      "to": "Lisa",
+      "ymd": "2026-11-16",
+      "cat": "sub",
+      "on": "2026-11-16"
+    },
+    "vieux-port|2026-11-16|18:45|barre": {
+      "to": "Ali",
+      "ymd": "2026-11-16",
+      "cat": "sub",
+      "on": "2026-11-16"
+    },
+    "vieux-port|2026-11-16|17:30|barre": {
+      "to": "Ali",
+      "ymd": "2026-11-16",
+      "cat": "sub",
+      "on": "2026-11-16"
+    },
+    "rockland|2026-11-17|12:00|barre": {
+      "to": "Brittany H",
+      "ymd": "2026-11-17",
+      "cat": "sub",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-11-19|18:40|barre": {
+      "to": "Alex Winkler",
+      "ymd": "2026-11-19",
+      "cat": "blank",
+      "on": "2026-11-16"
+    },
+    "westmount|2026-11-20|12:00|spin performance": {
+      "to": "Bijan",
+      "ymd": "2026-11-20",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-11-26|18:40|barre": {
+      "to": "Alex Winkler",
+      "ymd": "2026-11-26",
+      "cat": "blank",
+      "on": "2026-11-16"
+    },
+    "westmount|2026-11-27|12:00|spin performance": {
+      "to": "Bijan",
+      "ymd": "2026-11-27",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-12-03|18:40|barre": {
+      "to": "Alex Winkler",
+      "ymd": "2026-12-03",
+      "cat": "blank",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-12-04|17:25|barre": {
+      "to": "Éli F",
+      "ymd": "2026-12-04",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "westmount|2026-12-04|12:00|spin performance": {
+      "to": "Bijan",
+      "ymd": "2026-12-04",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "vieux-port|2026-12-09|12:00|spin": {
+      "to": "Lisa",
+      "ymd": "2026-12-09",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-12-10|18:40|barre": {
+      "to": "Alex Winkler",
+      "ymd": "2026-12-10",
+      "cat": "blank",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-12-11|17:25|barre": {
+      "to": "Éli F",
+      "ymd": "2026-12-11",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-12-11|07:15|barre": {
+      "to": "Lisa",
+      "ymd": "2026-12-11",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "westmount|2026-12-11|12:00|spin performance": {
+      "to": "Bijan",
+      "ymd": "2026-12-11",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "vieux-port|2026-12-16|12:00|spin": {
+      "to": "Lisa",
+      "ymd": "2026-12-16",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-12-17|18:40|barre": {
+      "to": "Alex Winkler",
+      "ymd": "2026-12-17",
+      "cat": "blank",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-12-18|07:15|barre": {
+      "to": "Lisa",
+      "ymd": "2026-12-18",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-12-18|17:25|barre": {
+      "to": "Éli F",
+      "ymd": "2026-12-18",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "vieux-port|2026-12-23|12:00|spin": {
+      "to": "Lisa",
+      "ymd": "2026-12-23",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "westmount|2026-12-29|09:45|barre": {
+      "to": "Sam",
+      "ymd": "2026-12-29",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2027-01-07|18:40|barre": {
+      "to": "Alex Winkler",
+      "ymd": "2027-01-07",
+      "cat": "blank",
+      "on": "2026-11-16"
+    },
+    "westmount|2026-12-29|08:30|barre": {
+      "to": "Sam",
+      "ymd": "2026-12-29",
+      "cat": "instructor",
+      "on": "2026-11-16"
+    },
+    "vieux-port|2026-11-19|08:30|spin": {
+      "to": "Helen",
+      "ymd": "2026-11-19",
+      "cat": "blank",
+      "on": "2026-11-16"
+    },
+    "centre-ville|2026-11-18|16:15|spin": {
+      "to": "Lisa",
+      "ymd": "2026-11-18",
+      "cat": "blank",
+      "on": "2026-11-16"
+    }
+  }
+}
