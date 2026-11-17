@@ -12,18 +12,19 @@
 // per-customer MTEK calls (the /reservations/ endpoint throttles hard).
 // Everything on the sheet is overwritten each run, so it is safe to re-run.
 //
-// Segments (precedence order):
-//   Member               membership purchase, or a reservation paid by a membership
-//                        Contract, in the 90 days before the sale purchase
-//   New                  in FirstTimersMTEK with first class in the 90 days before
-//                        the purchase or after it (never inferred from check-ins)
-//   Active pack buyer    bought a class pack in the prior 90 days
-//   Active - own credits attended in the prior 90 days, no purchase
-//   Inactive 90d+        nothing in the prior 90 days
+// Segments = the usual b.cycle sale-analysis buyer segments (see the
+// bcycle-campaign-analysis skill), an exact 3-way partition of the buyers:
+//   New                  first class (FirstTimersMTEK only, never inferred from
+//                        check-ins) within 30 days before the buyer's first sale
+//                        purchase, or after it
+//   Reacquisition-Active not New, attended a class in the 60 days before the purchase
+//   Reacquisition-Lapsed not New, no class in the 60 days before the purchase
+// plus a Member / Pack-only flag (membership purchase, or a reservation paid by a
+// membership Contract, in the 90 days before) and "pack bought in prior 90d".
 //
 // Env: MTEK_API_TOKEN, SHEET_ID, GOOGLE_APPLICATION_CREDENTIALS (via the auth
 // action), optional SALE_START (default 2026-11-04, the presale),
-// PRODUCT_PATTERN (default "offert": the Vendredi Fou packs "10 cours achetés, 2 offerts"), DRY_RUN=true to skip the sheet.
+// PRODUCT_PATTERN (default: the two presale packs 10 cours achetés, 5 offerts and 20 cours achetés, 10 offerts), DRY_RUN=true to skip the sheet.
 
 import { BigQuery } from "@google-cloud/bigquery";
 import { google } from "googleapis";
@@ -35,7 +36,7 @@ const MTEK_BASE_URL = (process.env.MTEK_BASE_URL || "https://bcycle.marianatek.c
 const MTEK_API_TOKEN = (process.env.MTEK_API_TOKEN || "").trim();
 const SHEET_ID = process.env.SHEET_ID || "1QzHukVUupfa-BkzJOrdkKNipGc0Wfx2dsaaBoAajVOc";
 const SALE_START = process.env.SALE_START || "2026-11-04";
-const PRODUCT_PATTERN = new RegExp(process.env.PRODUCT_PATTERN || "offert", "i");
+const PRODUCT_PATTERN = new RegExp(process.env.PRODUCT_PATTERN || "(10 cours achetés, 5 offerts|20 cours achetés, 10 offerts)", "i");
 const BQ_PROJECT_ID = process.env.BQ_PROJECT_ID || "root-cargo-453703-k7";
 const BQ_DATASET = process.env.BQ_DATASET || "SalesZF";
 const DRY_RUN = process.env.DRY_RUN === "true";
@@ -51,8 +52,8 @@ const CUSTOMER_HEADERS = [
   "customer_id", "email", "name", "segment", "first_purchase_date", "sale_units_completed",
   "sale_revenue", "prior90_revenue", "prior90_credit_revenue", "prior90_membership_revenue",
   "prior90_orders", "prior90_pack_purchases", "prior90_classes_attended", "last_attended_prior",
-  "last_purchase_prior", "membership_reservations_prior90", "is_member", "in_first_timers",
-  "first_class_date",
+  "last_purchase_prior", "membership_reservations_prior90", "member_type", "in_first_timers",
+  "first_class_date", "prior60_classes_attended",
 ];
 
 const num = (v) => {
@@ -150,6 +151,7 @@ async function fetchCustomerFacts(buyers) {
     r AS (
       SELECT b.id,
         COUNTIF(x.Status = 'check in') AS attended,
+        COUNTIF(x.Status = 'check in' AND x.\`Class Start Date\` >= DATE_SUB(b.anchor, INTERVAL 60 DAY)) AS attended60,
         MAX(IF(x.Status = 'check in', x.\`Class Start Date\`, NULL)) AS last_attended,
         COUNTIF(x.Status = 'check in' AND IFNULL(TRIM(x.Contract), '') != '') AS contract_res
       FROM ${T("ReservationsMTEK")} x
@@ -168,7 +170,7 @@ async function fetchCustomerFacts(buyers) {
     SELECT b.id,
       IFNULL(sa.rev, 0) AS rev, IFNULL(sa.credit_rev, 0) AS credit_rev, IFNULL(sa.member_rev, 0) AS member_rev,
       IFNULL(sa.orders, 0) AS orders, IFNULL(sa.pack_orders, 0) AS pack_orders, sa.last_purchase,
-      IFNULL(r.attended, 0) AS attended, r.last_attended, IFNULL(r.contract_res, 0) AS contract_res,
+      IFNULL(r.attended, 0) AS attended, IFNULL(r.attended60, 0) AS attended60, r.last_attended, IFNULL(r.contract_res, 0) AS contract_res,
       ft.first_class
     FROM buyers b
     LEFT JOIN sa ON sa.id = b.id
@@ -180,16 +182,13 @@ async function fetchCustomerFacts(buyers) {
 }
 
 function segmentFor(f, anchor) {
-  const isMember = f.member_rev > 0 || f.contract_res > 0;
-  if (isMember) return "Member";
   const firstClass = bqDate(f.first_class);
-  if (firstClass) {
-    const cutoff = addDaysUTC(anchor, -90);
-    if (firstClass >= cutoff) return "New";
-  }
-  if (f.pack_orders > 0) return "Active pack buyer";
-  if (f.attended > 0) return "Active - own credits";
-  return "Inactive 90d+";
+  if (firstClass && firstClass >= addDaysUTC(anchor, -30)) return "New";
+  return f.attended60 > 0 ? "Reacquisition-Active" : "Reacquisition-Lapsed";
+}
+
+function memberTypeFor(f) {
+  return f.member_rev > 0 || f.contract_res > 0 ? "Member" : "Pack-only";
 }
 
 async function sheetsClient() {
@@ -233,14 +232,14 @@ async function main() {
 
   const facts = buyers.length ? await fetchCustomerFacts(buyers) : new Map();
   const customerRows = buyers.map((b) => {
-    const f = facts.get(b.id) || { rev: 0, credit_rev: 0, member_rev: 0, orders: 0, pack_orders: 0, attended: 0, contract_res: 0 };
+    const f = facts.get(b.id) || { rev: 0, credit_rev: 0, member_rev: 0, orders: 0, pack_orders: 0, attended: 0, attended60: 0, contract_res: 0 };
     const segment = segmentFor(f, b.firstDate);
     const firstClass = bqDate(f.first_class);
     return [
       b.id, b.email, b.name, segment, b.firstDate, b.units, Math.round(b.revenue * 100) / 100,
       Math.round(f.rev * 100) / 100, Math.round(f.credit_rev * 100) / 100, Math.round(f.member_rev * 100) / 100,
       f.orders, f.pack_orders, f.attended, bqDate(f.last_attended), bqDate(f.last_purchase), f.contract_res,
-      segment === "Member" ? 1 : 0, firstClass ? 1 : 0, firstClass,
+      memberTypeFor(f), firstClass ? 1 : 0, firstClass, f.attended60,
     ];
   });
 
