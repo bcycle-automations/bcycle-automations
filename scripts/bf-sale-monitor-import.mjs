@@ -4,8 +4,12 @@
 //
 //   Sales_Raw      - every line of the Vendredi Fou products, pulled live from
 //                    the MTEK "Orders - UTC" report (id 353), today included.
-//   Customers_Raw  - one row per buyer: attendance + spend in the 90 days
-//                    before their first sale purchase, and the segment.
+//   Customers_Raw  - one row per buyer: segment, attendance, and the spend in
+//                    the N days before their first sale purchase, where N = the
+//                    pack's validity (expiry) read from the MTEK /packages API.
+//                    That prior spend is "what we would have collected over the
+//                    same stretch without the pack" (revenue displaced).
+//   Packs_Raw      - the sale packs as MTEK has them (price, credits, expiry).
 //
 // Customer history comes from BigQuery SalesMTEK / ReservationsMTEK /
 // FirstTimersMTEK (the daily MTEK syncs, current through yesterday), never from
@@ -29,6 +33,7 @@ import { BigQuery } from "@google-cloud/bigquery";
 import { google } from "googleapis";
 import { fetchMtekReport, isoDate, addDaysUTC } from "./lib/mtek-report.mjs";
 import { TABLES } from "./lib/bcycle-mtek-tables.mjs";
+import { fetchAllPages } from "./lib/mtek.mjs";
 
 const SALES = TABLES.sales;
 const MTEK_BASE_URL = (process.env.MTEK_BASE_URL || "https://bcycle.marianatek.com").replace(/\/+$/, "");
@@ -40,6 +45,7 @@ const BQ_PROJECT_ID = process.env.BQ_PROJECT_ID || "root-cargo-453703-k7";
 const BQ_DATASET = process.env.BQ_DATASET || "SalesZF";
 const DRY_RUN = process.env.DRY_RUN === "true";
 const CHUNK_DAYS = 7;
+const DEFAULT_VALID_MONTHS = Number(process.env.DEFAULT_VALID_MONTHS || 6); // only if a pack is not found in /packages
 
 const SALES_HEADERS = [
   "order_number", "order_date_utc", "order_time_utc", "transaction_date", "customer_id",
@@ -49,11 +55,13 @@ const SALES_HEADERS = [
 
 const CUSTOMER_HEADERS = [
   "customer_id", "email", "name", "segment", "first_purchase_date", "sale_units_completed",
-  "sale_revenue", "prior90_revenue", "prior90_credit_revenue", "prior90_membership_revenue",
-  "prior90_orders", "prior90_pack_purchases", "prior90_classes_attended", "last_attended_prior",
+  "sale_revenue", "window_revenue", "window_credit_revenue", "window_membership_revenue",
+  "window_orders", "prior90_pack_purchases", "prior90_classes_attended", "last_attended_prior",
   "last_purchase_prior", "membership_reservations_prior90", "membership_revenue_prior45", "in_first_timers",
-  "first_class_date",
+  "first_class_date", "window_start", "window_days",
 ];
+
+const PACK_HEADERS = ["product", "package_id", "price", "credit_quantity", "expiry_length", "expiry_unit", "expiry_months"];
 
 const num = (v) => {
   const n = Number(String(v ?? "").replace(/,/g, ""));
@@ -111,40 +119,88 @@ function isoFromMdy(s) {
   return m ? `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}` : "";
 }
 
+// Pack validity from the MTEK /packages API (expiration_type relative: length + YR/MO/WK/DY;
+// absolute: a fixed datetime). The product description text can be stale - the package
+// attributes are what MTEK actually applies.
+async function fetchPacks() {
+  const rows = await fetchAllPages(
+    `${MTEK_BASE_URL}/api/packages`,
+    { page_size: "100" },
+    { Authorization: `Bearer ${MTEK_API_TOKEN}` }
+  );
+  return rows
+    .map((r) => ({ id: r.id, ...r.attributes }))
+    .filter((a) => PRODUCT_PATTERN.test(String(a.title || "")))
+    .map((a) => ({
+      id: a.id, title: a.title, price: a.price, credits: a.credit_quantity,
+      type: a.expiration_type, length: a.expiration_interval_length, unit: a.expiration_interval,
+      until: a.expiration_datetime,
+    }));
+}
+
+function monthsOf(p) {
+  if (p.type === "relative" && p.length) {
+    return { YR: p.length * 12, MO: p.length, WK: (p.length * 7 * 12) / 365, DY: (p.length * 12) / 365 }[p.unit] ?? null;
+  }
+  return null;
+}
+
+// Date the pack's validity window reaches back to: anchor minus the pack's validity.
+function windowStartFor(anchor, p) {
+  const d = new Date(`${anchor}T00:00:00Z`);
+  if (p && p.type === "relative" && p.length) {
+    if (p.unit === "YR") d.setUTCFullYear(d.getUTCFullYear() - p.length);
+    else if (p.unit === "MO") d.setUTCMonth(d.getUTCMonth() - p.length);
+    else if (p.unit === "WK") d.setUTCDate(d.getUTCDate() - p.length * 7);
+    else if (p.unit === "DY") d.setUTCDate(d.getUTCDate() - p.length);
+    else d.setUTCMonth(d.getUTCMonth() - DEFAULT_VALID_MONTHS);
+  } else if (p && p.until) {
+    const days = Math.round((new Date(p.until) - new Date(`${anchor}T00:00:00Z`)) / 86400000);
+    d.setUTCDate(d.getUTCDate() - Math.max(days, 1));
+  } else {
+    d.setUTCMonth(d.getUTCMonth() - DEFAULT_VALID_MONTHS);
+  }
+  return isoDate(d);
+}
+
 async function fetchCustomerFacts(buyers) {
   const bq = new BigQuery({ projectId: BQ_PROJECT_ID });
   const ids = buyers.map((b) => Number(b.id));
   const anchors = buyers.map((b) => b.firstDate);
+  const starts = buyers.map((b) => b.windowStart);
   const T = (t) => `\`${BQ_PROJECT_ID}.${BQ_DATASET}.${t}\``;
   const salePattern = PRODUCT_PATTERN.source.replace(/'/g, "");
 
   const query = `
     WITH buyers AS (
-      SELECT id, CAST(a AS DATE) AS anchor
+      SELECT id, CAST(a AS DATE) AS anchor, CAST(w AS DATE) AS win_start
       FROM UNNEST(@ids) id WITH OFFSET i
       JOIN UNNEST(@anchors) a WITH OFFSET j ON i = j
+      JOIN UNNEST(@starts) w WITH OFFSET k ON i = k
     ),
     s AS (
       SELECT b.id,
         SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) AS d,
-        b.anchor, x.order_number, x.product_type,
+        b.anchor, b.win_start, x.order_number, x.product_type,
         SAFE_CAST(REPLACE(x.line_subtotal, ',', '') AS FLOAT64) AS amt
       FROM ${T("SalesMTEK")} x
       JOIN buyers b ON SAFE_CAST(x.customer_id AS INT64) = b.id
       WHERE x.order_status != 'Order Status'
         AND x.line_status = 'Completed'
         AND NOT REGEXP_CONTAINS(LOWER(x.product), r'${salePattern}')
-        AND SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) >= DATE_SUB(b.anchor, INTERVAL 90 DAY)
+        AND SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) >= LEAST(b.win_start, DATE_SUB(b.anchor, INTERVAL 90 DAY))
         AND SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) < b.anchor
     ),
+    -- rev/credit_rev/member_rev/orders = spend over the pack's validity window (revenue displaced);
+    -- member_rev45 and pack_orders (90d) only feed the segment rules.
     sa AS (
       SELECT id,
-        SUM(amt) AS rev,
-        SUM(IF(product_type = 'Credits', amt, 0)) AS credit_rev,
-        SUM(IF(product_type = 'Memberships', amt, 0)) AS member_rev,
+        SUM(IF(d >= win_start, amt, 0)) AS rev,
+        SUM(IF(d >= win_start AND product_type = 'Credits', amt, 0)) AS credit_rev,
+        SUM(IF(d >= win_start AND product_type = 'Memberships', amt, 0)) AS member_rev,
         SUM(IF(product_type = 'Memberships' AND d >= DATE_SUB(anchor, INTERVAL 45 DAY), amt, 0)) AS member_rev45,
-        COUNT(DISTINCT order_number) AS orders,
-        COUNT(DISTINCT IF(product_type = 'Credits', order_number, NULL)) AS pack_orders,
+        COUNT(DISTINCT IF(d >= win_start, order_number, NULL)) AS orders,
+        COUNT(DISTINCT IF(product_type = 'Credits' AND d >= DATE_SUB(anchor, INTERVAL 90 DAY), order_number, NULL)) AS pack_orders,
         MAX(d) AS last_purchase
       FROM s GROUP BY id
     ),
@@ -176,7 +232,7 @@ async function fetchCustomerFacts(buyers) {
     LEFT JOIN r ON r.id = b.id
     LEFT JOIN ft ON ft.id = b.id`;
 
-  const [rows] = await bq.query({ query, params: { ids, anchors } });
+  const [rows] = await bq.query({ query, params: { ids, anchors, starts } });
   return new Map(rows.map((x) => [String(x.id), x]));
 }
 
@@ -211,20 +267,35 @@ async function main() {
   const lines = await fetchSaleLines();
   console.log(`${lines.length} sale lines for pattern /${PRODUCT_PATTERN.source}/`);
 
+  const packs = await fetchPacks();
+  for (const p of packs) console.log(`Pack ${p.id} "${p.title}": $${p.price}, ${p.credits} credits, valid ${p.length} ${p.unit}`);
+  const packByTitle = new Map(packs.map((p) => [p.title.trim().toLowerCase(), p]));
+
   // One row per buyer with at least one completed line; anchor = first purchase date.
+  // Window = the longest validity among the packs they bought.
   const byCustomer = new Map();
   for (const l of lines) {
-    const [, , , date, id, email, name, , , , status, qty, subtotal] = l;
+    const [, , , date, id, email, name, product, , , status, qty, subtotal] = l;
     if (!id) continue;
-    const c = byCustomer.get(id) || { id, email, name, firstDate: date, units: 0, revenue: 0 };
+    const c = byCustomer.get(id) || { id, email, name, firstDate: date, units: 0, revenue: 0, products: new Set() };
     if (date && (!c.firstDate || date < c.firstDate)) c.firstDate = date;
     if (status === "Completed") {
       c.units += qty;
       c.revenue += subtotal;
+      c.products.add(String(product).trim().toLowerCase());
     }
     byCustomer.set(id, c);
   }
   const buyers = [...byCustomer.values()].filter((b) => b.firstDate && b.units > 0);
+  for (const b of buyers) {
+    const starts = [...b.products].map((t) => {
+      const p = packByTitle.get(t);
+      if (!p) console.warn(`No /packages match for "${t}" - using ${DEFAULT_VALID_MONTHS} months`);
+      return windowStartFor(b.firstDate, p);
+    });
+    b.windowStart = starts.sort()[0]; // earliest start = longest window
+    b.windowDays = Math.round((new Date(`${b.firstDate}T00:00:00Z`) - new Date(`${b.windowStart}T00:00:00Z`)) / 86400000);
+  }
   console.log(`${buyers.length} distinct buyers`);
 
   const facts = buyers.length ? await fetchCustomerFacts(buyers) : new Map();
@@ -236,7 +307,7 @@ async function main() {
       b.id, b.email, b.name, segment, b.firstDate, b.units, Math.round(b.revenue * 100) / 100,
       Math.round(f.rev * 100) / 100, Math.round(f.credit_rev * 100) / 100, Math.round(f.member_rev * 100) / 100,
       f.orders, f.pack_orders, f.attended, bqDate(f.last_attended), bqDate(f.last_purchase), f.contract_res,
-      f.member_rev45, firstClass ? 1 : 0, firstClass,
+      f.member_rev45, firstClass ? 1 : 0, firstClass, b.windowStart, b.windowDays,
     ];
   });
 
@@ -252,6 +323,9 @@ async function main() {
   const sheets = await sheetsClient();
   await writeTab(sheets, "Sales_Raw", SALES_HEADERS, lines);
   await writeTab(sheets, "Customers_Raw", CUSTOMER_HEADERS, customerRows);
+  await writeTab(sheets, "Packs_Raw", PACK_HEADERS, packs.map((p) => [
+    p.title, p.id, p.price, p.credits, p.length ?? "", p.unit ?? "", monthsOf(p) == null ? "" : Math.round(monthsOf(p) * 100) / 100,
+  ]));
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
     range: "Import_Log!A1",

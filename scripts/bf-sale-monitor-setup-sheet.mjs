@@ -37,7 +37,7 @@ const PRODUCT_ROWS = 8; // Settings rows 12-19
 async function main() {
   const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
   const existing = new Map(meta.data.sheets.map((s) => [s.properties.title, s.properties.sheetId]));
-  const wanted = ["Dashboard", "Settings", "Sales_Raw", "Customers_Raw", "Import_Log"];
+  const wanted = ["Dashboard", "Settings", "Sales_Raw", "Customers_Raw", "Packs_Raw", "Import_Log"];
   const reqs = [];
   if (existing.has("Sheet1") && !existing.has("Dashboard")) {
     reqs.push({ updateSheetProperties: { properties: { sheetId: existing.get("Sheet1"), title: "Dashboard" }, fields: "title" } });
@@ -62,13 +62,14 @@ async function main() {
 
   // ---------------------------------------------------------------- Settings
   put("Settings!A1", [["Settings - blue cells are editable; the Dashboard reads everything from here"]]);
-  put("Settings!A3:C8", [
+  put("Settings!A3:C9", [
     ["First date shown in the Dashboard daily table", "2026-11-24", ""],
     ["Minimum buyers before the verdict is trusted", 40, "Below this the verdict says WAIT"],
     ["Max % of buyers who are Members", 0.3, "Members buying packs = revenue we'd likely have had anyway"],
     ["Max % of buyers who are credit holders (Credit holder + Old credit holder)", 0.3, "Current credit holders buying = the failure case"],
     ["Max % of buyers Members + credit holders combined", 0.5, "Combined cannibalization ceiling"],
     ["Min % of buyers New + Low activity (incremental)", 0.25, "Floor of genuinely new / low-activity money"],
+    ["Min net revenue lift ($)", 0, "Pack revenue minus what the same buyers spent in the pack's validity window before (0 = break-even)"],
   ]);
   put("Settings!A11:D11", [["Product (exact MTEK name)", "Paid classes", "Free classes", "Pre-tax price"]]);
   const prodRows = [];
@@ -93,18 +94,19 @@ async function main() {
   set("A4", "VERDICT");
   set(
     "B4",
-    `=IF(B7<D7,"WAIT - only "&B7&" buyers so far (need "&D7&")",IF(COUNTIF(E8:E11,"OK")=4,"KEEP THE SALE ACTIVE",IF(COUNTIF(E8:E11,"OK")>=2,"WATCH CLOSELY - "&(4-COUNTIF(E8:E11,"OK"))&" check(s) failing","PAUSE / REVIEW - "&(4-COUNTIF(E8:E11,"OK"))&" checks failing")))`
+    `=IF(B7<D7,"WAIT - only "&B7&" buyers so far (need "&D7&")",IF(COUNTIF(E8:E12,"OK")=5,"KEEP THE SALE ACTIVE",IF(COUNTIF(E8:E12,"OK")>=3,"WATCH CLOSELY - "&(5-COUNTIF(E8:E12,"OK"))&" check(s) failing","PAUSE / REVIEW - "&(5-COUNTIF(E8:E12,"OK"))&" checks failing")))`
   );
   D.push({ range: "Dashboard!A6:E6", values: [["Decision checks", "Actual", "Rule", "Threshold", "Status"]] });
   D.push({
-    range: "Dashboard!A7:E12",
+    range: "Dashboard!A7:E13",
     values: [
       ["Distinct buyers", "=B21", "at least", "=Settings!B4", '=IF(B7>=D7,"OK","TOO FEW")'],
       ["% of buyers who are Members", "=C17", "at most", "=Settings!B5", '=IF(B8<=D8,"OK","OVER")'],
       ["% of buyers who are credit holders (Credit + Old credit holder)", "=C19+C20", "at most", "=Settings!B6", '=IF(B9<=D9,"OK","OVER")'],
       ["% Members + credit holders", "=C17+C19+C20", "at most", "=Settings!B7", '=IF(B10<=D10,"OK","OVER")'],
       ["% New + Low activity (incremental)", "=C16+C18", "at least", "=Settings!B8", '=IF(B11>=D11,"OK","LOW")'],
-      ["Buyers without a segment", `=COUNTA(${cr("A")})-B21`, "should be", 0, '=IF(B12=D12,"OK","CHECK")'],
+      ["Net revenue lift (pack revenue - what these buyers spent in the same window before)", "=I21", "at least", "=Settings!B9", '=IF(B12>=D12,"OK","NEGATIVE")'],
+      ["Buyers without a segment", `=COUNTA(${cr("A")})-B21`, "should be", 0, '=IF(B13=D13,"OK","CHECK")'],
     ],
   });
   D.push({
@@ -120,13 +122,26 @@ async function main() {
   });
 
   D.push({
-    range: "Dashboard!A15:J15",
-    values: [["Segment (Black Friday analysis segments)", "Buyers", "% of buyers", "Units", "% of units", "Revenue (pre-tax)", "% of revenue", "Avg prior-90d spend", "Avg classes attended prior 90d", "Read as"]],
+    range: "Dashboard!J6:K12",
+    values: [
+      ["Revenue won vs lost (all buyers, pre-tax)", ""],
+      ["Revenue won - pack sales", "=F21"],
+      ["Revenue lost - same-window spend displaced", "=H21"],
+      ["Net revenue lift", "=K7-K8"],
+      ["Net lift per buyer", "=IFERROR(K9/B21,0)"],
+      ["Displaced: membership payments", `=SUM(${cr("J")})`],
+      ["Displaced: credit / pack purchases", `=SUM(${cr("I")})`],
+    ],
+  });
+
+  D.push({
+    range: "Dashboard!A15:L15",
+    values: [["Segment (Black Friday analysis segments)", "Buyers", "% of buyers", "Units", "% of units", "Revenue won (pack sales, pre-tax)", "% of revenue", "Revenue lost (spend in the pack's validity window before)", "Net revenue lift", "Net lift per buyer", "Avg classes attended prior 90d", "Read as"]],
   });
   SEGMENTS.forEach(([seg, note], i) => {
     const r = 16 + i;
     D.push({
-      range: `Dashboard!A${r}:J${r}`,
+      range: `Dashboard!A${r}:L${r}`,
       values: [[
         seg,
         `=COUNTIFS(${cr("D")},$A${r})`,
@@ -135,30 +150,32 @@ async function main() {
         `=IFERROR(D${r}/D$21,0)`,
         `=SUMIFS(${cr("G")},${cr("D")},$A${r})`,
         `=IFERROR(F${r}/F$21,0)`,
-        `=IFERROR(SUMIFS(${cr("H")},${cr("D")},$A${r})/B${r},0)`,
+        `=SUMIFS(${cr("H")},${cr("D")},$A${r})`,
+        `=F${r}-H${r}`,
+        `=IFERROR(I${r}/B${r},0)`,
         `=IFERROR(SUMIFS(${cr("M")},${cr("D")},$A${r})/B${r},0)`,
         note,
       ]],
     });
   });
   D.push({
-    range: "Dashboard!A21:I21",
+    range: "Dashboard!A21:K21",
     values: [[
       "Total", "=SUM(B16:B20)", "=SUM(C16:C20)", "=SUM(D16:D20)", "=SUM(E16:E20)", "=SUM(F16:F20)", "=SUM(G16:G20)",
-      `=IFERROR(SUM(${cr("H")})/B21,0)`, `=IFERROR(SUM(${cr("M")})/B21,0)`,
+      "=SUM(H16:H20)", "=SUM(I16:I20)", "=IFERROR(I21/B21,0)", `=IFERROR(SUM(${cr("M")})/B21,0)`,
     ]],
   });
 
   D.push({
-    range: "Dashboard!A24:K24",
-    values: [["Product", "Paid classes", "Free classes", "Pre-tax price", "Units sold", "Units refunded", "Revenue (pre-tax)", "Free classes given", "Free-class retail value", "Free value % of revenue", "Share of units"]],
+    range: "Dashboard!A24:L24",
+    values: [["Product", "Paid classes", "Free classes", "Pre-tax price", "Units sold", "Units refunded", "Revenue (pre-tax)", "Free classes given", "Free-class retail value", "Free value % of revenue", "Share of units", "Valid for (months, from MTEK)"]],
   });
   for (let i = 0; i < PRODUCT_ROWS; i++) {
     const r = 25 + i;
     const s = 12 + i;
     const blank = (f) => `=IF($A${r}="","",${f})`;
     D.push({
-      range: `Dashboard!A${r}:K${r}`,
+      range: `Dashboard!A${r}:L${r}`,
       values: [[
         `=IF(Settings!A${s}="","",Settings!A${s})`,
         blank(`Settings!B${s}`),
@@ -171,6 +188,7 @@ async function main() {
         blank(`H${r}*IFERROR(D${r}/B${r},0)`),
         blank(`IFERROR(I${r}/G${r},0)`),
         blank(`IFERROR(E${r}/E$33,0)`),
+        blank(`IFERROR(VLOOKUP($A${r},Packs_Raw!$A:$G,7,FALSE),"")`),
       ]],
     });
   }
@@ -219,6 +237,7 @@ async function main() {
   }
   D.push({ range: "Dashboard!A56:F56", values: [["Total", "=SUM(B46:B55)", "=SUM(C46:C55)", "=SUM(D46:D55)", "=SUM(E46:E55)", "=IFERROR((D56+E56)/B56,0)"]] });
   D.push({ range: "Dashboard!A58", values: [["Segments (first match): New = in FirstTimersMTEK with first class <=30d before the buyer's first sale purchase or later; Member = paid a membership in the 45 days before; Low activity = <4 check-ins in the 90 days before; Credit holder = 4+ check-ins and bought credits in the 90 days before; Old credit holder = 4+ check-ins, no credit purchase. History from SalesMTEK / ReservationsMTEK / FirstTimersMTEK in BigQuery (current through yesterday)."]] });
+  D.push({ range: "Dashboard!A59", values: [["Revenue won = pack sales (pre-tax). Revenue lost = what the same buyer spent (memberships + credits, pre-tax, excluding the sale packs) in the N days before their first sale purchase, where N = that pack's validity in MTEK (Packs_Raw). It is the spend we assume the pack replaces for as long as the credits last: a Member who stops paying for the pack's validity, a credit holder who would have bought credits anyway. Net lift = won - lost."]] });
 
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
@@ -240,12 +259,13 @@ async function main() {
     fmt(rng(dash, 3, 4, 0, 6), { textFormat: { bold: true, fontSize: 14 } }, "textFormat"),
     fmt(rng(dash, 5, 6, 0, 5), head, "textFormat,backgroundColor,wrapStrategy"),
     fmt(rng(dash, 5, 6, 6, 8), head, "textFormat,backgroundColor,wrapStrategy"),
-    fmt(rng(dash, 14, 15, 0, 10), head, "textFormat,backgroundColor,wrapStrategy"),
-    fmt(rng(dash, 23, 24, 0, 11), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 5, 6, 9, 11), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 14, 15, 0, 12), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 23, 24, 0, 12), head, "textFormat,backgroundColor,wrapStrategy"),
     fmt(rng(dash, 35, 36, 0, 10), head, "textFormat,backgroundColor,wrapStrategy"),
     fmt(rng(dash, 44, 45, 0, 6), head, "textFormat,backgroundColor,wrapStrategy"),
-    fmt(rng(dash, 20, 21, 0, 10), total, "textFormat,borders"),
-    fmt(rng(dash, 32, 33, 0, 11), total, "textFormat,borders"),
+    fmt(rng(dash, 20, 21, 0, 12), total, "textFormat,borders"),
+    fmt(rng(dash, 32, 33, 0, 12), total, "textFormat,borders"),
     fmt(rng(dash, 41, 42, 0, 10), total, "textFormat,borders"),
     fmt(rng(dash, 55, 56, 0, 6), total, "textFormat,borders"),
     // number formats
@@ -259,8 +279,13 @@ async function main() {
     fmt(rng(dash, 15, 21, 4, 5), nf("PERCENT", "0.0%"), "numberFormat"),
     fmt(rng(dash, 15, 21, 6, 7), nf("PERCENT", "0.0%"), "numberFormat"),
     fmt(rng(dash, 15, 21, 5, 6), nf("CURRENCY", "$#,##0"), "numberFormat"),
-    fmt(rng(dash, 15, 21, 7, 8), nf("CURRENCY", "$#,##0"), "numberFormat"),
-    fmt(rng(dash, 15, 21, 8, 9), nf("NUMBER", "0.0"), "numberFormat"),
+    fmt(rng(dash, 15, 21, 7, 10), nf("CURRENCY", "$#,##0;[Red]-$#,##0"), "numberFormat"),
+    fmt(rng(dash, 15, 21, 10, 11), nf("NUMBER", "0.0"), "numberFormat"),
+    fmt(rng(dash, 11, 12, 1, 2), nf("CURRENCY", "$#,##0;[Red]-$#,##0"), "numberFormat"),
+    fmt(rng(dash, 11, 12, 3, 4), nf("CURRENCY", "$#,##0;[Red]-$#,##0"), "numberFormat"),
+    fmt(rng(dash, 6, 12, 10, 11), nf("CURRENCY", "$#,##0;[Red]-$#,##0"), "numberFormat"),
+    fmt(rng(dash, 8, 9, 9, 11), bold, "textFormat"),
+    fmt(rng(dash, 23, 33, 11, 12), nf("NUMBER", "0.#"), "numberFormat"),
     fmt(rng(dash, 24, 33, 3, 4), nf("CURRENCY", "$#,##0"), "numberFormat"),
     fmt(rng(dash, 24, 33, 6, 7), nf("CURRENCY", "$#,##0"), "numberFormat"),
     fmt(rng(dash, 24, 33, 8, 9), nf("CURRENCY", "$#,##0"), "numberFormat"),
@@ -271,18 +296,21 @@ async function main() {
     fmt(rng(dash, 1, 2, 1, 2), nf("DATE_TIME", "yyyy-mm-dd hh:mm"), "numberFormat"),
     // Settings
     fmt(rng("Settings", 0, 1, 0, 1), { textFormat: { bold: true, fontSize: 14 } }, "textFormat"),
-    fmt(rng("Settings", 2, 8, 1, 2), input, "textFormat,backgroundColor"),
+    fmt(rng("Settings", 2, 9, 1, 2), input, "textFormat,backgroundColor"),
+    fmt(rng("Settings", 8, 9, 1, 2), nf("CURRENCY", "$#,##0"), "numberFormat"),
     fmt(rng("Settings", 11, 11 + PRODUCT_ROWS, 0, 4), input, "textFormat,backgroundColor"),
     fmt(rng("Settings", 10, 11, 0, 4), head, "textFormat,backgroundColor,wrapStrategy"),
     fmt(rng("Settings", 2, 3, 1, 2), nf("DATE", "yyyy-mm-dd"), "numberFormat"),
     fmt(rng("Settings", 4, 8, 1, 2), nf("PERCENT", "0%"), "numberFormat"),
     // raw tab headers
     fmt(rng("Sales_Raw", 0, 1, 0, 20), head, "textFormat,backgroundColor"),
-    fmt(rng("Customers_Raw", 0, 1, 0, 19), head, "textFormat,backgroundColor"),
+    fmt(rng("Customers_Raw", 0, 1, 0, 21), head, "textFormat,backgroundColor"),
+    fmt(rng("Packs_Raw", 0, 1, 0, 7), head, "textFormat,backgroundColor"),
     fmt(rng("Sales_Raw", 1, 10000, 19, 20), nf("DATE_TIME", "yyyy-mm-dd hh:mm"), "numberFormat"),
     { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 330 }, fields: "pixelSize" } },
-    { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 1, endIndex: 10 }, properties: { pixelSize: 125 }, fields: "pixelSize" } },
-    { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 9, endIndex: 10 }, properties: { pixelSize: 330 }, fields: "pixelSize" } },
+    { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 1, endIndex: 11 }, properties: { pixelSize: 125 }, fields: "pixelSize" } },
+    { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 9, endIndex: 10 }, properties: { pixelSize: 290 }, fields: "pixelSize" } },
+    { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 11, endIndex: 12 }, properties: { pixelSize: 330 }, fields: "pixelSize" } },
     { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 6, endIndex: 7 }, properties: { pixelSize: 210 }, fields: "pixelSize" } },
     { updateDimensionProperties: { range: { sheetId: id["Settings"], dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 420 }, fields: "pixelSize" } },
     { updateDimensionProperties: { range: { sheetId: id["Settings"], dimension: "COLUMNS", startIndex: 1, endIndex: 4 }, properties: { pixelSize: 130 }, fields: "pixelSize" } },
@@ -307,10 +335,10 @@ async function main() {
   const amber = { red: 1, green: 0.93, blue: 0.7 }, aFg = { red: 0.55, green: 0.35, blue: 0 };
   const red = { red: 0.98, green: 0.82, blue: 0.82 }, rFg = { red: 0.65, green: 0.1, blue: 0.1 };
   const verdict = rng(dash, 3, 4, 1, 6);
-  const status = rng(dash, 6, 12, 4, 5);
+  const status = rng(dash, 6, 13, 4, 5);
   f.push(
     cf(verdict, "KEEP", green, gFg), cf(verdict, "WATCH", amber, aFg), cf(verdict, "PAUSE", red, rFg), cf(verdict, "WAIT", amber, aFg),
-    cf(status, "OK", green, gFg), cf(status, "OVER", red, rFg), cf(status, "LOW", red, rFg), cf(status, "TOO FEW", amber, aFg), cf(status, "CHECK", amber, aFg)
+    cf(status, "OK", green, gFg), cf(status, "OVER", red, rFg), cf(status, "LOW", red, rFg), cf(status, "NEGATIVE", red, rFg), cf(status, "TOO FEW", amber, aFg), cf(status, "CHECK", amber, aFg)
   );
   f.push({ mergeCells: { range: verdict, mergeType: "MERGE_ALL" } });
 
