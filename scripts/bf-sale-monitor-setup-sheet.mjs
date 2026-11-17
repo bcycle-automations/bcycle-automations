@@ -19,19 +19,15 @@ const S = "Sales_Raw";
 const cr = (col) => `${C}!$${col}$2:$${col}$5000`;
 const sr = (col) => `${S}!$${col}$2:$${col}$10000`;
 
-// Usual b.cycle buyer segments (exact 3-way partition) - bcycle-campaign-analysis skill.
+// Black Friday analysis segments (Bijan's black_friday_customer_analysis), first match wins:
+// New (FirstTimersMTEK only - b.cycle hard rule) > Member > Low activity > Credit holder > Old credit holder.
 const SEGMENTS = [
-  ["New", "Incremental - first-timer (FirstTimersMTEK, first class <=30d before purchase or after)"],
-  ["Reacquisition-Active", "Existing client who attended in the 60 days before buying - least incremental"],
-  ["Reacquisition-Lapsed", "Reactivated - no class in the 60 days before buying"],
+  ["New", "Incremental - first-timer (FirstTimersMTEK, first class <=30d before purchase or later)"],
+  ["Member", "Cannibalization - paid a membership in the prior 45 days"],
+  ["Low activity", "Incremental - fewer than 4 check-ins in the prior 90 days"],
+  ["Credit holder", "Cannibalization - 4+ check-ins and bought credits in the prior 90 days"],
+  ["Old credit holder", "Cannibalization - 4+ check-ins, no credit purchase in the prior 90 days"],
 ];
-// Member vs pack-only flag, with the "actively buys credits" split of pack-only.
-const TYPES = [
-  ["Member", "Cannibalization - already pays monthly (membership in prior 90d)"],
-  ["Pack-only - bought a pack prior 90d", "Cannibalization - active credit buyer, pull-forward of a pack they'd buy anyway"],
-  ["Pack-only - no pack prior 90d", "Pack-only client with no pack purchase in the prior 90 days"],
-];
-
 const PRODUCTS = [
   ["Prévente Vendredi fou – 10 cours achetés, 5 offerts", 10, 5, 270],
   ["Prévente Vendredi fou – 20 cours achetés, 10 offerts", 20, 10, 520],
@@ -70,31 +66,27 @@ async function main() {
     ["First date shown in the Dashboard daily table", "2026-11-24", ""],
     ["Minimum buyers before the verdict is trusted", 40, "Below this the verdict says WAIT"],
     ["Max % of buyers who are Members", 0.3, "Members buying packs = revenue we'd likely have had anyway"],
-    ["Max % of buyers who are active credit buyers (pack-only, bought a pack in prior 90d)", 0.3, "Pull-forward of a pack they'd buy anyway"],
-    ["Max % of buyers Members + active credit buyers combined", 0.5, "Combined cannibalization ceiling"],
-    ["Min % of buyers New + Reacquisition-Lapsed (incremental)", 0.25, "Floor of genuinely new / reactivated money"],
+    ["Max % of buyers who are credit holders (Credit holder + Old credit holder)", 0.3, "Current credit holders buying = the failure case"],
+    ["Max % of buyers Members + credit holders combined", 0.5, "Combined cannibalization ceiling"],
+    ["Min % of buyers New + Low activity (incremental)", 0.25, "Floor of genuinely new / low-activity money"],
   ]);
   put("Settings!A11:D11", [["Product (exact MTEK name)", "Paid classes", "Free classes", "Pre-tax price"]]);
   const prodRows = [];
   for (let i = 0; i < PRODUCT_ROWS; i++) prodRows.push(PRODUCTS[i] || ["", "", "", ""]);
   put(`Settings!A12:D${11 + PRODUCT_ROWS}`, prodRows);
-  put("Settings!A21", [["Add a new pack by typing its exact MTEK product name in the next free row (and widen PRODUCT_PATTERN in the workflow/import script - the import only pulls the two presale packs by default)."]]);
+  put("Settings!A21", [["Add a new pack by typing its exact MTEK product name in the next free row (and widen PRODUCT_PATTERN in the import script - it only pulls the two presale packs by default)."]]);
 
   // --------------------------------------------------------------- Import log
   put("Import_Log!D1", [["Written by scripts/bf-sale-monitor-import.mjs on every run - do not edit."]]);
 
   // ------------------------------------------------------------ Raw helpers
-  put(`${S}!S1:U1`, [["segment", "order_ts_utc", "buyer_type"]]);
+  put(`${S}!S1:T1`, [["segment", "order_ts_utc"]]);
   put(`${S}!S2`, [[`=ARRAYFORMULA(IF(E2:E="","",IFERROR(VLOOKUP(E2:E,${C}!A:D,4,FALSE),"Unknown")))`]]);
   put(`${S}!T2`, [[`=ARRAYFORMULA(IF(B2:B="","",B2:B+C2:C))`]]);
-  put(`${S}!U2`, [[`=ARRAYFORMULA(IF(E2:E="","",IFERROR(VLOOKUP(E2:E,${C}!A:U,21,FALSE),"Unknown")))`]]);
-  put(`${C}!U1`, [["buyer_type"]]);
-  put(`${C}!U2`, [[`=ARRAYFORMULA(IF(A2:A="","",IF(Q2:Q="Member","Member",IF(L2:L>0,"${TYPES[1][0]}","${TYPES[2][0]}"))))`]]);
 
   // --------------------------------------------------------------- Dashboard
   const D = [];
   const set = (cell, v) => D.push({ range: `Dashboard!${cell}`, values: [[v]] });
-  const MEM = TYPES[0][0], ACT = TYPES[1][0];
   set("A1", "BF 2026 - Vendredi Fou presale packs (10+5, 20+10): keep the sale on?");
   set("A2", "Last import (UTC)");
   set("B2", "=Import_Log!B1");
@@ -107,135 +99,126 @@ async function main() {
   D.push({
     range: "Dashboard!A7:E12",
     values: [
-      ["Distinct buyers", "=B19", "at least", "=Settings!B4", '=IF(B7>=D7,"OK","TOO FEW")'],
-      ["% of buyers who are Members", "=C22", "at most", "=Settings!B5", '=IF(B8<=D8,"OK","OVER")'],
-      ["% of buyers who are active credit buyers (pack in prior 90d)", "=C23", "at most", "=Settings!B6", '=IF(B9<=D9,"OK","OVER")'],
-      ["% Members + active credit buyers", "=C22+C23", "at most", "=Settings!B7", '=IF(B10<=D10,"OK","OVER")'],
-      ["% New + Reacquisition-Lapsed (incremental)", "=C16+C18", "at least", "=Settings!B8", '=IF(B11>=D11,"OK","LOW")'],
-      ["Buyers without a segment", `=COUNTA(${cr("A")})-B19`, "should be", 0, '=IF(B12=D12,"OK","CHECK")'],
+      ["Distinct buyers", "=B21", "at least", "=Settings!B4", '=IF(B7>=D7,"OK","TOO FEW")'],
+      ["% of buyers who are Members", "=C17", "at most", "=Settings!B5", '=IF(B8<=D8,"OK","OVER")'],
+      ["% of buyers who are credit holders (Credit + Old credit holder)", "=C19+C20", "at most", "=Settings!B6", '=IF(B9<=D9,"OK","OVER")'],
+      ["% Members + credit holders", "=C17+C19+C20", "at most", "=Settings!B7", '=IF(B10<=D10,"OK","OVER")'],
+      ["% New + Low activity (incremental)", "=C16+C18", "at least", "=Settings!B8", '=IF(B11>=D11,"OK","LOW")'],
+      ["Buyers without a segment", `=COUNTA(${cr("A")})-B21`, "should be", 0, '=IF(B12=D12,"OK","CHECK")'],
     ],
   });
-  const last24 = `${sr("T")},">"&(Import_Log!$B$1-1),${sr("K")},"Completed"`;
   D.push({
     range: "Dashboard!G6:H11",
     values: [
       ["Last 24 hours (to last import)", ""],
-      ["Units sold", `=SUMIFS(${sr("L")},${last24})`],
-      ["Units to Members", `=SUMIFS(${sr("L")},${last24},${sr("U")},"${MEM}")`],
-      ["Units to active credit buyers", `=SUMIFS(${sr("L")},${last24},${sr("U")},"${ACT}")`],
+      ["Units sold", `=SUMIFS(${sr("L")},${sr("T")},">"&(Import_Log!$B$1-1),${sr("K")},"Completed")`],
+      ["Units to Members", `=SUMIFS(${sr("L")},${sr("T")},">"&(Import_Log!$B$1-1),${sr("K")},"Completed",${sr("S")},"Member")`],
+      ["Units to credit holders", `=SUMIFS(${sr("L")},${sr("T")},">"&(Import_Log!$B$1-1),${sr("K")},"Completed",${sr("S")},"Credit holder")+SUMIFS(${sr("L")},${sr("T")},">"&(Import_Log!$B$1-1),${sr("K")},"Completed",${sr("S")},"Old credit holder")`],
       ["% cannibalizing units", "=IFERROR((H8+H9)/H7,0)"],
-      ["Revenue (pre-tax)", `=SUMIFS(${sr("M")},${last24})`],
+      ["Revenue (pre-tax)", `=SUMIFS(${sr("M")},${sr("T")},">"&(Import_Log!$B$1-1),${sr("K")},"Completed")`],
     ],
   });
 
-  const tableHead = (first) => [[first, "Buyers", "% of buyers", "Units", "% of units", "Revenue (pre-tax)", "% of revenue", "Avg prior-90d spend", "Avg classes attended prior 90d", "Read as"]];
-  const tableRows = (rows, startRow, totalRow, critCol) => {
-    rows.forEach(([name, note], i) => {
-      const r = startRow + i;
-      D.push({
-        range: `Dashboard!A${r}:J${r}`,
-        values: [[
-          name,
-          `=COUNTIFS(${cr(critCol)},$A${r})`,
-          `=IFERROR(B${r}/B$${totalRow},0)`,
-          `=SUMIFS(${cr("F")},${cr(critCol)},$A${r})`,
-          `=IFERROR(D${r}/D$${totalRow},0)`,
-          `=SUMIFS(${cr("G")},${cr(critCol)},$A${r})`,
-          `=IFERROR(F${r}/F$${totalRow},0)`,
-          `=IFERROR(SUMIFS(${cr("H")},${cr(critCol)},$A${r})/B${r},0)`,
-          `=IFERROR(SUMIFS(${cr("M")},${cr(critCol)},$A${r})/B${r},0)`,
-          note,
-        ]],
-      });
-    });
-    const e = startRow + rows.length - 1;
+  D.push({
+    range: "Dashboard!A15:J15",
+    values: [["Segment (Black Friday analysis segments)", "Buyers", "% of buyers", "Units", "% of units", "Revenue (pre-tax)", "% of revenue", "Avg prior-90d spend", "Avg classes attended prior 90d", "Read as"]],
+  });
+  SEGMENTS.forEach(([seg, note], i) => {
+    const r = 16 + i;
     D.push({
-      range: `Dashboard!A${totalRow}:I${totalRow}`,
+      range: `Dashboard!A${r}:J${r}`,
       values: [[
-        "Total", `=SUM(B${startRow}:B${e})`, `=SUM(C${startRow}:C${e})`, `=SUM(D${startRow}:D${e})`, `=SUM(E${startRow}:E${e})`,
-        `=SUM(F${startRow}:F${e})`, `=SUM(G${startRow}:G${e})`, `=IFERROR(SUM(${cr("H")})/B${totalRow},0)`, `=IFERROR(SUM(${cr("M")})/B${totalRow},0)`,
+        seg,
+        `=COUNTIFS(${cr("D")},$A${r})`,
+        `=IFERROR(B${r}/B$21,0)`,
+        `=SUMIFS(${cr("F")},${cr("D")},$A${r})`,
+        `=IFERROR(D${r}/D$21,0)`,
+        `=SUMIFS(${cr("G")},${cr("D")},$A${r})`,
+        `=IFERROR(F${r}/F$21,0)`,
+        `=IFERROR(SUMIFS(${cr("H")},${cr("D")},$A${r})/B${r},0)`,
+        `=IFERROR(SUMIFS(${cr("M")},${cr("D")},$A${r})/B${r},0)`,
+        note,
       ]],
     });
-  };
-  D.push({ range: "Dashboard!A15:J15", values: tableHead("Buyer segment (usual: New / Reacquisition, vs the prior 60 days)") });
-  tableRows(SEGMENTS, 16, 19, "D");
-  D.push({ range: "Dashboard!A21:J21", values: tableHead("Member vs pack-only (prior 90 days)") });
-  tableRows(TYPES, 22, 25, "U");
+  });
+  D.push({
+    range: "Dashboard!A21:I21",
+    values: [[
+      "Total", "=SUM(B16:B20)", "=SUM(C16:C20)", "=SUM(D16:D20)", "=SUM(E16:E20)", "=SUM(F16:F20)", "=SUM(G16:G20)",
+      `=IFERROR(SUM(${cr("H")})/B21,0)`, `=IFERROR(SUM(${cr("M")})/B21,0)`,
+    ]],
+  });
 
   D.push({
-    range: "Dashboard!A28:K28",
+    range: "Dashboard!A24:K24",
     values: [["Product", "Paid classes", "Free classes", "Pre-tax price", "Units sold", "Units refunded", "Revenue (pre-tax)", "Free classes given", "Free-class retail value", "Free value % of revenue", "Share of units"]],
   });
   for (let i = 0; i < PRODUCT_ROWS; i++) {
-    const r = 29 + i;
-    const st = 12 + i;
+    const r = 25 + i;
+    const s = 12 + i;
     const blank = (f) => `=IF($A${r}="","",${f})`;
     D.push({
       range: `Dashboard!A${r}:K${r}`,
       values: [[
-        `=IF(Settings!A${st}="","",Settings!A${st})`,
-        blank(`Settings!B${st}`),
-        blank(`Settings!C${st}`),
-        blank(`Settings!D${st}`),
+        `=IF(Settings!A${s}="","",Settings!A${s})`,
+        blank(`Settings!B${s}`),
+        blank(`Settings!C${s}`),
+        blank(`Settings!D${s}`),
         blank(`SUMIFS(${sr("L")},${sr("H")},$A${r},${sr("K")},"Completed")`),
         blank(`SUMIFS(${sr("L")},${sr("H")},$A${r},${sr("K")},"Refunded")`),
         blank(`SUMIFS(${sr("M")},${sr("H")},$A${r},${sr("K")},"Completed")`),
         blank(`E${r}*C${r}`),
         blank(`H${r}*IFERROR(D${r}/B${r},0)`),
         blank(`IFERROR(I${r}/G${r},0)`),
-        blank(`IFERROR(E${r}/E$37,0)`),
+        blank(`IFERROR(E${r}/E$33,0)`),
       ]],
     });
   }
   D.push({
-    range: "Dashboard!A37:K37",
-    values: [["Total", "", "", "", "=SUM(E29:E36)", "=SUM(F29:F36)", "=SUM(G29:G36)", "=SUM(H29:H36)", "=SUM(I29:I36)", "=IFERROR(I37/G37,0)", "=SUM(K29:K36)"]],
+    range: "Dashboard!A33:K33",
+    values: [["Total", "", "", "", "=SUM(E25:E32)", "=SUM(F25:F32)", "=SUM(G25:G32)", "=SUM(H25:H32)", "=SUM(I25:I32)", "=IFERROR(I33/G33,0)", "=SUM(K25:K32)"]],
   });
 
-  const matrixHeader = ["Units by buyer group x product"];
-  for (let i = 0; i < PRODUCT_ROWS; i++) matrixHeader.push(`=$A$${29 + i}`);
+  const matrixHeader = ["Units by segment x product"];
+  for (let i = 0; i < PRODUCT_ROWS; i++) matrixHeader.push(`=$A$${25 + i}`);
   matrixHeader.push("Total");
-  D.push({ range: "Dashboard!A40:J40", values: [matrixHeader] });
+  D.push({ range: "Dashboard!A36:J36", values: [matrixHeader] });
   const cols = "BCDEFGHI";
-  const matrixRows = [
-    ...SEGMENTS.map(([n], i) => ({ ref: `=A${16 + i}`, col: "S" })),
-    ...TYPES.map(([n], i) => ({ ref: `=A${22 + i}`, col: "U" })),
-  ];
-  matrixRows.forEach(({ ref, col }, i) => {
-    const r = 41 + i;
-    const row = [ref];
+  SEGMENTS.forEach(([seg], i) => {
+    const r = 37 + i;
+    const row = [`=A${16 + i}`];
     for (let k = 0; k < PRODUCT_ROWS; k++) {
       const c = cols[k];
-      row.push(`=IF(${c}$40="","",SUMIFS(${sr("L")},${sr(col)},$A${r},${sr("H")},${c}$40,${sr("K")},"Completed"))`);
+      row.push(`=IF(${c}$36="","",SUMIFS(${sr("L")},${sr("S")},$A${r},${sr("H")},${c}$36,${sr("K")},"Completed"))`);
     }
     row.push(`=SUM(B${r}:I${r})`);
     D.push({ range: `Dashboard!A${r}:J${r}`, values: [row] });
   });
-  const totRow = ["Total (segments)"];
-  for (let k = 0; k < PRODUCT_ROWS; k++) totRow.push(`=IF(${cols[k]}$40="","",SUM(${cols[k]}41:${cols[k]}43))`);
-  totRow.push("=SUM(J41:J43)");
-  D.push({ range: "Dashboard!A47:J47", values: [totRow] });
+  const totRow = ["Total"];
+  for (let k = 0; k < PRODUCT_ROWS; k++) totRow.push(`=IF(${cols[k]}$36="","",SUM(${cols[k]}37:${cols[k]}41))`);
+  totRow.push("=SUM(J37:J41)");
+  D.push({ range: "Dashboard!A42:J42", values: [totRow] });
 
   D.push({
-    range: "Dashboard!A50:F50",
-    values: [["Day (transaction date)", "Units", "Revenue (pre-tax)", "Units to Members", "Units to active credit buyers", "% cannibalizing units"]],
+    range: "Dashboard!A45:F45",
+    values: [["Day (transaction date)", "Units", "Revenue (pre-tax)", "Units to Members", "Units to credit holders", "% cannibalizing units"]],
   });
   for (let i = 0; i < 10; i++) {
-    const r = 51 + i;
+    const r = 46 + i;
     D.push({
       range: `Dashboard!A${r}:F${r}`,
       values: [[
         i === 0 ? "=Settings!B3" : `=A${r - 1}+1`,
         `=SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed")`,
         `=SUMIFS(${sr("M")},${sr("D")},$A${r},${sr("K")},"Completed")`,
-        `=SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed",${sr("U")},"${MEM}")`,
-        `=SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed",${sr("U")},"${ACT}")`,
+        `=SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed",${sr("S")},"Member")`,
+        `=SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed",${sr("S")},"Credit holder")+SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed",${sr("S")},"Old credit holder")`,
         `=IFERROR((D${r}+E${r})/B${r},0)`,
       ]],
     });
   }
-  D.push({ range: "Dashboard!A61:F61", values: [["Total", "=SUM(B51:B60)", "=SUM(C51:C60)", "=SUM(D51:D60)", "=SUM(E51:E60)", "=IFERROR((D61+E61)/B61,0)"]] });
-  D.push({ range: "Dashboard!A63", values: [["Segments: New = first class from FirstTimersMTEK <=30 days before the buyer's first sale purchase or later; Reacquisition-Active = not New and attended in the 60 days before; Reacquisition-Lapsed = not New, no class in those 60 days. Member = membership purchase or membership-paid class in the prior 90 days. History from SalesMTEK / ReservationsMTEK / FirstTimersMTEK in BigQuery (current through yesterday). Raw data: Sales_Raw and Customers_Raw."]] });
+  D.push({ range: "Dashboard!A56:F56", values: [["Total", "=SUM(B46:B55)", "=SUM(C46:C55)", "=SUM(D46:D55)", "=SUM(E46:E55)", "=IFERROR((D56+E56)/B56,0)"]] });
+  D.push({ range: "Dashboard!A58", values: [["Segments (first match): New = in FirstTimersMTEK with first class <=30d before the buyer's first sale purchase or later; Member = paid a membership in the 45 days before; Low activity = <4 check-ins in the 90 days before; Credit holder = 4+ check-ins and bought credits in the 90 days before; Old credit holder = 4+ check-ins, no credit purchase. History from SalesMTEK / ReservationsMTEK / FirstTimersMTEK in BigQuery (current through yesterday)."]] });
 
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
@@ -246,27 +229,25 @@ async function main() {
   const rng = (name, r1, r2, c1, c2) => ({ sheetId: id[name], startRowIndex: r1, endRowIndex: r2, startColumnIndex: c1, endColumnIndex: c2 });
   const fmt = (range, cell, fields) => ({ repeatCell: { range, cell: { userEnteredFormat: cell }, fields: `userEnteredFormat(${fields})` } });
   const nf = (type, pattern) => ({ numberFormat: { type, pattern } });
+  const bold = { textFormat: { bold: true } };
   const head = { textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }, backgroundColor: { red: 0.17, green: 0.24, blue: 0.31 }, wrapStrategy: "WRAP" };
   const input = { textFormat: { foregroundColor: { red: 0.1, green: 0.3, blue: 0.9 } }, backgroundColor: { red: 0.93, green: 0.96, blue: 1 } };
   const total = { textFormat: { bold: true }, borders: { top: { style: "SOLID" } } };
   const dash = "Dashboard";
-  const HF = "textFormat,backgroundColor,wrapStrategy";
 
   const f = [
     fmt(rng(dash, 0, 1, 0, 1), { textFormat: { bold: true, fontSize: 16 } }, "textFormat"),
     fmt(rng(dash, 3, 4, 0, 6), { textFormat: { bold: true, fontSize: 14 } }, "textFormat"),
-    fmt(rng(dash, 5, 6, 0, 5), head, HF),
-    fmt(rng(dash, 5, 6, 6, 8), head, HF),
-    fmt(rng(dash, 14, 15, 0, 10), head, HF),
-    fmt(rng(dash, 20, 21, 0, 10), head, HF),
-    fmt(rng(dash, 27, 28, 0, 11), head, HF),
-    fmt(rng(dash, 39, 40, 0, 10), head, HF),
-    fmt(rng(dash, 49, 50, 0, 6), head, HF),
-    fmt(rng(dash, 18, 19, 0, 10), total, "textFormat,borders"),
-    fmt(rng(dash, 24, 25, 0, 10), total, "textFormat,borders"),
-    fmt(rng(dash, 36, 37, 0, 11), total, "textFormat,borders"),
-    fmt(rng(dash, 46, 47, 0, 10), total, "textFormat,borders"),
-    fmt(rng(dash, 60, 61, 0, 6), total, "textFormat,borders"),
+    fmt(rng(dash, 5, 6, 0, 5), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 5, 6, 6, 8), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 14, 15, 0, 10), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 23, 24, 0, 11), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 35, 36, 0, 10), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 44, 45, 0, 6), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 20, 21, 0, 10), total, "textFormat,borders"),
+    fmt(rng(dash, 32, 33, 0, 11), total, "textFormat,borders"),
+    fmt(rng(dash, 41, 42, 0, 10), total, "textFormat,borders"),
+    fmt(rng(dash, 55, 56, 0, 6), total, "textFormat,borders"),
     // number formats
     fmt(rng(dash, 6, 7, 1, 2), nf("NUMBER", "0"), "numberFormat"),
     fmt(rng(dash, 7, 11, 1, 2), nf("PERCENT", "0.0%"), "numberFormat"),
@@ -274,38 +255,36 @@ async function main() {
     fmt(rng(dash, 7, 11, 3, 4), nf("PERCENT", "0.0%"), "numberFormat"),
     fmt(rng(dash, 9, 10, 7, 8), nf("PERCENT", "0.0%"), "numberFormat"),
     fmt(rng(dash, 10, 11, 7, 8), nf("CURRENCY", "$#,##0"), "numberFormat"),
-    ...[[15, 19], [21, 25]].flatMap(([r1, r2]) => [
-      fmt(rng(dash, r1, r2, 2, 3), nf("PERCENT", "0.0%"), "numberFormat"),
-      fmt(rng(dash, r1, r2, 4, 5), nf("PERCENT", "0.0%"), "numberFormat"),
-      fmt(rng(dash, r1, r2, 6, 7), nf("PERCENT", "0.0%"), "numberFormat"),
-      fmt(rng(dash, r1, r2, 5, 6), nf("CURRENCY", "$#,##0"), "numberFormat"),
-      fmt(rng(dash, r1, r2, 7, 8), nf("CURRENCY", "$#,##0"), "numberFormat"),
-      fmt(rng(dash, r1, r2, 8, 9), nf("NUMBER", "0.0"), "numberFormat"),
-    ]),
-    fmt(rng(dash, 28, 37, 3, 4), nf("CURRENCY", "$#,##0"), "numberFormat"),
-    fmt(rng(dash, 28, 37, 6, 7), nf("CURRENCY", "$#,##0"), "numberFormat"),
-    fmt(rng(dash, 28, 37, 8, 9), nf("CURRENCY", "$#,##0"), "numberFormat"),
-    fmt(rng(dash, 28, 37, 9, 11), nf("PERCENT", "0.0%"), "numberFormat"),
-    fmt(rng(dash, 50, 61, 0, 1), nf("DATE", "ddd mmm d"), "numberFormat"),
-    fmt(rng(dash, 50, 61, 2, 3), nf("CURRENCY", "$#,##0"), "numberFormat"),
-    fmt(rng(dash, 50, 61, 5, 6), nf("PERCENT", "0.0%"), "numberFormat"),
+    fmt(rng(dash, 15, 21, 2, 3), nf("PERCENT", "0.0%"), "numberFormat"),
+    fmt(rng(dash, 15, 21, 4, 5), nf("PERCENT", "0.0%"), "numberFormat"),
+    fmt(rng(dash, 15, 21, 6, 7), nf("PERCENT", "0.0%"), "numberFormat"),
+    fmt(rng(dash, 15, 21, 5, 6), nf("CURRENCY", "$#,##0"), "numberFormat"),
+    fmt(rng(dash, 15, 21, 7, 8), nf("CURRENCY", "$#,##0"), "numberFormat"),
+    fmt(rng(dash, 15, 21, 8, 9), nf("NUMBER", "0.0"), "numberFormat"),
+    fmt(rng(dash, 24, 33, 3, 4), nf("CURRENCY", "$#,##0"), "numberFormat"),
+    fmt(rng(dash, 24, 33, 6, 7), nf("CURRENCY", "$#,##0"), "numberFormat"),
+    fmt(rng(dash, 24, 33, 8, 9), nf("CURRENCY", "$#,##0"), "numberFormat"),
+    fmt(rng(dash, 24, 33, 9, 11), nf("PERCENT", "0.0%"), "numberFormat"),
+    fmt(rng(dash, 45, 56, 0, 1), nf("DATE", "ddd mmm d"), "numberFormat"),
+    fmt(rng(dash, 45, 56, 2, 3), nf("CURRENCY", "$#,##0"), "numberFormat"),
+    fmt(rng(dash, 45, 56, 5, 6), nf("PERCENT", "0.0%"), "numberFormat"),
     fmt(rng(dash, 1, 2, 1, 2), nf("DATE_TIME", "yyyy-mm-dd hh:mm"), "numberFormat"),
     // Settings
     fmt(rng("Settings", 0, 1, 0, 1), { textFormat: { bold: true, fontSize: 14 } }, "textFormat"),
     fmt(rng("Settings", 2, 8, 1, 2), input, "textFormat,backgroundColor"),
     fmt(rng("Settings", 11, 11 + PRODUCT_ROWS, 0, 4), input, "textFormat,backgroundColor"),
-    fmt(rng("Settings", 10, 11, 0, 4), head, HF),
+    fmt(rng("Settings", 10, 11, 0, 4), head, "textFormat,backgroundColor,wrapStrategy"),
     fmt(rng("Settings", 2, 3, 1, 2), nf("DATE", "yyyy-mm-dd"), "numberFormat"),
     fmt(rng("Settings", 4, 8, 1, 2), nf("PERCENT", "0%"), "numberFormat"),
     // raw tab headers
-    fmt(rng("Sales_Raw", 0, 1, 0, 21), head, "textFormat,backgroundColor"),
-    fmt(rng("Customers_Raw", 0, 1, 0, 21), head, "textFormat,backgroundColor"),
+    fmt(rng("Sales_Raw", 0, 1, 0, 20), head, "textFormat,backgroundColor"),
+    fmt(rng("Customers_Raw", 0, 1, 0, 19), head, "textFormat,backgroundColor"),
     fmt(rng("Sales_Raw", 1, 10000, 19, 20), nf("DATE_TIME", "yyyy-mm-dd hh:mm"), "numberFormat"),
-    { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 380 }, fields: "pixelSize" } },
+    { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 330 }, fields: "pixelSize" } },
     { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 1, endIndex: 10 }, properties: { pixelSize: 125 }, fields: "pixelSize" } },
-    { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 9, endIndex: 10 }, properties: { pixelSize: 420 }, fields: "pixelSize" } },
+    { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 9, endIndex: 10 }, properties: { pixelSize: 330 }, fields: "pixelSize" } },
     { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 6, endIndex: 7 }, properties: { pixelSize: 210 }, fields: "pixelSize" } },
-    { updateDimensionProperties: { range: { sheetId: id["Settings"], dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 520 }, fields: "pixelSize" } },
+    { updateDimensionProperties: { range: { sheetId: id["Settings"], dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 420 }, fields: "pixelSize" } },
     { updateDimensionProperties: { range: { sheetId: id["Settings"], dimension: "COLUMNS", startIndex: 1, endIndex: 4 }, properties: { pixelSize: 130 }, fields: "pixelSize" } },
     { updateSheetProperties: { properties: { sheetId: id["Sales_Raw"], gridProperties: { frozenRowCount: 1 } }, fields: "gridProperties.frozenRowCount" } },
     { updateSheetProperties: { properties: { sheetId: id["Customers_Raw"], gridProperties: { frozenRowCount: 1 } }, fields: "gridProperties.frozenRowCount" } },

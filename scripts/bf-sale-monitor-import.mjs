@@ -12,15 +12,14 @@
 // per-customer MTEK calls (the /reservations/ endpoint throttles hard).
 // Everything on the sheet is overwritten each run, so it is safe to re-run.
 //
-// Segments = the usual b.cycle sale-analysis buyer segments (see the
-// bcycle-campaign-analysis skill), an exact 3-way partition of the buyers:
-//   New                  first class (FirstTimersMTEK only, never inferred from
-//                        check-ins) within 30 days before the buyer's first sale
-//                        purchase, or after it
-//   Reacquisition-Active not New, attended a class in the 60 days before the purchase
-//   Reacquisition-Lapsed not New, no class in the 60 days before the purchase
-// plus a Member / Pack-only flag (membership purchase, or a reservation paid by a
-// membership Contract, in the 90 days before) and "pack bought in prior 90d".
+// Segments = the Black Friday analysis segments (Bijan's black_friday_customer_analysis),
+// first match wins, measured against each buyer's first sale purchase:
+//   New               in FirstTimersMTEK with first class <=30 days before the purchase or
+//                     later (b.cycle hard rule: never inferred from check-ins)
+//   Member            membership purchase in the prior 45 days
+//   Low activity      fewer than 4 check-ins in the prior 90 days
+//   Credit holder     4+ check-ins and a credit (pack) purchase in the prior 90 days
+//   Old credit holder 4+ check-ins and no credit purchase in the prior 90 days
 //
 // Env: MTEK_API_TOKEN, SHEET_ID, GOOGLE_APPLICATION_CREDENTIALS (via the auth
 // action), optional SALE_START (default 2026-11-04, the presale),
@@ -52,8 +51,8 @@ const CUSTOMER_HEADERS = [
   "customer_id", "email", "name", "segment", "first_purchase_date", "sale_units_completed",
   "sale_revenue", "prior90_revenue", "prior90_credit_revenue", "prior90_membership_revenue",
   "prior90_orders", "prior90_pack_purchases", "prior90_classes_attended", "last_attended_prior",
-  "last_purchase_prior", "membership_reservations_prior90", "member_type", "in_first_timers",
-  "first_class_date", "prior60_classes_attended",
+  "last_purchase_prior", "membership_reservations_prior90", "membership_revenue_prior45", "in_first_timers",
+  "first_class_date",
 ];
 
 const num = (v) => {
@@ -128,7 +127,7 @@ async function fetchCustomerFacts(buyers) {
     s AS (
       SELECT b.id,
         SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) AS d,
-        x.order_number, x.product_type,
+        b.anchor, x.order_number, x.product_type,
         SAFE_CAST(REPLACE(x.line_subtotal, ',', '') AS FLOAT64) AS amt
       FROM ${T("SalesMTEK")} x
       JOIN buyers b ON SAFE_CAST(x.customer_id AS INT64) = b.id
@@ -143,6 +142,7 @@ async function fetchCustomerFacts(buyers) {
         SUM(amt) AS rev,
         SUM(IF(product_type = 'Credits', amt, 0)) AS credit_rev,
         SUM(IF(product_type = 'Memberships', amt, 0)) AS member_rev,
+        SUM(IF(product_type = 'Memberships' AND d >= DATE_SUB(anchor, INTERVAL 45 DAY), amt, 0)) AS member_rev45,
         COUNT(DISTINCT order_number) AS orders,
         COUNT(DISTINCT IF(product_type = 'Credits', order_number, NULL)) AS pack_orders,
         MAX(d) AS last_purchase
@@ -151,7 +151,6 @@ async function fetchCustomerFacts(buyers) {
     r AS (
       SELECT b.id,
         COUNTIF(x.Status = 'check in') AS attended,
-        COUNTIF(x.Status = 'check in' AND x.\`Class Start Date\` >= DATE_SUB(b.anchor, INTERVAL 60 DAY)) AS attended60,
         MAX(IF(x.Status = 'check in', x.\`Class Start Date\`, NULL)) AS last_attended,
         COUNTIF(x.Status = 'check in' AND IFNULL(TRIM(x.Contract), '') != '') AS contract_res
       FROM ${T("ReservationsMTEK")} x
@@ -168,9 +167,9 @@ async function fetchCustomerFacts(buyers) {
       GROUP BY id
     )
     SELECT b.id,
-      IFNULL(sa.rev, 0) AS rev, IFNULL(sa.credit_rev, 0) AS credit_rev, IFNULL(sa.member_rev, 0) AS member_rev,
+      IFNULL(sa.rev, 0) AS rev, IFNULL(sa.credit_rev, 0) AS credit_rev, IFNULL(sa.member_rev, 0) AS member_rev, IFNULL(sa.member_rev45, 0) AS member_rev45,
       IFNULL(sa.orders, 0) AS orders, IFNULL(sa.pack_orders, 0) AS pack_orders, sa.last_purchase,
-      IFNULL(r.attended, 0) AS attended, IFNULL(r.attended60, 0) AS attended60, r.last_attended, IFNULL(r.contract_res, 0) AS contract_res,
+      IFNULL(r.attended, 0) AS attended, r.last_attended, IFNULL(r.contract_res, 0) AS contract_res,
       ft.first_class
     FROM buyers b
     LEFT JOIN sa ON sa.id = b.id
@@ -184,11 +183,9 @@ async function fetchCustomerFacts(buyers) {
 function segmentFor(f, anchor) {
   const firstClass = bqDate(f.first_class);
   if (firstClass && firstClass >= addDaysUTC(anchor, -30)) return "New";
-  return f.attended60 > 0 ? "Reacquisition-Active" : "Reacquisition-Lapsed";
-}
-
-function memberTypeFor(f) {
-  return f.member_rev > 0 || f.contract_res > 0 ? "Member" : "Pack-only";
+  if (f.member_rev45 > 0) return "Member";
+  if (f.attended < 4) return "Low activity";
+  return f.pack_orders > 0 ? "Credit holder" : "Old credit holder";
 }
 
 async function sheetsClient() {
@@ -232,14 +229,14 @@ async function main() {
 
   const facts = buyers.length ? await fetchCustomerFacts(buyers) : new Map();
   const customerRows = buyers.map((b) => {
-    const f = facts.get(b.id) || { rev: 0, credit_rev: 0, member_rev: 0, orders: 0, pack_orders: 0, attended: 0, attended60: 0, contract_res: 0 };
+    const f = facts.get(b.id) || { rev: 0, credit_rev: 0, member_rev: 0, orders: 0, pack_orders: 0, attended: 0, member_rev45: 0, contract_res: 0 };
     const segment = segmentFor(f, b.firstDate);
     const firstClass = bqDate(f.first_class);
     return [
       b.id, b.email, b.name, segment, b.firstDate, b.units, Math.round(b.revenue * 100) / 100,
       Math.round(f.rev * 100) / 100, Math.round(f.credit_rev * 100) / 100, Math.round(f.member_rev * 100) / 100,
       f.orders, f.pack_orders, f.attended, bqDate(f.last_attended), bqDate(f.last_purchase), f.contract_res,
-      memberTypeFor(f), firstClass ? 1 : 0, firstClass, f.attended60,
+      f.member_rev45, firstClass ? 1 : 0, firstClass,
     ];
   });
 
