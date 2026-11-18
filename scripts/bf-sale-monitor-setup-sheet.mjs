@@ -62,7 +62,7 @@ async function main() {
 
   // ---------------------------------------------------------------- Settings
   put("Settings!A1", [["Settings - blue cells are editable; the Dashboard reads everything from here"]]);
-  put("Settings!A3:C9", [
+  put("Settings!A3:C10", [
     ["First date shown in the Dashboard daily table", "2026-11-24", ""],
     ["Minimum buyers before the verdict is trusted", 40, "Below this the verdict says WAIT"],
     ["Max % of buyers who are Members", 0.3, "Members buying packs = revenue we'd likely have had anyway"],
@@ -70,6 +70,7 @@ async function main() {
     ["Max % of buyers Members + credit holders combined", 0.5, "Combined cannibalization ceiling"],
     ["Min % of buyers New + Low activity (incremental)", 0.25, "Floor of genuinely new / low-activity money"],
     ["Min net revenue lift ($)", 0, "Pack revenue minus what the same buyers spent in the pack's validity window before (0 = break-even)"],
+    ["Days since last membership purchase to count a buyer as 'on a membership'", 45, "Same 45 days as the Member segment; used by the 'Where buyers are coming from' block"],
   ]);
   put("Settings!A11:D11", [["Product (exact MTEK name)", "Paid classes", "Free classes", "Pre-tax price"]]);
   const prodRows = [];
@@ -239,6 +240,41 @@ async function main() {
   D.push({ range: "Dashboard!A58", values: [["Segments (first match): New = in FirstTimersMTEK with first class <=30d before the buyer's first sale purchase or later; Member = paid a membership in the 45 days before; Low activity = <4 check-ins in the 90 days before; Credit holder = 4+ check-ins and bought credits in the 90 days before; Old credit holder = 4+ check-ins, no credit purchase. History from SalesMTEK / ReservationsMTEK / FirstTimersMTEK in BigQuery (current through yesterday)."]] });
   D.push({ range: "Dashboard!A59", values: [["Revenue won = pack sales (pre-tax). Revenue lost = what the same buyer spent (memberships + credits, pre-tax, excluding the sale packs) in the N days before their first sale purchase, where N = that pack's validity in MTEK (Packs_Raw). It is the spend we assume the pack replaces for as long as the credits last: a Member who stops paying for the pack's validity, a credit holder who would have bought credits anyway. Net lift = won - lost."]] });
 
+  // ---- Bijan: which memberships are buyers leaving, annual-commitment plans, billing cycles
+  const X = `${C}!$X:$X`, Y = `${C}!$Y:$Y`, Z = `${C}!$Z:$Z`;
+  const thr = "Settings!$B$10";
+  D.push({ range: "Dashboard!A61", values: [["Where buyers are coming from: memberships they were on before the sale"]] });
+  D.push({
+    range: "Dashboard!A62:D62",
+    values: [["Buyer's last membership before the sale", "Buyers", "% of buyers (row 63: of all; rows 64-65: of those on a membership)", "Avg billing cycles on it"]],
+  });
+  D.push({
+    range: "Dashboard!A63:D67",
+    values: [
+      ["On a membership (last membership purchase within the Settings window)", `=COUNTIFS(${X},"<="&${thr})`, "=IFERROR(B63/B21,0)", `=IFERROR(AVERAGEIFS(${Y},${X},"<="&${thr}),0)`],
+      ["   of which Annual commitment plans (1 an / 1 year / 13-cycle commitment)", `=COUNTIFS(${X},"<="&${thr},${Z},"Annual commitment")`, "=IFERROR(B64/B63,0)", `=IFERROR(AVERAGEIFS(${Y},${X},"<="&${thr},${Z},"Annual commitment"),0)`],
+      ["   of which Short term / other (2, 4, 8 weeks, trials)", `=COUNTIFS(${X},"<="&${thr},${Z},"Short term / other")`, "=IFERROR(B65/B63,0)", `=IFERROR(AVERAGEIFS(${Y},${X},"<="&${thr},${Z},"Short term / other"),0)`],
+      ["Membership lapsed before the sale (last purchase older than the window)", `=COUNTIFS(${X},">"&${thr})`, "=IFERROR(B66/B21,0)", ""],
+      ["No membership in the 400 days before", `=B21-COUNT(${X})`, "=IFERROR(B67/B21,0)", ""],
+    ],
+  });
+  D.push({ range: "Dashboard!A69:C69", values: [["Billing cycles on that membership (buyers on a membership)", "Buyers", "% of buyers on a membership"]] });
+  D.push({
+    range: "Dashboard!A70:C74",
+    values: [
+      ["1 cycle (just started)", `=COUNTIFS(${X},"<="&${thr},${Y},1)`, "=IFERROR(B70/B$63,0)"],
+      ["2 to 3 cycles", `=COUNTIFS(${X},"<="&${thr},${Y},">=2",${Y},"<=3")`, "=IFERROR(B71/B$63,0)"],
+      ["4 to 6 cycles", `=COUNTIFS(${X},"<="&${thr},${Y},">=4",${Y},"<=6")`, "=IFERROR(B72/B$63,0)"],
+      ["7 to 12 cycles", `=COUNTIFS(${X},"<="&${thr},${Y},">=7",${Y},"<=12")`, "=IFERROR(B73/B$63,0)"],
+      ["13 or more cycles", `=COUNTIFS(${X},"<="&${thr},${Y},">=13")`, "=IFERROR(B74/B$63,0)"],
+    ],
+  });
+  D.push({
+    range: "Dashboard!A76",
+    values: [[`=IFERROR(QUERY(${C}!A:Z,"select V, count(A), avg(Y), max(Z) where V is not null and X <= "&${thr}&" group by V order by count(A) desc limit 15 label V 'Which membership they were on (top 15)', count(A) 'Buyers', avg(Y) 'Avg billing cycles', max(Z) 'Plan type'",1),"")`]],
+  });
+  D.push({ range: "Dashboard!A92", values: [["Cycles = purchases of that same membership product in the 400 days before the buyer's first sale purchase (one purchase per billing cycle). Annual commitment is detected from the product name (1 an / 1 year / commitment) - adjust the ANNUAL_PLAN pattern in the import script if your APAC naming differs."]] });
+
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
     requestBody: { valueInputOption: "USER_ENTERED", data: [...data, ...D] },
@@ -294,9 +330,17 @@ async function main() {
     fmt(rng(dash, 45, 56, 2, 3), nf("CURRENCY", "$#,##0"), "numberFormat"),
     fmt(rng(dash, 45, 56, 5, 6), nf("PERCENT", "0.0%"), "numberFormat"),
     fmt(rng(dash, 1, 2, 1, 2), nf("DATE_TIME", "yyyy-mm-dd hh:mm"), "numberFormat"),
+    fmt(rng(dash, 60, 61, 0, 1), { textFormat: { bold: true, fontSize: 13 } }, "textFormat"),
+    fmt(rng(dash, 61, 62, 0, 4), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 68, 69, 0, 3), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 75, 76, 0, 4), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 62, 67, 2, 3), nf("PERCENT", "0%"), "numberFormat"),
+    fmt(rng(dash, 62, 67, 3, 4), nf("NUMBER", "0.0"), "numberFormat"),
+    fmt(rng(dash, 69, 74, 2, 3), nf("PERCENT", "0%"), "numberFormat"),
+    fmt(rng(dash, 76, 91, 2, 3), nf("NUMBER", "0.0"), "numberFormat"),
     // Settings
     fmt(rng("Settings", 0, 1, 0, 1), { textFormat: { bold: true, fontSize: 14 } }, "textFormat"),
-    fmt(rng("Settings", 2, 9, 1, 2), input, "textFormat,backgroundColor"),
+    fmt(rng("Settings", 2, 10, 1, 2), input, "textFormat,backgroundColor"),
     fmt(rng("Settings", 8, 9, 1, 2), nf("CURRENCY", "$#,##0"), "numberFormat"),
     fmt(rng("Settings", 11, 11 + PRODUCT_ROWS, 0, 4), input, "textFormat,backgroundColor"),
     fmt(rng("Settings", 10, 11, 0, 4), head, "textFormat,backgroundColor,wrapStrategy"),
@@ -304,7 +348,7 @@ async function main() {
     fmt(rng("Settings", 4, 8, 1, 2), nf("PERCENT", "0%"), "numberFormat"),
     // raw tab headers
     fmt(rng("Sales_Raw", 0, 1, 0, 20), head, "textFormat,backgroundColor"),
-    fmt(rng("Customers_Raw", 0, 1, 0, 21), head, "textFormat,backgroundColor"),
+    fmt(rng("Customers_Raw", 0, 1, 0, 26), head, "textFormat,backgroundColor"),
     fmt(rng("Packs_Raw", 0, 1, 0, 7), head, "textFormat,backgroundColor"),
     fmt(rng("Sales_Raw", 1, 10000, 19, 20), nf("DATE_TIME", "yyyy-mm-dd hh:mm"), "numberFormat"),
     { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 330 }, fields: "pixelSize" } },

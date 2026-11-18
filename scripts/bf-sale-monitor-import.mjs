@@ -59,7 +59,12 @@ const CUSTOMER_HEADERS = [
   "window_orders", "prior90_pack_purchases", "prior90_classes_attended", "last_attended_prior",
   "last_purchase_prior", "membership_reservations_prior90", "membership_revenue_prior45", "in_first_timers",
   "first_class_date", "window_start", "window_days",
+  "last_membership_product", "last_membership_date", "last_membership_days_before", "last_membership_cycles", "last_membership_plan_type",
 ];
+
+// Annual-commitment plans (1 an / 1 year / N-cycle commitment) vs short-term (2/4/8 weeks, trials).
+const ANNUAL_PLAN = /\b1 an\b|1 year|commitment|\bar\b/i;
+const planType = (product) => (!product ? "" : ANNUAL_PLAN.test(product) ? "Annual commitment" : "Short term / other");
 
 const PACK_HEADERS = ["product", "package_id", "price", "credit_quantity", "expiry_length", "expiry_unit", "expiry_months"];
 
@@ -215,6 +220,28 @@ async function fetchCustomerFacts(buyers) {
         AND x.\`Class Start Date\` < b.anchor
       GROUP BY b.id
     ),
+    -- membership each buyer was on before the sale: the latest one, and how many billing cycles
+    -- (purchases of that same product) in the 400 days before.
+    m AS (
+      SELECT b.id, x.product, x.order_number, SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) AS d
+      FROM ${T("SalesMTEK")} x
+      JOIN buyers b ON SAFE_CAST(x.customer_id AS INT64) = b.id
+      WHERE x.order_status != 'Order Status'
+        AND x.line_status = 'Completed'
+        AND x.product_type = 'Memberships'
+        AND NOT REGEXP_CONTAINS(LOWER(x.product), r'${salePattern}')
+        AND SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) >= DATE_SUB(b.anchor, INTERVAL 400 DAY)
+        AND SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) < b.anchor
+    ),
+    ml AS (
+      SELECT id, ARRAY_AGG(STRUCT(product, d) ORDER BY d DESC, order_number DESC LIMIT 1)[OFFSET(0)] AS last
+      FROM m GROUP BY id
+    ),
+    mc AS (
+      SELECT m.id, COUNT(DISTINCT m.order_number) AS cycles
+      FROM m JOIN ml ON m.id = ml.id AND m.product = ml.last.product
+      GROUP BY m.id
+    ),
     ft AS (
       SELECT SAFE_CAST(string_field_1 AS INT64) AS id,
         MIN(SAFE.PARSE_DATE('%m/%d/%Y', string_field_5)) AS first_class
@@ -226,8 +253,11 @@ async function fetchCustomerFacts(buyers) {
       IFNULL(sa.rev, 0) AS rev, IFNULL(sa.credit_rev, 0) AS credit_rev, IFNULL(sa.member_rev, 0) AS member_rev, IFNULL(sa.member_rev45, 0) AS member_rev45,
       IFNULL(sa.orders, 0) AS orders, IFNULL(sa.pack_orders, 0) AS pack_orders, sa.last_purchase,
       IFNULL(r.attended, 0) AS attended, r.last_attended, IFNULL(r.contract_res, 0) AS contract_res,
-      ft.first_class
+      ft.first_class,
+      ml.last.product AS mem_product, ml.last.d AS mem_date, mc.cycles AS mem_cycles
     FROM buyers b
+    LEFT JOIN ml ON ml.id = b.id
+    LEFT JOIN mc ON mc.id = b.id
     LEFT JOIN sa ON sa.id = b.id
     LEFT JOIN r ON r.id = b.id
     LEFT JOIN ft ON ft.id = b.id`;
@@ -308,6 +338,9 @@ async function main() {
       Math.round(f.rev * 100) / 100, Math.round(f.credit_rev * 100) / 100, Math.round(f.member_rev * 100) / 100,
       f.orders, f.pack_orders, f.attended, bqDate(f.last_attended), bqDate(f.last_purchase), f.contract_res,
       f.member_rev45, firstClass ? 1 : 0, firstClass, b.windowStart, b.windowDays,
+      f.mem_product || "", bqDate(f.mem_date) || "",
+      f.mem_date ? Math.round((new Date(`${b.firstDate}T00:00:00Z`) - new Date(`${bqDate(f.mem_date)}T00:00:00Z`)) / 86400000) : "",
+      f.mem_cycles || "", planType(f.mem_product),
     ];
   });
 
