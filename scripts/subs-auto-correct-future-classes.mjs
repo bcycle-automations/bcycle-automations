@@ -266,7 +266,7 @@ function studioMessage(studio, items, { dry, variant = "table" } = {}) {
   const foot = [
     {
       type: "context",
-      elements: [{ type: "mrkdwn", text: `Should this *not* have been done? Put the right instructor / FINAL Sub back in ALL CLASSES; the auto-update then leaves that class alone unless MTEK changes it again. Runs every Mon / Wed / Fri for the next ${WINDOW_DAYS} days.` }],
+      elements: [{ type: "mrkdwn", text: `Should this *not* have been done? Put the right instructor / FINAL Sub back in ALL CLASSES; the auto-update then leaves that class alone unless MTEK changes it again. Runs every Sun / Mon / Wed / Fri for the next ${WINDOW_DAYS} days.` }],
     },
     { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Open ALL CLASSES" }, url: ALL_CLASSES_URL, style: "primary" }] },
   ];
@@ -599,6 +599,37 @@ async function run() {
       log(`No Slack channel for ${studio}: sent to admin`);
     }
     await sleep(1100); // Slack: ~1 message per second per channel
+  }
+
+  // Heartbeat: every studio in scope that had nothing to announce still gets a short message, so the channel
+  // shows the check really ran (no message = the automation did not run).
+  const checkedBy = new Map();
+  for (const r of rows) {
+    const l = String(col(r, "Location") ?? "").trim();
+    checkedBy.set(l, (checkedBy.get(l) || 0) + 1);
+  }
+  for (const studio of studiosInScope) {
+    if (byStudio.has(studio)) continue;
+    const channel = channelByStudio.get(norm(studio)) || "";
+    const un = unconfirmed.filter((c) => c.location === studio);
+    const checked = checkedBy.get(studio) || 0;
+    const through = capFor(studio);
+    const text = un.length
+      ? `⚠️ *${plural(un.length, "change", "changes")}* sent to Airtable but not confirmed yet. Jonathan was notified.`
+      : `✅ Checked *${plural(checked, "class", "classes")}* (today to ${through}): MTEK and Airtable match. *No changes needed.*`;
+    const blocks = [
+      { type: "header", text: { type: "plain_text", text: `📅 Schedule auto-check · ${studio}`.slice(0, 150), emoji: true } },
+      { type: "section", text: { type: "mrkdwn", text: `${DRY_RUN ? "🧪 *DRY RUN* – " : ""}${text}` } },
+      { type: "context", elements: [{ type: "mrkdwn", text: `Ran ${today}. Runs every Sun / Mon / Wed / Fri. If you do not see a message from this check, tell Jonathan.` }] },
+    ];
+    const target = DRY_RUN || !channel ? ADMIN_USER : channel;
+    try {
+      await slackPost(target, `Schedule auto-check – ${studio} – ${un.length ? "not confirmed" : "no changes needed"}`, blocks);
+      log(`${DRY_RUN ? "DM'd dry-run heartbeat" : channel ? "Posted heartbeat" : "No Slack channel: sent heartbeat to admin"} for ${studio}`);
+    } catch (e) {
+      log(`Heartbeat for ${studio} failed: ${e.message}`);
+    }
+    await sleep(1100);
   }
 
   const stuckNew = stuck.filter((c) => c.firstReport);
