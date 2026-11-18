@@ -60,7 +60,19 @@ const CUSTOMER_HEADERS = [
   "last_purchase_prior", "membership_reservations_prior90", "membership_revenue_prior45", "in_first_timers",
   "first_class_date", "window_start", "window_days",
   "last_membership_product", "last_membership_date", "last_membership_days_before", "last_membership_cycles", "last_membership_plan_type",
+  "last_membership_price", "last_membership_tier", "sale_products",
 ];
+
+// Membership tier from the product name: weekly frequency (1x = 4-pack, 2x = 8-pack, 3x = 12-pack) or unlimited.
+function tierOf(product) {
+  if (!product) return "";
+  const p = String(product).toLowerCase();
+  if (/illimit|unlimited/.test(p)) return "Unlimited";
+  if (/3x par semaine|3x per week|3 cours par semaine|3 classes per week/.test(p)) return "12-pack (3x/week)";
+  if (/2x par semaine|2x per week|2 cours par semaine|2 classes per week|8 cours en 4|8 classes in 4/.test(p)) return "8-pack (2x/week)";
+  if (/1x par|1x per|1 cours par semaine|1 class per week|4 classes per month|4 cours/.test(p)) return "4-pack (1x/week)";
+  return "Other";
+}
 
 // Annual-commitment plans (1 an / 1 year / N-cycle commitment) vs short-term (2/4/8 weeks, trials).
 const ANNUAL_PLAN = /\b1 an\b|1 year|commitment|\bar\b/i;
@@ -223,7 +235,8 @@ async function fetchCustomerFacts(buyers) {
     -- membership each buyer was on before the sale: the latest one, and how many billing cycles
     -- (purchases of that same product) in the 400 days before.
     m AS (
-      SELECT b.id, x.product, x.order_number, SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) AS d
+      SELECT b.id, x.product, x.order_number, SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) AS d,
+        SAFE_CAST(REPLACE(x.line_subtotal, ',', '') AS FLOAT64) AS amt
       FROM ${T("SalesMTEK")} x
       JOIN buyers b ON SAFE_CAST(x.customer_id AS INT64) = b.id
       WHERE x.order_status != 'Order Status'
@@ -234,7 +247,7 @@ async function fetchCustomerFacts(buyers) {
         AND SAFE.PARSE_DATE('%m/%d/%Y', x.transaction_date) < b.anchor
     ),
     ml AS (
-      SELECT id, ARRAY_AGG(STRUCT(product, d) ORDER BY d DESC, order_number DESC LIMIT 1)[OFFSET(0)] AS last
+      SELECT id, ARRAY_AGG(STRUCT(product, d, amt) ORDER BY d DESC, order_number DESC LIMIT 1)[OFFSET(0)] AS last
       FROM m GROUP BY id
     ),
     mc AS (
@@ -254,7 +267,7 @@ async function fetchCustomerFacts(buyers) {
       IFNULL(sa.orders, 0) AS orders, IFNULL(sa.pack_orders, 0) AS pack_orders, sa.last_purchase,
       IFNULL(r.attended, 0) AS attended, r.last_attended, IFNULL(r.contract_res, 0) AS contract_res,
       ft.first_class,
-      ml.last.product AS mem_product, ml.last.d AS mem_date, mc.cycles AS mem_cycles
+      ml.last.product AS mem_product, ml.last.d AS mem_date, ml.last.amt AS mem_price, mc.cycles AS mem_cycles
     FROM buyers b
     LEFT JOIN ml ON ml.id = b.id
     LEFT JOIN mc ON mc.id = b.id
@@ -281,7 +294,8 @@ async function sheetsClient() {
 
 async function writeTab(sheets, tab, headers, rows) {
   // Clear only the imported columns - helper formula columns to the right survive.
-  const lastCol = String.fromCharCode(64 + headers.length);
+  const colName = (n) => { let s = ""; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
+  const lastCol = colName(headers.length);
   await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${tab}!A:${lastCol}` });
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
@@ -341,6 +355,7 @@ async function main() {
       f.mem_product || "", bqDate(f.mem_date) || "",
       f.mem_date ? Math.round((new Date(`${b.firstDate}T00:00:00Z`) - new Date(`${bqDate(f.mem_date)}T00:00:00Z`)) / 86400000) : "",
       f.mem_cycles || "", planType(f.mem_product),
+      f.mem_product ? Math.round((f.mem_price || 0) * 100) / 100 : "", tierOf(f.mem_product), [...b.products].join(" | "),
     ];
   });
 

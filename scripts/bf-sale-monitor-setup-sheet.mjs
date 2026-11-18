@@ -273,6 +273,29 @@ async function main() {
     range: "Dashboard!A76",
     values: [[`=IFERROR(QUERY(${C}!A:Z,"select V, count(A), avg(Y), max(Z) where V is not null and X <= "&${thr}&" group by V order by count(A) desc limit 15 label V 'Which membership they were on (top 15)', count(A) 'Buyers', avg(Y) 'Avg billing cycles', max(Z) 'Plan type'",1),"")`]],
   });
+  // membership tier x what they bought x value
+  const AB = `${C}!$AB:$AB`, AA = `${C}!$AA:$AA`, G = `${C}!$G:$G`, AD = `${C}!$AC:$AC`;
+  D.push({ range: "Dashboard!A94", values: [["Which kind of membership they were on, what they bought, and the value"]] });
+  D.push({
+    range: "Dashboard!A95:L95",
+    values: [["Membership tier (from product name)", "Buyers", "% of buyers on a membership", "Avg price per cycle (membership they left)", "Membership value per cycle (sum)", "Bought 10+5 pack", "Bought 20+10 pack", "Pack revenue won", "Pack revenue / membership value per cycle", "On an annual commitment", "% annual commitment", "Avg billing cycles"]],
+  });
+  const tiers = ["4-pack (1x/week)", "8-pack (2x/week)", "12-pack (3x/week)", "Unlimited", "Other"];
+  tiers.forEach((t, i) => {
+    const r = 96 + i;
+    const on = `${X},"<="&${thr},${AB},$A${r}`;
+    D.push({
+      range: `Dashboard!A${r}:L${r}`,
+      values: [[t, `=COUNTIFS(${on})`, "=IFERROR(B" + r + "/B$63,0)", `=IFERROR(AVERAGEIFS(${AA},${on}),0)`, `=SUMIFS(${AA},${on})`,
+        `=COUNTIFS(${on},${AD},"*10 cours achetés*")`, `=COUNTIFS(${on},${AD},"*20 cours achetés*")`, `=SUMIFS(${G},${on})`,
+        `=IFERROR(H${r}/E${r},0)`, `=COUNTIFS(${on},${Z},"Annual commitment")`, `=IFERROR(J${r}/B${r},0)`, `=IFERROR(AVERAGEIFS(${Y},${on}),0)`]],
+    });
+  });
+  D.push({
+    range: "Dashboard!A101:L101",
+    values: [["Total", "=SUM(B96:B100)", "=SUM(C96:C100)", "=IFERROR(E101/B101,0)", "=SUM(E96:E100)", "=SUM(F96:F100)", "=SUM(G96:G100)", "=SUM(H96:H100)", "=IFERROR(H101/E101,0)", "=SUM(J96:J100)", "=IFERROR(J101/B101,0)", `=IFERROR(AVERAGEIFS(${Y},${X},"<="&${thr}),0)`]],
+  });
+  D.push({ range: "Dashboard!A103", values: [["Tier is read from the membership product name: 1x/week = 4-pack, 2x/week = 8-pack, 3x/week = 12-pack, any 'illimité/unlimited' = Unlimited. 'Membership value per cycle' is what they paid for their last membership cycle (pre-tax); 'Pack revenue / membership value' above 1 means the pack brought in more than one cycle of what they were paying."]] });
   D.push({ range: "Dashboard!A92", values: [["Cycles = purchases of that same membership product in the 400 days before the buyer's first sale purchase (one purchase per billing cycle). Annual commitment is detected from the product name (1 an / 1 year / commitment) - adjust the ANNUAL_PLAN pattern in the import script if your APAC naming differs."]] });
 
   await sheets.spreadsheets.values.batchUpdate({
@@ -348,7 +371,16 @@ async function main() {
     fmt(rng("Settings", 4, 8, 1, 2), nf("PERCENT", "0%"), "numberFormat"),
     // raw tab headers
     fmt(rng("Sales_Raw", 0, 1, 0, 20), head, "textFormat,backgroundColor"),
-    fmt(rng("Customers_Raw", 0, 1, 0, 26), head, "textFormat,backgroundColor"),
+    fmt(rng(dash, 93, 94, 0, 1), { textFormat: { bold: true, fontSize: 13 } }, "textFormat"),
+    fmt(rng(dash, 94, 95, 0, 12), head, "textFormat,backgroundColor,wrapStrategy"),
+    fmt(rng(dash, 95, 101, 2, 3), nf("PERCENT", "0%"), "numberFormat"),
+    fmt(rng(dash, 95, 101, 3, 5), nf("CURRENCY", "$#,##0"), "numberFormat"),
+    fmt(rng(dash, 95, 101, 7, 8), nf("CURRENCY", "$#,##0"), "numberFormat"),
+    fmt(rng(dash, 95, 101, 8, 9), nf("NUMBER", "0.0"), "numberFormat"),
+    fmt(rng(dash, 95, 101, 10, 11), nf("PERCENT", "0%"), "numberFormat"),
+    fmt(rng(dash, 95, 101, 11, 12), nf("NUMBER", "0.0"), "numberFormat"),
+    fmt(rng(dash, 100, 101, 0, 12), total, "textFormat,borders"),
+    fmt(rng("Customers_Raw", 0, 1, 0, 30), head, "textFormat,backgroundColor"),
     fmt(rng("Packs_Raw", 0, 1, 0, 7), head, "textFormat,backgroundColor"),
     fmt(rng("Sales_Raw", 1, 10000, 19, 20), nf("DATE_TIME", "yyyy-mm-dd hh:mm"), "numberFormat"),
     { updateDimensionProperties: { range: { sheetId: id[dash], dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 330 }, fields: "pixelSize" } },
