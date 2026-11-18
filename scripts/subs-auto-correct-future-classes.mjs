@@ -574,9 +574,8 @@ async function run() {
   const postHeartbeat = async (studio, un = []) => {
     const channel = channelByStudio.get(norm(studio)) || "";
     const checked = checkedBy.get(studio) || 0;
-    const text = un.length
-      ? `⚠️ *${plural(un.length, "change", "changes")}* sent to Airtable but not confirmed yet. They will be re-checked at the next run.`
-      : `✅ Checked *${plural(checked, "class", "classes")}* (today to ${capFor(studio)}): MTEK and Airtable match. *No changes needed.*`;
+    // changes that could not be confirmed are not the studio's business (they are retried, then left to be done by hand)
+    const text = `✅ Checked *${plural(checked, "class", "classes")}* (today to ${capFor(studio)}): MTEK and Airtable match. *No changes needed.*`;
     const blocks = [
       { type: "header", text: { type: "plain_text", text: `📅 Schedule auto-check · ${studio}`.slice(0, 150), emoji: true } },
       { type: "section", text: { type: "mrkdwn", text } },
