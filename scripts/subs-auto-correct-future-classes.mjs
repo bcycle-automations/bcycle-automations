@@ -58,6 +58,7 @@ const MAX_AUTO_CHANGES = Number(process.env.MAX_AUTO_CHANGES || 200);
 const SLACK_TOKEN = (process.env.SLACK_BOT_TOKEN || "").trim();
 const ADMIN_USER = (process.env.SLACK_ADMIN_USER_ID || "").trim();
 const ALL_CLASSES_URL = "https://bcycle.softr.app/all-classes";
+const ACTIVE_INSTRUCTORS_URL = "https://bcycle.softr.app/active-instructors";
 const STATE_FILE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../state/subs-auto-correct-state.json");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -282,11 +283,11 @@ function studioMessage(studio, items, { dry, variant = "table" } = {}) {
 }
 
 /** Post a studio message; if Slack refuses the table block, post the list variant instead. */
-async function postStudio(channel, studio, items, opts, prefixBlocks = []) {
+async function postStudio(channel, studio, items, opts, prefixBlocks = [], suffixBlocks = []) {
   for (const variant of ["table", "list"]) {
     const m = studioMessage(studio, items, { ...opts, variant });
     try {
-      await slackPost(channel, m.text, [...prefixBlocks, ...m.blocks], m.attachments);
+      await slackPost(channel, m.text, [...prefixBlocks, ...m.blocks, ...suffixBlocks], m.attachments);
       return variant;
     } catch (e) {
       if (variant === "list" || !/invalid_blocks|invalid_attachments|invalid_arguments/.test(e.message)) throw e;
@@ -533,12 +534,17 @@ async function run() {
       leftAlone.push(c);
       continue;
     }
+    if (c.rec && c.curLabel && norm(c.curLabel) === norm(c.mtekName)) {
+      good++; // same name on both sides: assume it is already right
+      continue;
+    }
     const names = c.mtekName.split(",").map((x) => x.trim()).filter(Boolean);
     const unmatched = names.filter((w) => !(empByMtek.get(norm(w)) || []).length);
     if (unmatched.length && c.rec) {
-      needsAttention.push({ ...c, why: `No employee has the MTEK Name "${unmatched.join('", "')}", so it was not applied.` });
+      needsAttention.push({ ...c, unmatched, why: `No employee has the MTEK Name "${unmatched.join('", "')}", so it was not applied.` });
       continue;
     }
+    if (unmatched.length) c.unmatched = unmatched;
     if (unmatched.length) c.warn = `No employee has the MTEK Name "${unmatched.join('", "')}": the class is added without an instructor.`;
     toApply.push(c);
   }
@@ -571,14 +577,38 @@ async function run() {
     const l = String(col(r, "Location") ?? "").trim();
     checkedBy.set(l, (checkedBy.get(l) || 0) + 1);
   }
+  const attentionBlocks = (studio) => {
+    const byName = new Map();
+    for (const c of [...needsAttention, ...toApply].filter((x) => x.location === studio && x.unmatched?.length)) {
+      for (const n of c.unmatched) byName.set(n, [...(byName.get(n) || []), c]);
+    }
+    if (!byName.size) return [];
+    const lines = [...byName].map(([n, list]) => {
+      list.sort((a, b) => `${a.ymd} ${a.time}`.localeCompare(`${b.ymd} ${b.time}`));
+      return `• *${mrk(n)}*: ${plural(list.length, "class", "classes")} not updated (first: ${mrk(prettyWhen(list[0].ymd, list[0].time))})`;
+    });
+    return [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `⚠️ *Instructor not found in Airtable*\n${lines.join("\n")}\nUpdate their *MTEK Name* in <${ACTIVE_INSTRUCTORS_URL}|Active Employees - Instructors> so it matches MTEK exactly. These classes are then updated automatically at the next run.`,
+        },
+      },
+    ];
+  };
   const postHeartbeat = async (studio, un = []) => {
     const channel = channelByStudio.get(norm(studio)) || "";
     const checked = checkedBy.get(studio) || 0;
     // changes that could not be confirmed are not the studio's business (they are retried, then left to be done by hand)
-    const text = `✅ Checked *${plural(checked, "class", "classes")}* (today to ${capFor(studio)}): MTEK and Airtable match. *No changes needed.*`;
+    const attn = attentionBlocks(studio);
+    const text = attn.length
+      ? `✅ Checked *${plural(checked, "class", "classes")}* (today to ${capFor(studio)}). *No other changes needed.*`
+      : `✅ Checked *${plural(checked, "class", "classes")}* (today to ${capFor(studio)}): MTEK and Airtable match. *No changes needed.*`;
     const blocks = [
       { type: "header", text: { type: "plain_text", text: `📅 Schedule auto-check · ${studio}`.slice(0, 150), emoji: true } },
       { type: "section", text: { type: "mrkdwn", text } },
+      ...attn,
       { type: "context", elements: [{ type: "mrkdwn", text: `Ran ${today}. Runs every Sun / Mon / Wed / Fri. If you do not see a message from this check, tell Jonathan.` }] },
     ];
     try {
@@ -595,7 +625,7 @@ async function run() {
   let applied = [];
   let unconfirmed = [];
   if (toApply.length && !DRY_RUN) {
-    ({ applied, unconfirmed } = await applyViaStaging(toApply, { col, empById, today }));
+    ({ applied, unconfirmed } = await applyViaStaging(toApply, { col, empById, empByMtek, today }));
   }
 
   // 6. Remember + email ------------------------------------------------------------------------------
@@ -624,7 +654,7 @@ async function run() {
       const v = await postStudio(ADMIN_USER, studio, items, { dry: true }, [{ type: "context", elements: [{ type: "mrkdwn", text: `🧪 *DRY RUN* – this is what would be posted in ${where}` }] }]);
       log(`DM'd the dry-run preview for ${studio} (${items.length}, ${v} layout)`);
     } else if (channel) {
-      const v = await postStudio(channel, studio, items, {});
+      const v = await postStudio(channel, studio, items, {}, [], attentionBlocks(studio));
       log(`Posted to Slack for ${studio} (${items.length}, ${v} layout)`);
     } else {
       await postStudio(ADMIN_USER, studio, items, {}, [{ type: "context", elements: [{ type: "mrkdwn", text: `⚠️ No Slack channel for ${studio}: sent to you instead.` }] }]);
@@ -658,7 +688,29 @@ async function run() {
  * Staging table -> tick Fix -> wait for the Airtable automation "Fix schedule (NEW)" -> verify in All Classes.
  * Returns the confirmed changes (applied) and the ones that did not show up in time (unconfirmed).
  */
-async function applyViaStaging(toApply, { col, empById, today }) {
+async function applyViaStaging(allChanges, { col, empById, empByMtek, today }) {
+  // Duo classes (two instructors in MTEK): the Airtable automation cannot add the second instructor to a class that
+  // already has one, so both employees are written straight into the class (Instructor, or FINAL Sub when MTEK says sub).
+  const isDuo = (c) => c.rec && c.mtekName.includes(",") && !c.unmatched;
+  const duo = allChanges.filter(isDuo);
+  const toApply = allChanges.filter((c) => !isDuo(c));
+  const duoDone = [];
+  for (let i = 0; i < duo.length; i += 10) {
+    const chunk = duo.slice(i, i + 10);
+    const records = [];
+    for (const c of chunk) {
+      const ids = c.mtekName.split(",").map((w) => (empByMtek.get(norm(w.trim())) || [])[0]).filter(Boolean);
+      if (!ids.length) continue;
+      c.cat = c.cat === "sub" ? "sub" : c.curLabel ? "instructor" : "blank";
+      c.kindLabel = KIND_LABEL[c.cat] || c.cat;
+      c.from = c.rec ? (c.hasFinal && c.cat === "sub" ? `Sub ${c.curLabel}` : c.curLabel) : "";
+      c.to = c.mtekName;
+      records.push({ id: c.rec.id, fields: { [c.cat === "sub" ? "FINAL Sub" : "Instructor"]: ids } });
+      duoDone.push(c);
+    }
+    if (records.length) await at("PATCH", `${BASE_ID}/${CLASSES_TABLE}`, { typecast: false, records });
+    await sleep(250);
+  }
   const num = (v) => (v == null || v === "" ? undefined : String(v));
 
   // empty the staging table (the Schedule changes page does the same at the start of every check)
@@ -728,7 +780,7 @@ async function applyViaStaging(toApply, { col, empById, today }) {
     ticks.push(id);
     c.stagingId = id;
   }
-  const real = created.filter((x) => ticks.includes(x.id)).map((x) => x.c);
+  const real = created.filter((x) => ticks.includes(x.id)).map((x) => x.c).concat(duoDone);
 
   // tick Fix: the Airtable automation "Fix schedule (NEW)" runs once per row
   for (let i = 0; i < ticks.length; i += 10) {
