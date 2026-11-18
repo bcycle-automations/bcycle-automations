@@ -230,7 +230,7 @@ function studioMessage(studio, items, { dry, variant = "table" } = {}) {
     { type: "header", text: { type: "plain_text", text: `📅 Schedule auto-update · ${studio}`.slice(0, 150), emoji: true } },
     {
       type: "section",
-      text: { type: "mrkdwn", text: `${dry ? "🧪 *DRY RUN – nothing was changed.* " : ""}*${plural(items.length, "class", "classes")}* ${dry ? "would be" : "were"} updated in Airtable to match MTEK.\n${summary}` },
+      text: { type: "mrkdwn", text: `${dry ? "🧪 *DRY RUN – nothing was changed.* " : ""}*${plural(items.length, "class", "classes")}* ${dry ? "would be" : items.length === 1 ? "was" : "were"} updated in Airtable to match MTEK.\n${summary}` },
     },
   ];
 
