@@ -156,5 +156,27 @@
       "cat": "blank",
       "on": "2026-11-16"
     }
+  },
+  "tries": {
+    "vieux-port|2026-11-24|16:15|barre - duo 45": {
+      "to": "Katerine,Liz",
+      "ymd": "2026-11-24",
+      "n": 1
+    },
+    "vieux-port|2026-11-27|17:45|cycle - duo 45": {
+      "to": "Brian,Étienne",
+      "ymd": "2026-11-27",
+      "n": 1
+    },
+    "westmount|2026-12-11|17:45|cycle - duo 45": {
+      "to": "Cynthia,Melissa",
+      "ymd": "2026-12-11",
+      "n": 1
+    },
+    "vieux-port|2026-12-24|11:15|cycle - duo 45": {
+      "to": "Jess,Lisa",
+      "ymd": "2026-12-24",
+      "n": 1
+    }
   }
 }
