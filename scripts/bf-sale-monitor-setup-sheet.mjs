@@ -63,7 +63,7 @@ async function main() {
   // ---------------------------------------------------------------- Settings
   put("Settings!A1", [["Settings - blue cells are editable; the Dashboard reads everything from here"]]);
   put("Settings!A3:C10", [
-    ["First date shown in the Dashboard daily table", "2026-11-24", ""],
+    ["Sale date (reference only)", "2026-11-24", ""],
     ["Minimum buyers before the verdict is trusted", 40, "Below this the verdict says WAIT"],
     ["Max % of buyers who are Members", 0.3, "Members buying packs = revenue we'd likely have had anyway"],
     ["Max % of buyers who are credit holders (Credit holder + Old credit holder)", 0.3, "Current credit holders buying = the failure case"],
@@ -218,25 +218,6 @@ async function main() {
   totRow.push("=SUM(J37:J41)");
   D.push({ range: "Dashboard!A42:J42", values: [totRow] });
 
-  D.push({
-    range: "Dashboard!A45:F45",
-    values: [["Day (transaction date)", "Units", "Revenue (pre-tax)", "Units to Members", "Units to credit holders", "% cannibalizing units"]],
-  });
-  for (let i = 0; i < 10; i++) {
-    const r = 46 + i;
-    D.push({
-      range: `Dashboard!A${r}:F${r}`,
-      values: [[
-        i === 0 ? "=Settings!B3" : `=A${r - 1}+1`,
-        `=SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed")`,
-        `=SUMIFS(${sr("M")},${sr("D")},$A${r},${sr("K")},"Completed")`,
-        `=SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed",${sr("S")},"Member")`,
-        `=SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed",${sr("S")},"Credit holder")+SUMIFS(${sr("L")},${sr("D")},$A${r},${sr("K")},"Completed",${sr("S")},"Old credit holder")`,
-        `=IFERROR((D${r}+E${r})/B${r},0)`,
-      ]],
-    });
-  }
-  D.push({ range: "Dashboard!A56:F56", values: [["Total", "=SUM(B46:B55)", "=SUM(C46:C55)", "=SUM(D46:D55)", "=SUM(E46:E55)", "=IFERROR((D56+E56)/B56,0)"]] });
   D.push({ range: "Dashboard!A58", values: [["Segments (first match): New = in FirstTimersMTEK with first class <=30d before the buyer's first sale purchase or later; Member = paid a membership in the 45 days before; Low activity = <4 check-ins in the 90 days before; Credit holder = 4+ check-ins and bought credits in the 90 days before; Old credit holder = 4+ check-ins, no credit purchase. History from SalesMTEK / ReservationsMTEK / FirstTimersMTEK in BigQuery (current through yesterday)."]] });
   D.push({ range: "Dashboard!A59", values: [["Revenue won = pack sales (pre-tax). Revenue lost = what the same buyer spent (memberships + credits, pre-tax, excluding the sale packs) in the N days before their first sale purchase, where N = that pack's validity in MTEK (Packs_Raw). It is the spend we assume the pack replaces for as long as the credits last: a Member who stops paying for the pack's validity, a credit holder who would have bought credits anyway. Net lift = won - lost."]] });
 
@@ -298,6 +279,7 @@ async function main() {
   D.push({ range: "Dashboard!A103", values: [["Tier is read from the membership product name: 1x/week = 4-pack, 2x/week = 8-pack, 3x/week = 12-pack, any 'illimité/unlimited' = Unlimited. 'Membership value per cycle' is what they paid for their last membership cycle (pre-tax); 'Pack revenue / membership value' above 1 means the pack brought in more than one cycle of what they were paying."]] });
   D.push({ range: "Dashboard!A92", values: [["Cycles = purchases of that same membership product in the 400 days before the buyer's first sale purchase (one purchase per billing cycle). Annual commitment is detected from the product name (1 an / 1 year / commitment) - adjust the ANNUAL_PLAN pattern in the import script if your APAC naming differs."]] });
 
+  await sheets.spreadsheets.values.batchClear({ spreadsheetId: SHEET_ID, requestBody: { ranges: ["Dashboard!A44:F57"] } });
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
     requestBody: { valueInputOption: "USER_ENTERED", data: [...data, ...D] },
@@ -322,11 +304,9 @@ async function main() {
     fmt(rng(dash, 14, 15, 0, 12), head, "textFormat,backgroundColor,wrapStrategy"),
     fmt(rng(dash, 23, 24, 0, 12), head, "textFormat,backgroundColor,wrapStrategy"),
     fmt(rng(dash, 35, 36, 0, 10), head, "textFormat,backgroundColor,wrapStrategy"),
-    fmt(rng(dash, 44, 45, 0, 6), head, "textFormat,backgroundColor,wrapStrategy"),
     fmt(rng(dash, 20, 21, 0, 12), total, "textFormat,borders"),
     fmt(rng(dash, 32, 33, 0, 12), total, "textFormat,borders"),
     fmt(rng(dash, 41, 42, 0, 10), total, "textFormat,borders"),
-    fmt(rng(dash, 55, 56, 0, 6), total, "textFormat,borders"),
     // number formats
     fmt(rng(dash, 6, 7, 1, 2), nf("NUMBER", "0"), "numberFormat"),
     fmt(rng(dash, 7, 11, 1, 2), nf("PERCENT", "0.0%"), "numberFormat"),
@@ -349,9 +329,6 @@ async function main() {
     fmt(rng(dash, 24, 33, 6, 7), nf("CURRENCY", "$#,##0"), "numberFormat"),
     fmt(rng(dash, 24, 33, 8, 9), nf("CURRENCY", "$#,##0"), "numberFormat"),
     fmt(rng(dash, 24, 33, 9, 11), nf("PERCENT", "0.0%"), "numberFormat"),
-    fmt(rng(dash, 45, 56, 0, 1), nf("DATE", "ddd mmm d"), "numberFormat"),
-    fmt(rng(dash, 45, 56, 2, 3), nf("CURRENCY", "$#,##0"), "numberFormat"),
-    fmt(rng(dash, 45, 56, 5, 6), nf("PERCENT", "0.0%"), "numberFormat"),
     fmt(rng(dash, 1, 2, 1, 2), nf("DATE_TIME", "yyyy-mm-dd hh:mm"), "numberFormat"),
     fmt(rng(dash, 60, 61, 0, 1), { textFormat: { bold: true, fontSize: 13 } }, "textFormat"),
     fmt(rng(dash, 61, 62, 0, 4), head, "textFormat,backgroundColor,wrapStrategy"),
