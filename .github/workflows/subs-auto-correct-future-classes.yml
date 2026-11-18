@@ -63,10 +63,18 @@ jobs:
           if git status --porcelain | grep "state/subs-auto-correct-state.json"; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state/subs-auto-correct-state.json
-            git commit -m "Update subs auto-correct state [skip ci]" || echo "Nothing to commit"
-            git pull --rebase origin ${{ github.ref_name }}
-            git push
+            # Runs never overlap (concurrency group), so this run's state file is the latest: put it on top of
+            # whatever is on the branch now instead of rebasing (a rebase conflicted on this file).
+            cp state/subs-auto-correct-state.json "$RUNNER_TEMP/state.json"
+            for i in 1 2 3; do
+              git fetch origin ${{ github.ref_name }}
+              git reset --hard origin/${{ github.ref_name }}
+              cp "$RUNNER_TEMP/state.json" state/subs-auto-correct-state.json
+              git add state/subs-auto-correct-state.json
+              git commit -m "Update subs auto-correct state [skip ci]" || { echo "Nothing to commit"; break; }
+              git push && break
+              sleep 5
+            done
           else
             echo "No state changes to commit."
           fi

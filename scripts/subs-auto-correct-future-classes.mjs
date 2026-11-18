@@ -306,15 +306,16 @@ async function dmAdmin(text, blocks) {
 function loadState() {
   try {
     const s = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-    return { applied: s.applied || {} };
+    return { applied: s.applied || {}, tries: s.tries || {} };
   } catch {
-    return { applied: {} };
+    return { applied: {}, tries: {} };
   }
 }
 function saveState(state, todayYmd) {
   for (const [k, v] of Object.entries(state.applied)) if (v.ymd < addDays(todayYmd, -2)) delete state.applied[k];
+  for (const [k, v] of Object.entries(state.tries || {})) if (v.ymd < addDays(todayYmd, -2)) delete state.tries[k];
   fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-  fs.writeFileSync(STATE_FILE, JSON.stringify({ applied: state.applied }, null, 2) + "\n");
+  fs.writeFileSync(STATE_FILE, JSON.stringify({ applied: state.applied, tries: state.tries || {} }, null, 2) + "\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -473,6 +474,10 @@ async function run() {
       good++;
       continue;
     }
+    if (curEmps.length > 0 && norm(curEmps.map((e) => e.mtek || e.primary).join(",")) === norm(mtekName)) {
+      good++; // same name on both sides (e.g. a duplicate employee row): ticking Fix cannot change anything
+      continue;
+    }
     const instrEmps = instrIds.map((id) => empById.get(id)).filter(Boolean);
     const instrSet = new Set(instrEmps.flatMap((e) => [norm(e.mtek), norm(e.primary)]).filter(Boolean));
     if (finalIds.length > 0 && instrEmps.length > 0 && instrEmps.length === wanted.length && wanted.every((w) => instrSet.has(w))) {
@@ -512,7 +517,13 @@ async function run() {
 
   // Leave alone what a person put back by hand after we corrected it; skip names we cannot match
   const toApply = [];
+  const stuck = [];
   for (const c of stage) {
+    const tr = state.tries[c.key];
+    if (tr && norm(tr.to) === norm(c.mtekName) && tr.n >= 2) {
+      stuck.push({ ...c, firstReport: tr.n === 2 && !tr.told });
+      continue; // ticked twice already and it never showed up in All Classes: do not retry every run
+    }
     const prev = state.applied[c.key];
     if (prev && norm(prev.to) === norm(c.mtekName)) {
       leftAlone.push(c);
@@ -534,6 +545,7 @@ async function run() {
   leftAlone.forEach((c) => log("  left alone: ", describe(c)));
   needsAttention.forEach((c) => log("  attention:  ", describe(c), "-", c.why));
 
+  stuck.forEach((c) => log("  stuck (not retried):", describe(c)));
   if (toApply.length > MAX_AUTO_CHANGES) {
     const msg = `${toApply.length} changes were found (limit ${MAX_AUTO_CHANGES}). Nothing was applied: this looks abnormal (bad MTEK report?). Run Check for changes on /subs-schedule-changes to review.`;
     log("STOP:", msg);
@@ -556,7 +568,15 @@ async function run() {
 
   // 6. Remember + email ------------------------------------------------------------------------------
   if (!DRY_RUN) {
-    for (const c of applied) state.applied[c.key] = { to: c.mtekName, ymd: c.ymd, cat: c.cat, on: today };
+    for (const c of applied) {
+      state.applied[c.key] = { to: c.mtekName, ymd: c.ymd, cat: c.cat, on: today };
+      delete state.tries[c.key];
+    }
+    for (const c of unconfirmed) {
+      const t = state.tries[c.key];
+      state.tries[c.key] = { to: c.mtekName, ymd: c.ymd, n: (t && norm(t.to) === norm(c.mtekName) ? t.n : 0) + 1 };
+    }
+    for (const c of stuck.filter((x) => x.firstReport)) state.tries[c.key].told = true;
     saveState(state, today);
   }
 
@@ -581,11 +601,13 @@ async function run() {
     await sleep(1100); // Slack: ~1 message per second per channel
   }
 
-  if (needsAttention.length || unconfirmed.length || leftAlone.length) {
+  const stuckNew = stuck.filter((c) => c.firstReport);
+  if (needsAttention.length || unconfirmed.length || leftAlone.length || stuckNew.length) {
     const li = (arr, f) => arr.map((c) => `• ${mrk(describe(c))}${f ? ` — ${mrk(f(c))}` : ""}`).join("\n");
     const parts = [
       needsAttention.length ? `*Not applied (no matching employee):*\n${li(needsAttention, (c) => c.why)}` : "",
       unconfirmed.length ? `*Applied but not confirmed in All Classes yet* (see the run history of the Airtable automation "Fix schedule (NEW)"):\n${li(unconfirmed)}` : "",
+      stuckNew.length ? `*Could not be applied automatically* (ticked twice, never showed up in All Classes; not retried; do these by hand in ALL CLASSES):\n${li(stuckNew)}` : "",
       leftAlone.length ? `*Left alone* (auto-corrected before, then put back by hand):\n${li(leftAlone)}` : "",
     ].filter(Boolean);
     await dmAdmin("Subs auto-correct: items that need a look", [
@@ -699,23 +721,26 @@ async function applyViaStaging(toApply, { col, empById, today }) {
       const recs = await atListAll(CLASSES_TABLE, { filterByFormula: orIds(existing.slice(i, i + 40).map((c) => c.rec.id)), "fields[]": fields });
       for (const r of recs) out.set(r.id, r);
     }
+    // new classes: find them with the SAME studio+date+time+class key the comparison uses (the Class ID is
+    // often not carried over by the automation, and the class name can differ, so an exact Class ID match missed them)
     const added = list.filter((c) => !c.rec);
-    const withId = added.filter((c) => c.classId);
-    for (let i = 0; i < withId.length; i += 40) {
-      const part = withId.slice(i, i + 40);
-      const recs = await atListAll(CLASSES_TABLE, { filterByFormula: `OR(${part.map((c) => `{Class ID}=${Number(c.classId)}`).join(",")})`, "fields[]": fields });
-      for (const c of part) {
-        const hit = recs.find((r) => {
-          const t = parseTitle(Array.isArray(r.fields["Class!"]) ? r.fields["Class!"][0] : r.fields["Class!"]);
-          return String(r.fields["Class ID"]) === String(c.classId) && (!t || keyOf(t.room, t.ymd, t.hhmm, t.cls) === c.key);
-        });
-        if (hit) out.set(`new:${c.key}`, hit);
+    if (added.length) {
+      const rooms = [...new Set(added.map((c) => c.location))].map((r) => `{room}='${q(r)}'`);
+      const ymds = added.map((c) => c.ymd).sort();
+      const recs = await atListAll(CLASSES_TABLE, {
+        filterByFormula: `AND(IS_AFTER({date 2},'${addDays(ymds[0], -2)}'),IS_BEFORE({date 2},'${addDays(ymds[ymds.length - 1], 2)}'),OR(${rooms.join(",")}))`,
+        "fields[]": [...fields, "date 2", "time 2", "room", "class"],
+      });
+      const byK = new Map();
+      for (const r of recs) {
+        const f = r.fields;
+        const t = parseTitle(Array.isArray(f["Class!"]) ? f["Class!"][0] : f["Class!"]);
+        let k = null;
+        if (t) k = keyOf(t.room, t.ymd, t.hhmm, t.cls);
+        else if (f["date 2"] && f["room"] && f["class"]) k = keyOf(f["room"], ymdFromDate(new Date(f["date 2"])), hhmm(f["time 2"]), f["class"]);
+        if (k && !byK.has(k)) byK.set(k, r);
       }
-    }
-    for (const c of added.filter((x) => !x.classId)) {
-      const recs = await atListAll(CLASSES_TABLE, { filterByFormula: `AND(IS_SAME({date 2},'${c.ymd}','day'),{room}='${q(c.location)}',{class}='${q(c.type)}',{time 2}='${c.time}')`, "fields[]": fields });
-      if (recs[0]) out.set(`new:${c.key}`, recs[0]);
-      await sleep(200);
+      for (const c of added) if (byK.has(c.key)) out.set(`new:${c.key}`, byK.get(c.key));
     }
     return out;
   };
@@ -724,7 +749,7 @@ async function applyViaStaging(toApply, { col, empById, today }) {
   const confirmedRecs = new Map();
   const deadline = Date.now() + 12 * 60000;
   while (pending.length && Date.now() < deadline) {
-    await sleep(30000);
+    await sleep(pending.some((c) => !c.rec) ? 60000 : 30000);
     const found = await lookup(pending);
     const still = [];
     for (const c of pending) {
