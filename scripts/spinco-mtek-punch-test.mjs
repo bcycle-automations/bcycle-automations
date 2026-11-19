@@ -25,5 +25,8 @@ if (mode === 'inspect') {
   const st = await api('GET', '/api/shift_types?page_size=100');
   console.log('shift types:', (st.json?.data || []).map((x) => `${x.id}=${x.attributes?.name}`).join(' | '));
   const opt = await api('OPTIONS', '/api/time_clock_shifts');
-  console.log('OPTIONS status', opt.status, 'allow methods:', JSON.stringify(opt.json?.data?.actions ? Object.keys(opt.json.data.actions) : opt.text.slice(0, 200)));
+  const post = opt.json?.data?.actions?.POST || opt.json?.actions?.POST;
+  console.log('OPTIONS status', opt.status, 'POST allowed:', !!post);
+  if (post) console.log('POST fields:', Object.entries(post).map(([k, v]) => `${k}${v?.required ? '*' : ''}(${v?.type || ''})`).join(', '));
+  else console.log('OPTIONS keys:', Object.keys(opt.json?.data || opt.json || {}).join(', '));
 }
