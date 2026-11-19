@@ -1,0 +1,31 @@
+name: SPINCO Create Budget week
+run-name: SPINCO Create Budget week
+
+on:
+  # Manual only until Jonathan confirms the SPINCO Payroll period table is seeded
+  # (2026-12-27 -> 2027-01-09). Then add the same Sunday schedule as the b.cycle job:
+  # schedule:
+  #   - cron: '0 8 * * 0'
+  workflow_dispatch:
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Create SPINCO Budget week and assign pay periods
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
+          SPINCO_BUDGET_WEEKS_TABLE_ID: tblo3cAvXpgN60rut
+          SPINCO_PAYROLL_PERIODS_TABLE_ID: tblBobHdbWbelKS2C
+          SPINCO_PUNCHES_TABLE_ID: tble8FYc7hAcXLbf3
+          PAYROLL_TIME_ZONE: America/Toronto
+        run: node scripts/spinco-create-budget-week.mjs

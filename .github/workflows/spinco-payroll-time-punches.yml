@@ -1,0 +1,41 @@
+name: SPINCO Payroll Time Punches
+run-name: SPINCO Payroll Time Punches
+
+on:
+  workflow_dispatch:
+    inputs:
+      record_id:
+        description: 'Airtable "SPINCO Budget week - Studio" record ID from tbl3vkTb2z2YFol5r (example: recXXXX)'
+        required: true
+        type: string
+  # Add a repository_dispatch trigger (type: airtable-spinco-payroll-time-punches)
+  # once the Make scenario / Airtable button that starts it is built.
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run SPINCO Payroll Time Punches
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          MTEK_SPINCO_API_TOKEN: ${{ secrets.MTEK_SPINCO_API_TOKEN }}
+          MTEK_SPINCO_BASE_URL: https://spinco.marianatek.com
+          AIRTABLE_RECORD_ID: ${{ github.event.inputs.record_id }}
+          AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
+          AIRTABLE_RUNS_TABLE_ID: tbl3vkTb2z2YFol5r
+          AIRTABLE_PUNCHES_TABLE_ID: tble8FYc7hAcXLbf3
+          AIRTABLE_EMPLOYEES_TABLE_ID: tbl0FzJ2s4Mk5jWIi
+          AIRTABLE_EMPLOYEES_VIEW_ID: viws8tSbvXfujLnwG
+          AIRTABLE_RATES_TABLE_ID: tblR1hRDEcqxLj8JH
+          AIRTABLE_STUDIOS_TABLE_ID: tblAXy4xm0kJMkWeQ
+          AIRTABLE_PAYROLL_PERIODS_TABLE_ID: tblBobHdbWbelKS2C
+          PAYROLL_TIME_ZONE: America/Toronto
+        run: node scripts/spinco-payroll-time-punches-workflow.mjs
