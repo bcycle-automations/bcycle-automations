@@ -8,8 +8,9 @@ on:
         description: 'Airtable "SPINCO Budget week - Studio" record ID from tbl3vkTb2z2YFol5r (example: recXXXX)'
         required: true
         type: string
-  # Add a repository_dispatch trigger (type: airtable-spinco-payroll-time-punches)
-  # once the Make scenario / Airtable button that starts it is built.
+  repository_dispatch:
+    types:
+      - airtable-spinco-payroll-time-punches
 
 jobs:
   sync:
@@ -28,7 +29,7 @@ jobs:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           MTEK_SPINCO_API_TOKEN: ${{ secrets.MTEK_SPINCO_API_TOKEN }}
           MTEK_SPINCO_BASE_URL: https://spinco.marianatek.com
-          AIRTABLE_RECORD_ID: ${{ github.event.inputs.record_id }}
+          AIRTABLE_RECORD_ID: ${{ github.event.inputs.record_id || github.event.client_payload.record_id }}
           AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
           AIRTABLE_RUNS_TABLE_ID: tbl3vkTb2z2YFol5r
           AIRTABLE_PUNCHES_TABLE_ID: tble8FYc7hAcXLbf3

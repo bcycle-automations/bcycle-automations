@@ -8,8 +8,9 @@ on:
         description: 'Airtable "SPINCO Payroll Class log" record ID from tbl157YNKNMHiKKTq (example: recXXXX)'
         required: true
         type: string
-  # Add repository_dispatch (airtable-spinco-payroll-classes) once the Make scenario
-  # / Airtable button that starts it is built.
+  repository_dispatch:
+    types:
+      - airtable-spinco-payroll-classes
 
 jobs:
   sync:
@@ -28,7 +29,7 @@ jobs:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           MTEK_SPINCO_API_TOKEN: ${{ secrets.MTEK_SPINCO_API_TOKEN }}
           MTEK_SPINCO_BASE_URL: https://spinco.marianatek.com
-          AIRTABLE_RECORD_ID: ${{ github.event.inputs.record_id }}
+          AIRTABLE_RECORD_ID: ${{ github.event.inputs.record_id || github.event.client_payload.record_id }}
           AIRTABLE_BASE_ID: appiwfeujJzUZPPBx
           AIRTABLE_RUNS_TABLE_ID: tbl157YNKNMHiKKTq
           AIRTABLE_CLASSES_TABLE_ID: tbl6TFtzRIuXkf7LN
