@@ -1,29 +1,5 @@
 {
   "applied": {
-    "vieux-port|2026-11-16|16:15|barre": {
-      "to": "Lisa",
-      "ymd": "2026-11-16",
-      "cat": "sub",
-      "on": "2026-11-16"
-    },
-    "vieux-port|2026-11-16|18:45|barre": {
-      "to": "Ali",
-      "ymd": "2026-11-16",
-      "cat": "sub",
-      "on": "2026-11-16"
-    },
-    "vieux-port|2026-11-16|17:30|barre": {
-      "to": "Ali",
-      "ymd": "2026-11-16",
-      "cat": "sub",
-      "on": "2026-11-16"
-    },
-    "rockland|2026-11-17|12:00|barre": {
-      "to": "Brittany H",
-      "ymd": "2026-11-17",
-      "cat": "sub",
-      "on": "2026-11-16"
-    },
     "centre-ville|2026-11-19|18:40|barre": {
       "to": "Alex Winkler",
       "ymd": "2026-11-19",
